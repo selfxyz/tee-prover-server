@@ -30,7 +30,7 @@ pub struct SubmitRequest {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum EndpointType {
     Celo,
     Https,
