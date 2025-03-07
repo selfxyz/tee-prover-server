@@ -33,8 +33,6 @@ async fn main() {
     let server_addr = server.local_addr().unwrap();
     let fd = nsm_init();
 
-    // handle.stopped().await
-
     println!("Server running on: http://{}", server_addr);
 
     let pool = match PgPoolOptions::new()
