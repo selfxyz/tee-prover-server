@@ -34,6 +34,8 @@ pub struct SubmitRequest {
 pub enum EndpointType {
     Celo,
     Https,
+    StagingCelo,
+    StagingHttps,
 }
 
 #[derive(Deserialize, Clone)]
