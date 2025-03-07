@@ -35,12 +35,15 @@ RUN ./build_gmp.sh host && \
 COPY start.sh /usr/local/bin
 RUN chown root:root /usr/local/bin/start.sh
 RUN chmod 755 /usr/local/bin/start.sh
-ARG PROOFTYPE=${PROOFTYPE}
 
 WORKDIR /
 COPY artifact.zip artifact.zip
 RUN mkdir /circuits
 RUN unzip artifact.zip -d /all-circuits
+
+ARG SIZE_FILTER=${SIZE_FILTER}
+ARG PROOFTYPE=${PROOFTYPE}
+
 RUN mv /all-circuits/$PROOFTYPE/*_cpp /circuits && \
     rm -rf /artifact.zip /all-circuits
 
@@ -49,7 +52,11 @@ COPY ./zkeys/$PROOFTYPE /zkeys
 
 COPY circuit_eliminator.sh circuit_eliminator.sh 
 RUN chmod +x circuit_eliminator.sh
-RUN ./circuit_eliminator.sh $PROOFTYPE
+RUN ./circuit_eliminator.sh $PROOFTYPE $SIZE_FILTER
+
+RUN echo "uwu"
+RUN ls -la /zkeys
+RUN ls -la /circuits
 
 CMD ["/usr/local/bin/start.sh"]
 
@@ -113,7 +120,8 @@ COPY instance-deps/socat /usr/bin/socat
 COPY instance-deps/vsock-proxy /usr/bin/vsock-proxy
 
 ARG PROOFTYPE=${PROOFTYPE}
-COPY prover-server-$PROOFTYPE.eif /home/tee-server.eif
+ARG SIZE_FILTER=${SIZE_FILTER}
+COPY prover-server-$PROOFTYPE-$SIZE_FILTER.eif /home/tee-server.eif
 COPY instance-deps/run.sh /home
 
 CMD ["/home/run.sh"]
