@@ -42,9 +42,17 @@ pub enum EndpointType {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProofRequest {
     #[serde(rename_all = "camelCase")]
-    Register { circuit: Circuit },
+    Register {
+        circuit: Circuit,
+        endpoint_type: Option<EndpointType>,
+        endpoint: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
-    Dsc { circuit: Circuit },
+    Dsc {
+        circuit: Circuit,
+        endpoint_type: Option<EndpointType>,
+        endpoint: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     Disclose {
         circuit: Circuit,
@@ -56,8 +64,8 @@ pub enum ProofRequest {
 impl ProofRequest {
     pub fn circuit(&self) -> &Circuit {
         match self {
-            ProofRequest::Register { circuit } => circuit,
-            ProofRequest::Dsc { circuit } => circuit,
+            ProofRequest::Register { circuit, .. } => circuit,
+            ProofRequest::Dsc { circuit, .. } => circuit,
             ProofRequest::Disclose { circuit, .. } => circuit,
         }
     }
