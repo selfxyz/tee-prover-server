@@ -241,12 +241,21 @@ impl RpcServer for RpcServerImpl {
         };
 
         let (endpoint_type, endpoint) = match &submit_request.proof_request_type {
+            ProofRequest::Register {
+                endpoint_type,
+                endpoint,
+                ..
+            } => (endpoint_type.as_ref(), endpoint.as_ref()),
+            ProofRequest::Dsc {
+                endpoint_type,
+                endpoint,
+                ..
+            } => (endpoint_type.as_ref(), endpoint.as_ref()),
             ProofRequest::Disclose {
                 endpoint_type,
                 endpoint,
                 ..
             } => (Some(endpoint_type), Some(endpoint)),
-            _ => (None, None),
         };
 
         if let Err(e) = create_proof_status(

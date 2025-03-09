@@ -54,10 +54,6 @@ COPY circuit_eliminator.sh circuit_eliminator.sh
 RUN chmod +x circuit_eliminator.sh
 RUN ./circuit_eliminator.sh $PROOFTYPE $SIZE_FILTER
 
-RUN echo "uwu"
-RUN ls -la /zkeys
-RUN ls -la /circuits
-
 CMD ["/usr/local/bin/start.sh"]
 
 ######## Instance image ########
