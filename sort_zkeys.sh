@@ -25,6 +25,8 @@ dsc_circuits=(
   "dsc_sha384_ecdsa_secp384r1:medium"
 )
 
+disclose_circuits=()
+
 # Function to sort circuits into small, medium, or large
 sort_zkeys() {
     local CATEGORY="$1"
@@ -54,5 +56,6 @@ sort_zkeys() {
 # Run sorting for register and dsc categories
 sort_zkeys "register" "${register_circuits[@]}"
 sort_zkeys "dsc" "${dsc_circuits[@]}"
+sort_zkeys "disclose" "${dsc_circuits[@]}"
 
 echo "Zkey files sorted successfully!"
