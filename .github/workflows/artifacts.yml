@@ -77,7 +77,7 @@ jobs:
       - name: Build and push Docker enclave images
         run: |
           chmod +x ./build_docker.sh
-          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
+          # ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
 
       - name: Cleanup zkeys
         run: rm -rf zkeys*
