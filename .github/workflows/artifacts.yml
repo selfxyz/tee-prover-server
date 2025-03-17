@@ -25,24 +25,24 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Artifacts
-        run: |
-          ARTIFACT_URL=$(curl -L \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-            "https://api.github.com/repos/celo-org/self/actions/artifacts" \
-            | jq '.artifacts | max_by(.created_at)' | jq -r .'archive_download_url')
-          echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
+      # - name: Install Artifacts
+      #   run: |
+      #     ARTIFACT_URL=$(curl -L \
+      #       -H "Accept: application/vnd.github+json" \
+      #       -H "X-GitHub-Api-Version: 2022-11-28" \
+      #       -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+      #       "https://api.github.com/repos/celo-org/self/actions/artifacts" \
+      #       | jq '.artifacts | max_by(.created_at)' | jq -r .'archive_download_url')
+      #     echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
 
-      - name: Download and unpack artifact
-        run: |
-          curl -L \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -o artifact.zip \
-            "$ARTIFACT_URL"
+      # - name: Download and unpack artifact
+      #   run: |
+      #     curl -L \
+      #       -H "Accept: application/vnd.github+json" \
+      #       -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+      #       -H "X-GitHub-Api-Version: 2022-11-28" \
+      #       -o artifact.zip \
+      #       "$ARTIFACT_URL"
 
       - name: Login to AWS
         run: |
@@ -93,7 +93,7 @@ jobs:
           touch measurements/dsc-medium.log      && sudo chmod 777 measurements/dsc-medium.log
           touch measurements/dsc-large.log       && sudo chmod 777 measurements/dsc-large.log
           chmod +x build_eif.sh
-          ./build-eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
+          ./build_eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
 
       - name: Build and push Docker instance images
         run: |
