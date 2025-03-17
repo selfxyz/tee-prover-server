@@ -21,6 +21,7 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
     SIZE="${ITEM##*:}"   
 
     IMAGE_NAME="${DOCKER_ORG}/tee-server-${PROOF}"
+    [[ ${TARGET} == "instance" ]] && IMAGE_NAME+="-${TARGET}"
     [[ "$SIZE" != "small" ]] && IMAGE_NAME+="-${SIZE}"
 
     BUILD_COMMANDS+=("sudo docker build --build-arg PROOFTYPE=$PROOF --build-arg SIZE_FILTER=$SIZE -f Dockerfile.tee --target=${TARGET} -t ${IMAGE_NAME}:${TAG} .")

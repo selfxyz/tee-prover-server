@@ -80,29 +80,29 @@ jobs:
           # ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
 
       - name: Cleanup zkeys
-        run: rm -rf zkeys*
+        # run: rm -rf zkeys*
 
       - name: Build eifs
         run: |
-          mkdir measurements && sudo chmod 777 measurements
-          touch measurements/register.log        && sudo chmod 777 measurements/register.log
-          touch measurements/register-medium.log && sudo chmod 777 measurements/register-medium.log
-          touch measurements/register-large.log  && sudo chmod 777 measurements/register-large.log
-          touch measurements/disclose.log        && sudo chmod 777 measurements/disclose.log
-          touch measurements/dsc.log             && sudo chmod 777 measurements/dsc.log
-          touch measurements/dsc-medium.log      && sudo chmod 777 measurements/dsc-medium.log
-          touch measurements/dsc-large.log       && sudo chmod 777 measurements/dsc-large.log
-          chmod +x build_eif.sh
-          ./build_eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
+          # mkdir measurements && sudo chmod 777 measurements
+          # touch measurements/register.log        && sudo chmod 777 measurements/register.log
+          # touch measurements/register-medium.log && sudo chmod 777 measurements/register-medium.log
+          # touch measurements/register-large.log  && sudo chmod 777 measurements/register-large.log
+          # touch measurements/disclose.log        && sudo chmod 777 measurements/disclose.log
+          # touch measurements/dsc.log             && sudo chmod 777 measurements/dsc.log
+          # touch measurements/dsc-medium.log      && sudo chmod 777 measurements/dsc-medium.log
+          # touch measurements/dsc-large.log       && sudo chmod 777 measurements/dsc-large.log
+          # chmod +x build_eif.sh
+          # ./build_eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
 
       - name: Build and push Docker instance images
         run: |
-          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
+          # ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
 
       - name: Push images
         run: |
           chmod +x push_docker.sh
-          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} 
+          # ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} 
           ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
 
       - name: Upload artifact
