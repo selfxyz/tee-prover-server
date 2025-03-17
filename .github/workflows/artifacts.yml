@@ -24,10 +24,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          # lfs: true
-
-      # - name: Checkout lfs objects
-      #   run: git lfs checkout
 
       - name: Install Artifacts
         run: |
@@ -56,9 +52,7 @@ jobs:
       - name: Download and unpack zkeys
         run: |
           rm -rf zkeys
-          # curl -L -o zkeys.tar.zst https://self-protocol.s3.eu-west-1.amazonaws.com/zkeys.tar.zst
-          aws s3 cp s3://self-protocol/zkeys_final_2.tar.zst .
-          tar --zstd -xf zkeys_final_2.tar.zst
+          chmod +x download_zkeys.sh && ./download_zkeys.sh
           mkdir zkeys
           for file in *_final.zkey; do mv "$file" "zkeys/${file%_final.zkey}.zkey"; done
 
@@ -68,6 +62,8 @@ jobs:
           mv zkeys/register_* zkeys/register/
           mv zkeys/vc_and_disclose.zkey zkeys/disclose/ 
           mv zkeys/dsc_* zkeys/dsc/
+          chmod +x sort_zkeys.sh
+          ./sort_zkeys.sh
 
       - name: Init submodules
         run: |
@@ -80,13 +76,8 @@ jobs:
 
       - name: Build and push Docker enclave images
         run: |
-          sudo docker build --push --build-arg PROOFTYPE=register --build-arg SIZE_FILTER=small  -f Dockerfile.tee --target=nitro-enclave -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=register --build-arg SIZE_FILTER=medium -f Dockerfile.tee --target=nitro-enclave -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register-medium:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=register --build-arg SIZE_FILTER=large  -f Dockerfile.tee --target=nitro-enclave -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register-large:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=disclose --build-arg SIZE_FILTER=small  -f Dockerfile.tee --target=nitro-enclave -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-disclose:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=dsc      --build-arg SIZE_FILTER=small  -f Dockerfile.tee --target=nitro-enclave -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=dsc      --build-arg SIZE_FILTER=medium -f Dockerfile.tee --target=nitro-enclave -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc-medium:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=dsc      --build-arg SIZE_FILTER=large  -f Dockerfile.tee --target=nitro-enclave -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc-large:${{ inputs.tag }} .
+          chmod +x ./build_docker.sh
+          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
 
       - name: Cleanup zkeys
         run: rm -rf zkeys*
@@ -101,23 +92,18 @@ jobs:
           touch measurements/dsc.log             && sudo chmod 777 measurements/dsc.log
           touch measurements/dsc-medium.log      && sudo chmod 777 measurements/dsc-medium.log
           touch measurements/dsc-large.log       && sudo chmod 777 measurements/dsc-large.log
-          sudo nitro-cli build-enclave --docker-uri ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register:${{ inputs.tag }}        --output-file prover-server-register-small.eif  > measurements/register.log 2>&1
-          sudo nitro-cli build-enclave --docker-uri ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register-medium:${{ inputs.tag }} --output-file prover-server-register-medium.eif > measurements/register-medium.log 2>&1
-          sudo nitro-cli build-enclave --docker-uri ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register-large:${{ inputs.tag }}  --output-file prover-server-register-large.eif  > measurements/register-large.log 2>&1
-          sudo nitro-cli build-enclave --docker-uri ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-disclose:${{ inputs.tag }}        --output-file prover-server-disclose-small.eif  > measurements/disclose.log 2>&1
-          sudo nitro-cli build-enclave --docker-uri ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc:${{ inputs.tag }}             --output-file prover-server-dsc-small.eif       > measurements/dsc.log 2>&1
-          sudo nitro-cli build-enclave --docker-uri ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc-medium:${{ inputs.tag }}      --output-file prover-server-dsc-medium.eif      > measurements/dsc-medium.log 2>&1
-          sudo nitro-cli build-enclave --docker-uri ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc-large:${{ inputs.tag }}       --output-file prover-server-dsc-large.eif       > measurements/dsc-large.log 2>&1
+          chmod +x build_eif.sh
+          ./build-eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
 
       - name: Build and push Docker instance images
         run: |
-          sudo docker build --push --build-arg PROOFTYPE=register --build-arg SIZE_FILTER=small  -f Dockerfile.tee --target=instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register-instance:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=register --build-arg SIZE_FILTER=medium -f Dockerfile.tee --target=instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register-instance-medium:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=register --build-arg SIZE_FILTER=large  -f Dockerfile.tee --target=instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-register-instance-large:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=disclose --build-arg SIZE_FILTER=small  -f Dockerfile.tee --target=instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-disclose-instance:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=dsc      --build-arg SIZE_FILTER=small  -f Dockerfile.tee --target=instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc-instance:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=dsc      --build-arg SIZE_FILTER=medium -f Dockerfile.tee --target=instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc-instance-medium:${{ inputs.tag }} .
-          sudo docker build --push --build-arg PROOFTYPE=dsc      --build-arg SIZE_FILTER=large  -f Dockerfile.tee --target=instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-dsc-instance-large:${{ inputs.tag }} .
+          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
+
+      - name: Push images
+        run: |
+          chmod +x push_docker.sh
+          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} 
+          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
