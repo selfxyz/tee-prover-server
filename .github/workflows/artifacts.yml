@@ -80,7 +80,7 @@ jobs:
           # ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
 
       - name: Cleanup zkeys
-        # run: rm -rf zkeys*
+        run: rm -rf zkeys*
 
       - name: Build eifs
         run: |
