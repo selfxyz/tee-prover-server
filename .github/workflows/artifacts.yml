@@ -56,9 +56,7 @@ jobs:
       - name: Download and unpack zkeys
         run: |
           rm -rf zkeys
-          # curl -L -o zkeys.tar.zst https://self-protocol.s3.eu-west-1.amazonaws.com/zkeys.tar.zst
-          aws s3 cp s3://self-protocol/zkeys_final.tar.zst .
-          tar --zstd -xf zkeys_final.tar.zst
+          chmod +x download_zkeys.sh && ./download_zkeys.sh
           mkdir zkeys
           for file in *_final.zkey; do mv "$file" "zkeys/${file%_final.zkey}.zkey"; done
 
