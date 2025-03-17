@@ -25,24 +25,24 @@ jobs:
         with:
           submodules: recursive
 
-      # - name: Install Artifacts
-      #   run: |
-      #     ARTIFACT_URL=$(curl -L \
-      #       -H "Accept: application/vnd.github+json" \
-      #       -H "X-GitHub-Api-Version: 2022-11-28" \
-      #       -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-      #       "https://api.github.com/repos/celo-org/self/actions/artifacts" \
-      #       | jq '.artifacts | max_by(.created_at)' | jq -r .'archive_download_url')
-      #     echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
+      - name: Install Artifacts
+        run: |
+          ARTIFACT_URL=$(curl -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+            "https://api.github.com/repos/celo-org/self/actions/artifacts" \
+            | jq '.artifacts | max_by(.created_at)' | jq -r .'archive_download_url')
+          echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
 
-      # - name: Download and unpack artifact
-      #   run: |
-      #     curl -L \
-      #       -H "Accept: application/vnd.github+json" \
-      #       -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-      #       -H "X-GitHub-Api-Version: 2022-11-28" \
-      #       -o artifact.zip \
-      #       "$ARTIFACT_URL"
+      - name: Download and unpack artifact
+        run: |
+          curl -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o artifact.zip \
+            "$ARTIFACT_URL"
 
       - name: Login to AWS
         run: |
@@ -51,19 +51,19 @@ jobs:
 
       - name: Download and unpack zkeys
         run: |
-          # rm -rf zkeys
-          # chmod +x download_zkeys.sh && ./download_zkeys.sh
-          # mkdir zkeys
-          # for file in *_final.zkey; do mv "$file" "zkeys/${file%_final.zkey}.zkey"; done
+          rm -rf zkeys
+          chmod +x download_zkeys.sh && ./download_zkeys.sh
+          mkdir zkeys
+          for file in *_final.zkey; do mv "$file" "zkeys/${file%_final.zkey}.zkey"; done
 
       - name: Reformat zkeys
         run: |
-          # mkdir -p zkeys/register zkeys/disclose zkeys/dsc
-          # mv zkeys/register_* zkeys/register/
-          # mv zkeys/vc_and_disclose.zkey zkeys/disclose/ 
-          # mv zkeys/dsc_* zkeys/dsc/
-          # chmod +x sort_zkeys.sh
-          # ./sort_zkeys.sh
+          mkdir -p zkeys/register zkeys/disclose zkeys/dsc
+          mv zkeys/register_* zkeys/register/
+          mv zkeys/vc_and_disclose.zkey zkeys/disclose/ 
+          mv zkeys/dsc_* zkeys/dsc/
+          chmod +x sort_zkeys.sh
+          ./sort_zkeys.sh
 
       - name: Init submodules
         run: |
@@ -77,32 +77,32 @@ jobs:
       - name: Build and push Docker enclave images
         run: |
           chmod +x ./build_docker.sh
-          # ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
+          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
 
       - name: Cleanup zkeys
         run: rm -rf zkeys*
 
       - name: Build eifs
         run: |
-          # mkdir measurements && sudo chmod 777 measurements
-          # touch measurements/register.log        && sudo chmod 777 measurements/register.log
-          # touch measurements/register-medium.log && sudo chmod 777 measurements/register-medium.log
-          # touch measurements/register-large.log  && sudo chmod 777 measurements/register-large.log
-          # touch measurements/disclose.log        && sudo chmod 777 measurements/disclose.log
-          # touch measurements/dsc.log             && sudo chmod 777 measurements/dsc.log
-          # touch measurements/dsc-medium.log      && sudo chmod 777 measurements/dsc-medium.log
-          # touch measurements/dsc-large.log       && sudo chmod 777 measurements/dsc-large.log
-          # chmod +x build_eif.sh
-          # ./build_eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
+          mkdir measurements && sudo chmod 777 measurements
+          touch measurements/register.log        && sudo chmod 777 measurements/register.log
+          touch measurements/register-medium.log && sudo chmod 777 measurements/register-medium.log
+          touch measurements/register-large.log  && sudo chmod 777 measurements/register-large.log
+          touch measurements/disclose.log        && sudo chmod 777 measurements/disclose.log
+          touch measurements/dsc.log             && sudo chmod 777 measurements/dsc.log
+          touch measurements/dsc-medium.log      && sudo chmod 777 measurements/dsc-medium.log
+          touch measurements/dsc-large.log       && sudo chmod 777 measurements/dsc-large.log
+          chmod +x build_eif.sh
+          ./build_eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
 
       - name: Build and push Docker instance images
         run: |
-          # ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
+          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
 
       - name: Push images
         run: |
           chmod +x push_docker.sh
-          # ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} 
+          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} 
           ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
 
       - name: Upload artifact
