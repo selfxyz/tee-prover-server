@@ -31,7 +31,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-            "https://api.github.com/repos/celo-org/self/actions/artifacts" \
+            "https://api.github.com/repos/selfxyz/self/actions/artifacts" \
             | jq '.artifacts | max_by(.created_at)' | jq -r .'archive_download_url')
           echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
 
