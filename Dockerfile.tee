@@ -48,11 +48,18 @@ RUN mv /all-circuits/$PROOFTYPE/*_cpp /circuits && \
     rm -rf /artifact.zip /all-circuits
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
-COPY ./zkeys/$PROOFTYPE /zkeys
+COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
 
 COPY circuit_eliminator.sh circuit_eliminator.sh 
 RUN chmod +x circuit_eliminator.sh
 RUN ./circuit_eliminator.sh $PROOFTYPE $SIZE_FILTER
+
+COPY split_zkeys.sh split_zkeys.sh
+RUN chmod +x split_zkeys.sh
+RUN ./split_zkeys.sh
+
+COPY merge_zkeys.sh /merge_zkeys.sh
+RUN chmod +x /merge_zkeys.sh
 
 CMD ["/usr/local/bin/start.sh"]
 
