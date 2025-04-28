@@ -1,3 +1,6 @@
 [submodule "rapidsnark"]
 	path = rapidsnark
 	url = git@github.com:iden3/rapidsnark.git
+[submodule "oyster-monorepo"]
+	path = oyster-monorepo
+	url = git@github.com:marlinprotocol/oyster-monorepo.git

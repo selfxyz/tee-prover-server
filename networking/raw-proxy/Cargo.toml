@@ -1,0 +1,39 @@
+[package]
+name = "oyster-raw-proxy"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "oyster_raw_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ip-to-vsock-raw-incoming"
+path = "src/ip_to_vsock_raw_incoming.rs"
+
+[[bin]]
+name = "ip-to-vsock-raw-outgoing"
+path = "src/ip_to_vsock_raw_outgoing.rs"
+
+[[bin]]
+name = "vsock-to-ip-raw-incoming"
+path = "src/vsock_to_ip_raw_incoming.rs"
+
+[[bin]]
+name = "vsock-to-ip-raw-outgoing"
+path = "src/vsock_to_ip_raw_outgoing.rs"
+
+[dependencies]
+anyhow = "1.0.80"
+clap = { version = "4.5.1", features = ["derive"] }
+libc = "0.2.153"
+nfq = "0.2.5"
+socket2 = { version = "0.5.6", features = ["all"] }
+thiserror = "1.0.57"
+
+[profile.release]
+strip = true
+lto = true
+panic = "abort"
+codegen-units = 1

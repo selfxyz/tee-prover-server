@@ -1,0 +1,48 @@
+diff --git a/default.nix b/default.nix
+index 32aeb6e..63e3af4 100644
+--- a/default.nix
++++ b/default.nix
+@@ -1,17 +1,15 @@
+-let
+-  nixpkgs = import (fetchTarball {
++{
++  nixpkgs ? import (fetchTarball {
+     url = "https://github.com/NixOS/nixpkgs/archive/refs/tags/24.05.tar.gz";
+     sha256 = "sha256:1lr1h35prqkd1mkmzriwlpvxcb34kmhc9dnr48gkm8hh089hifmx";
+-  }) { };
++  }) { },
++  arch ? nixpkgs.stdenv.hostPlatform.uname.processor,
++} : rec {
++  init = nixpkgs.callPackage ./init/init.nix { pkgs = nixpkgs; };
+ 
+-  arch = nixpkgs.stdenv.hostPlatform.uname.processor;
+-in
+-rec {
+-  init = nixpkgs.callPackage ./init/init.nix { };
++  kernel = nixpkgs.callPackage ./kernel/kernel.nix { pkgs = nixpkgs; arch = arch; };
+ 
+-  kernel = nixpkgs.callPackage ./kernel/kernel.nix { };
+-
+-  linuxkit = nixpkgs.callPackage ./linuxkit/linuxkit.nix { };
++  linuxkit = nixpkgs.callPackage ./linuxkit/linuxkit.nix { pkgs = nixpkgs; };
+ 
+ 
+   all = nixpkgs.runCommandNoCC "enclaves-blobs-${arch}" { } ''
+diff --git a/kernel/kernel.nix b/kernel/kernel.nix
+index d265821..492bd30 100644
+--- a/kernel/kernel.nix
++++ b/kernel/kernel.nix
+@@ -2,11 +2,10 @@
+   pkgs ? import (fetchTarball {
+     url = "https://github.com/NixOS/nixpkgs/archive/refs/tags/24.05.tar.gz";
+     sha256 = "sha256:1lr1h35prqkd1mkmzriwlpvxcb34kmhc9dnr48gkm8hh089hifmx";
+-  }) {}
++  }) {},
++  arch ? pkgs.stdenv.hostPlatform.uname.processor,
+ }:
+ let
+-  arch = pkgs.stdenv.hostPlatform.uname.processor;
+-
+   kern_arch = (
+     if arch == "aarch64" then
+       "arm64"

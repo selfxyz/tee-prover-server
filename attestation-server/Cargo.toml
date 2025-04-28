@@ -1,0 +1,12 @@
+[package]
+name = "attestation-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jsonrpsee = {version = "0.24.7", features = ["server", "macros", "client-core"]}
+aws-nitro-enclaves-nsm-api = "0.4.0"
+serde_bytes = "0.11.15"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0.98"
+p256 = {version = "0.13.2", features = ["ecdh"]}

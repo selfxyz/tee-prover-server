@@ -1,4 +1,7 @@
-/target
+/attestation-server/target
+/tee-prover/target
+/initialization/vet/target
+/networking/raw-proxy/target
 /tmp*
 /circuits
 /relayer/node_modules
