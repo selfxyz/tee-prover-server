@@ -1,7 +1,12 @@
 /attestation-server/target
 /tee-prover/target
 /initialization/vet/target
+/initialization/init-server/target
+/initialization/init-server/.env
 /networking/raw-proxy/target
 /tmp*
+/result
 /circuits
 /relayer/node_modules
+zkeys*
+artifact.zip

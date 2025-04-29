@@ -6,9 +6,10 @@ set -e
 /app/vet --url vsock://3:1300/instance/ip > /app/ip.txt
 cat /app/ip.txt
 
-# query job id for enclave and store
-# /app/vet --url vsock://3:1300/oyster/job > /app/job.txt
-# cat /app/job.txt
+# query init
+/app/vet --url vsock://3:1300/self/init-params > /app/.env
+cat /app/.env
+
 echo "nameserver 127.0.0.1" > /etc/resolv.conf
 cat /etc/resolv.conf
 ip=$(cat /app/ip.txt)
@@ -68,5 +69,13 @@ until docker info >/dev/null 2>&1; do
     sleep 1
 done
 
-/bin/docker run -p 3000:3000 nesopie/tester
+ulimit -s 500000
+
+source /app/.env
+
+/bin/docker run -p 8888:8888 nesopie/tester --server-address=0.0.0.0:8888 \
+    --database-url=$DATABASE_URL \
+    --circuit-folder=/circuits \
+    --zkey-folder=/zkeys \
+    --rapidsnark-path=/rapidsnark
 wait $SUPERVISOR_PID

@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - stg
+  pull_request: 
+    branches: 
+      - stg
 
 jobs:
   prod:
@@ -19,7 +22,7 @@ jobs:
   stg:
     uses: ./.github/workflows/artifacts.yml
     secrets: inherit
-    if: github.ref == 'refs/heads/stg'
+    if: github.event_name == 'pull_request' && github.base_ref == 'stg' || github.ref == 'refs/heads/stg'
     with:
       runner: "stg-runner"
       environment: "STG"
