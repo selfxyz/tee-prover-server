@@ -10,8 +10,6 @@ cat /app/ip.txt
 /app/vet --url vsock://3:1300/self/init-params > /app/.env
 cat /app/.env
 
-echo "nameserver 127.0.0.1" > /etc/resolv.conf
-cat /etc/resolv.conf
 ip=$(cat /app/ip.txt)
 
 # setting an address for loopback
@@ -73,7 +71,9 @@ ulimit -s 500000
 
 source /app/.env
 
-/bin/docker run -p 8888:8888 nesopie/tester --server-address=0.0.0.0:8888 \
+/bin/docker run --network=host \
+    -p 8888:8888 nesopie/tester \
+    --server-address=0.0.0.0:8888 \
     --database-url=$DATABASE_URL \
     --circuit-folder=/circuits \
     --zkey-folder=/zkeys \

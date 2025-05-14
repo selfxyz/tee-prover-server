@@ -7,11 +7,11 @@
 # socat tcp-listen:8889,fork vsock-connect:3:8889,reuseaddr & # for the db
 
 # assume that I get the db url string from the parent instance
-DB_PARAMS=$(socat -u vsock-listen:8890,reuseaddr - | head -n 1)
+DATABASE_URL=$(socat -u vsock-listen:8890,reuseaddr - | head -n 1)
 
-DB_USER=$(echo "$DB_PARAMS" | sed -E 's#^postgres://([^:]+):.*#\1#')
-DB_PASS=$(echo "$DB_PARAMS" | sed -E 's#^postgres://[^:]+:([^@]+)@.*#\1#')
-DB_NAME=$(echo "$DB_PARAMS" | sed -E 's#^.*/([^/]+)$#\1#')
+DB_USER=$(echo "$DATABASE_URL" | sed -E 's#^postgres://([^:]+):.*#\1#')
+DB_PASS=$(echo "$DATABASE_URL" | sed -E 's#^postgres://[^:]+:([^@]+)@.*#\1#')
+DB_NAME=$(echo "$DATABASE_URL" | sed -E 's#^.*/([^/]+)$#\1#')
 
 DATABASE_URL="postgres://$DB_USER:$DB_PASS@127.0.0.2:8889/$DB_NAME"
 echo $DATABASE_URL
