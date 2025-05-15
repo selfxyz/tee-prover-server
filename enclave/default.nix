@@ -19,10 +19,10 @@
   vtiriProxy = "${raw-proxy}/bin/vsock-to-ip-raw-incoming";
   attestationServer = "${attestation-server}/bin/attestation-server";
   vet' = "${vet}/bin/vet";
-  kernel = kernels.kernel;
-  kernelConfig = kernels.kernelConfig;
-  nsmKo = kernels.nsmKo;
-  init = kernels.init;
+  kernel = "${kernels}/${systemConfig.eif_arch}/bzImage";
+  kernelConfig = "${kernels}/${systemConfig.eif_arch}/bzImage.config";
+  nsmKo = "${kernels}/${systemConfig.eif_arch}/nsm.ko";
+  init = "${kernels}/${systemConfig.eif_arch}/init";
   setup = ./. + "/setup.sh";
   supervisorConf = ./. + "/supervisord.conf";
   app = pkgs.runCommand "app" {} ''
