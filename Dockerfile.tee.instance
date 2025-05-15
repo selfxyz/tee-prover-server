@@ -1,0 +1,50 @@
+FROM public.ecr.aws/docker/library/rust:1.81-bookworm AS chef-init-server
+
+RUN cargo install cargo-chef 
+
+WORKDIR /src/
+
+FROM chef-init-server AS planner-init-server
+COPY tee-monorepo/initialization/init-server/Cargo.toml tee-monorepo/initialization/init-server/Cargo.lock ./
+COPY tee-monorepo/initialization/init-server/src src/
+RUN cargo chef prepare  --recipe-path recipe.json
+
+FROM chef-init-server AS builder-init-server
+COPY --from=planner-init-server /src/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY tee-monorepo/initialization/init-server/Cargo.toml tee-monorepo/initialization/init-server/Cargo.lock ./
+COPY tee-monorepo/initialization/init-server/src src/
+
+RUN cargo build --locked --release
+
+FROM public.ecr.aws/docker/library/rust:1.81-bookworm AS chef-raw-proxy
+
+RUN cargo install cargo-chef 
+
+WORKDIR /src/
+
+FROM chef-raw-proxy AS planner-raw-proxy
+COPY tee-monorepo/networking/raw-proxy/Cargo.toml tee-monorepo/networking/raw-proxy/Cargo.lock ./
+COPY tee-monorepo/networking/raw-proxy/src src/
+RUN cargo chef prepare  --recipe-path recipe.json
+
+FROM chef-raw-proxy AS builder-raw-proxy
+COPY --from=planner-raw-proxy /src/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY tee-monorepo/networking/raw-proxy/Cargo.toml tee-monorepo/networking/raw-proxy/Cargo.lock ./
+COPY tee-monorepo/networking/raw-proxy/src src/
+
+RUN cargo build --locked --release
+
+FROM public.ecr.aws/docker/library/debian:12.6-slim@sha256:2ccc7e39b0a6f504d252f807da1fc4b5bcd838e83e4dec3e2f57b2a4a64e7214 AS nitro-enclave
+
+RUN apt-get update
+RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
+
+COPY --from=builder-init-server /src/target/release/self-init-server /usr/local/bin/
+COPY --from=builder-raw-proxy /src/target/release/vsock-to-ip-raw-outgoing /usr/local/bin/
+COPY --from=builder-raw-proxy /src/target/release/ip-to-vsock-raw-incoming /usr/local/bin/
+
+WORKDIR /
+
+CMD ["/usr/local/bin/init-server"]
