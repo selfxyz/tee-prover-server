@@ -43,13 +43,9 @@ sort_folders() {
         local CIRCUIT_NAME="${circuit%%:*}_cpp"
         local SIZE="${circuit##*:}"
 
-        echo $CIRCUIT_NAME $SIZE
         if [[ -d "$CATEGORY_DIR/$CIRCUIT_NAME" ]]; then
-            echo "------------"
-            echo "$CATEGORY_DIR/$CIRCUIT_NAME" "$CATEGORY_DIR/$SIZE/"
             mv "$CATEGORY_DIR/$CIRCUIT_NAME" "$CATEGORY_DIR/$SIZE/"
         fi
-        echo "00000000000000000000000000000000000000000000000000000"
     done
 
     # Move all remaining folders into small

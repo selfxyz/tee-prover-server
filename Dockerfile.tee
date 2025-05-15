@@ -37,17 +37,11 @@ RUN chown root:root /usr/local/bin/start.sh
 RUN chmod 755 /usr/local/bin/start.sh
 
 WORKDIR /
-# COPY artifact.zip artifact.zip
-# RUN mkdir /circuits
-# RUN unzip artifact.zip -d /all-circuits
 
 ARG SIZE_FILTER=${SIZE_FILTER}
 ARG PROOFTYPE=${PROOFTYPE}
 
 COPY ./circuits/$PROOFTYPE/$SIZE_FILTER /circuits
-
-# RUN mv /all-circuits/$PROOFTYPE/*_cpp /circuits && \
-#     rm -rf /artifact.zip /all-circuits
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
@@ -55,12 +49,5 @@ COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
 COPY circuit_eliminator.sh circuit_eliminator.sh 
 RUN chmod +x circuit_eliminator.sh
 RUN ./circuit_eliminator.sh $PROOFTYPE $SIZE_FILTER
-
-COPY split_zkeys.sh split_zkeys.sh
-RUN chmod +x split_zkeys.sh
-RUN ./split_zkeys.sh
-
-COPY merge_zkeys.sh /merge_zkeys.sh
-RUN chmod +x /merge_zkeys.sh
 
 ENTRYPOINT ["/usr/local/bin/tee-server"]

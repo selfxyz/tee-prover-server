@@ -8,6 +8,9 @@
   attestation-server,
   vet,
   kernels,
+  dockerType, 
+  dockerTag, 
+  dockerOrganization,
 }: let
   system = systemConfig.system;
   nitro = nitro-util.lib.${system};
@@ -57,7 +60,7 @@ in {
     nsmKo = nsmKo;
     cmdline = builtins.readFile nitro.blobs.${eifArch}.cmdLine;
 
-    entrypoint = "/app/setup.sh";
+    entrypoint = "/app/setup.sh ${dockerOrganization}/${dockerType}:${dockerTag}";
     env = "";
     copyToRoot = pkgs.buildEnv {
       name = "image-root";

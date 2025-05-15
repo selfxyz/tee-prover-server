@@ -1,17 +1,27 @@
 name: Deploy workflow
 on:
   workflow_dispatch:
+    inputs: 
+      proofType:
+        description: "Proof type"
+        required: true
+        type: string
+      size:
+        description: "Size"
+        required: true
+        type: string
+      tag: 
+        description: "Tag"
+        required: true
+        type: string
   push:
     branches:
       - main
       - stg
-  pull_request: 
-    branches: 
-      - stg
 
 jobs:
   prod:
-    uses: ./.github/workflows/artifacts.yml
+    uses: ./.github/workflows/image.yml
     secrets: inherit
     if: github.ref == 'refs/heads/main'
     with:
@@ -20,7 +30,7 @@ jobs:
       tag: "latest"
 
   stg:
-    uses: ./.github/workflows/artifacts.yml
+    uses: ./.github/workflows/image.yml
     secrets: inherit
     if: github.event_name == 'pull_request' && github.base_ref == 'stg' || github.ref == 'refs/heads/stg'
     with:

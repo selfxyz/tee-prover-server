@@ -1,0 +1,3 @@
+sudo ./target/release/self-init-server --vsock-addr 3:1300 --init-params-path ./.env 
+sudo ./target/release/ip-to-vsock-raw-incoming --vsock-addr 7:1200 --queue-num 0
+sudo ./target/release/vsock-to-ip-raw-outgoing --vsock-addr 3:1200

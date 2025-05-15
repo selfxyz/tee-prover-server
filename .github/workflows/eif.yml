@@ -1,0 +1,45 @@
+name: OpenPassport CI/CD
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub Actions environment
+        required: true
+        type: string
+      proofType:
+        description: The proof type
+        required: true
+        type: string
+      size:
+        description: The size
+        required: true
+        type: string
+      tag:
+        description: The tag
+        required: true
+        type: string
+jobs: 
+  deploy:
+    runs-on: [self-hosted]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+    # install nix
+    - name: Install Nix
+      run: | 
+        curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
+          sh -s -- install
+
+      - name: Build EIFs
+        run: |
+          ./build_eif.sh ${{ inputs.tag }}
+
+      - name: Upload EIFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: eif
+          path: result

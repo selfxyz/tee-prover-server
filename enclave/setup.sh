@@ -1,5 +1,12 @@
 #!/bin/sh
 
+if [ -z "$1" ]; then
+    echo "Error: Expected <PROOFTYPE>:<SIZE_FILTER> as argument"
+    exit 1
+fi
+
+IMAGE_NAME=$1
+
 set -e
 
 # query ip of instance and store
@@ -72,7 +79,7 @@ ulimit -s 500000
 source /app/.env
 
 /bin/docker run --network=host \
-    -p 8888:8888 nesopie/tester \
+    -p 8888:8888 $IMAGE_NAME \
     --server-address=0.0.0.0:8888 \
     --database-url=$DATABASE_URL \
     --circuit-folder=/circuits \

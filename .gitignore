@@ -5,7 +5,7 @@
 /initialization/init-server/.env
 /networking/raw-proxy/target
 /tmp*
-/result
+/result*
 /circuits
 /relayer/node_modules
 zkeys*
