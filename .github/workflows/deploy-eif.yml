@@ -14,10 +14,6 @@ on:
         description: "Tag"
         required: true
         type: string
-  push:
-    branches:
-      - main
-      - stg
 
 jobs:
   prod:
@@ -31,7 +27,7 @@ jobs:
   stg:
     uses: ./.github/workflows/eif.yml
     secrets: inherit
-    if: github.event_name == 'pull_request' && github.base_ref == 'stg' || github.ref == 'refs/heads/stg'
+    if: github.ref == 'refs/heads/stg'
     with:
       environment: "STG"
       tag: "stg"

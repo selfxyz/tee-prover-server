@@ -28,7 +28,7 @@ jobs:
         with:
           submodules: recursive
           
-    # install nix
+    # Install Nix
     - name: Install Nix
       run: | 
         curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
@@ -43,3 +43,11 @@ jobs:
         with:
           name: eif
           path: result
+
+    - name: Build TEE instance Docker images
+      run: | 
+        ./build_docker_images.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.proofType }} ${{ inputs.tag }}
+
+    - name: Push TEE instance Docker images 
+      run: | 
+        ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance

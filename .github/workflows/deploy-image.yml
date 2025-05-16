@@ -32,7 +32,7 @@ jobs:
   stg:
     uses: ./.github/workflows/image.yml
     secrets: inherit
-    if: github.event_name == 'pull_request' && github.base_ref == 'stg' || github.ref == 'refs/heads/stg'
+    if: github.ref == 'refs/heads/stg'
     with:
       runner: "stg-runner"
       environment: "STG"

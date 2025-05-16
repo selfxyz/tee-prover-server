@@ -1,15 +1,6 @@
 #!/bin/bash
 
-# Define proof type and size as pairs
-PROOFS_SIZES=(
-    "register:small"
-    "register:medium"
-    "register:large"
-    "disclose:small"
-    "dsc:small"
-    "dsc:medium"
-    "dsc:large"
-)
+source constants.sh
 
 DOCKER_ORG=$1
 TAG=$2
@@ -23,8 +14,10 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
     IMAGE_NAME="${DOCKER_ORG}/tee-server-${PROOF}"
     [[ ${TARGET} == "instance" ]] && IMAGE_NAME+="-${TARGET}"
     [[ "$SIZE" != "small" ]] && IMAGE_NAME+="-${SIZE}"
+    DOCKERFILE="Dockerfile.tee"
+    [[ ${TARGET} == "instance" ]] && DOCKERFILE+=".instance"
 
-    BUILD_COMMANDS+=("sudo docker build --build-arg PROOFTYPE=$PROOF --build-arg SIZE_FILTER=$SIZE -f Dockerfile.tee --target=${TARGET} -t ${IMAGE_NAME}:${TAG} .")
+    BUILD_COMMANDS+=("sudo docker build --build-arg PROOFTYPE=$PROOF --build-arg SIZE_FILTER=$SIZE --build-arg TAG=${TAG} -f ${DOCKERFILE} -t ${IMAGE_NAME}:${TAG} .")
 done
 
 printf "%s\n" "${BUILD_COMMANDS[@]}" | xargs -I {} -P 2 bash -c "{}"

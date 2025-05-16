@@ -1,0 +1,34 @@
+#!/bin/bash
+
+PROOFS_SIZES=(
+    "register:small"
+    "register:medium"
+    "register:large"
+    "disclose:small"
+    "dsc:small"
+    "dsc:medium"
+    "dsc:large"
+)
+
+register_circuits=(
+  "register_sha512_sha512_sha512_ecdsa_secp521r1:large"
+  "register_sha512_sha512_sha512_ecdsa_brainpoolP512r1:large" 
+  "register_sha384_sha384_sha384_ecdsa_brainpoolP512r1:large" 
+  "register_sha256_sha256_sha256_ecdsa_brainpoolP384r1:medium" 
+  "register_sha256_sha256_sha256_ecdsa_secp384r1:medium" 
+  "register_sha384_sha384_sha384_ecdsa_brainpoolP384r1:medium" 
+  "register_sha384_sha384_sha384_ecdsa_secp384r1:medium"
+)
+
+dsc_circuits=(
+  "dsc_sha256_ecdsa_secp521r1:large"
+  "dsc_sha512_ecdsa_secp521r1:large"
+  "dsc_sha384_ecdsa_brainpoolP512r1:large" 
+  "dsc_sha512_ecdsa_brainpoolP512r1:large" 
+  "dsc_sha256_ecdsa_brainpoolP384r1:medium" 
+  "dsc_sha256_ecdsa_secp384r1:medium" 
+  "dsc_sha384_ecdsa_brainpoolP384r1:medium" 
+  "dsc_sha384_ecdsa_secp384r1:medium"
+)
+
+disclose_circuits=()
