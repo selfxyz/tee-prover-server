@@ -1,12 +1,5 @@
 #!/bin/sh
 
-if [ -z "$1" ]; then
-    echo "Error: Expected <PROOFTYPE>:<SIZE_FILTER> as argument"
-    exit 1
-fi
-
-IMAGE_NAME=$1
-
 set -e
 
 # query ip of instance and store

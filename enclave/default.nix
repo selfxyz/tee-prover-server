@@ -60,8 +60,8 @@ in {
     nsmKo = nsmKo;
     cmdline = builtins.readFile nitro.blobs.${eifArch}.cmdLine;
 
-    entrypoint = "/app/setup.sh ${dockerOrganization}/${dockerType}:${dockerTag}";
-    env = "";
+    entrypoint = "/app/setup.sh";
+    env = "IMAGE_NAME=${dockerOrganization}/${dockerType}:${dockerTag}";
     copyToRoot = pkgs.buildEnv {
       name = "image-root";
       paths = [app pkgs.busybox pkgs.nettools pkgs.iproute2 pkgs.iptables-legacy pkgs.ipset pkgs.cacert pkgs.docker];
