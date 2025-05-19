@@ -3,7 +3,7 @@ sudo dnf install aws-nitro-enclaves-cli-devel -y && \
 sudo usermod -aG ne ec2-user && \
 sudo usermod -aG docker ec2-user && \
 nitro-cli --version && \
-sudo sed -i "s/^memory_mib:.*/memory_mib: 15000/; s/^cpu_count:.*/cpu_count: 4/" /etc/nitro_enclaves/allocator.yaml && \
+sudo sed -i "s/^memory_mib:.*/memory_mib: 50000/; s/^cpu_count:.*/cpu_count: 4/" /etc/nitro_enclaves/allocator.yaml && \
 sudo systemctl enable --now nitro-enclaves-allocator.service && \
 sudo systemctl enable --now docker
 
