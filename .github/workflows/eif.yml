@@ -47,6 +47,7 @@ jobs:
           name: eif
           path: result
 
+    # build and push the TEE instance Docker image
     - name: Build TEE instance Docker images
       run: | 
         ./build_docker_images.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.proofType }} ${{ inputs.tag }}

@@ -15,6 +15,8 @@ use crate::{generator::file_generator::FileGenerator, types::HelloResponse};
 
 #[rpc(server, namespace = "openpassport")]
 pub trait Rpc {
+    #[method(name = "health")]
+    async fn health(&self) -> ResponsePayload<'static, String>;
     #[method(name = "hello")]
     async fn hello(
         &self,
@@ -66,6 +68,10 @@ impl RpcServerImpl {
 
 #[async_trait]
 impl RpcServer for RpcServerImpl {
+    async fn health(&self) -> ResponsePayload<'static, String> {
+        ResponsePayload::success("OK".to_string())
+    }
+
     async fn hello(
         &self,
         user_pubkey: Vec<u8>,

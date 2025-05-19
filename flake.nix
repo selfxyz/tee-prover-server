@@ -37,7 +37,8 @@
         attestation-server = tee-monorepo.packages.x86_64-linux.attestation-server;
         vet = tee-monorepo.packages.x86_64-linux.vet;
         kernels = tee-monorepo.packages.x86_64-linux.tuna;
-        dockerOrganization = "selfdotxyz";
+        # TODO: change to selfdotxyz after testing
+        dockerOrganization = "nesopie";
       };
 
       dockerVariants = [
