@@ -32,11 +32,6 @@ jobs:
         run: | 
           git submodule update --init
 
-      - name: Install Nix
-        run: | 
-        curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
-          sh -s -- install
-
       - name: Build EIFs
       - uses: DeterminateSystems/nix-installer-action@main
         run: |
