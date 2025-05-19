@@ -1,0 +1,63 @@
+name: Deploy EIFs and TEE instance images
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub Actions environment
+        required: true
+        type: string
+      proofType:
+        description: The proof type
+        required: true
+        type: string
+      size:
+        description: The size
+        required: true
+        type: string
+      tag:
+        descriptfion: The tag
+        required: true
+        type: string
+jobs: 
+  deploy:
+    runs-on: [self-hosted]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install submodules
+        run: | 
+          git submodule update --init
+
+      - name: Install Nix
+        run: | 
+        curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
+          sh -s -- install
+
+      - name: Build EIFs
+      - uses: DeterminateSystems/nix-installer-action@main
+        run: |
+          ./build_eif.sh ${{ inputs.tag }}
+
+      - name: Upload EIFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: eif
+          path: result
+
+    # build and push the TEE instance Docker image
+    - name: Build TEE instance Docker images
+      if: inputs.proofType == 'all'
+      run: | 
+        ./build_docker_images.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
+    - name: Build TEE instance Docker image
+      if: inputs.proofType != 'all'
+      run: | 
+        sudo docker build --build-arg PROOFTYPE=${{ inputs.proofType }} --build-arg SIZE_FILTER=${{ inputs.size }} --build-arg TAG=${{ inputs.tag }} -f Dockerfile.tee.instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-${{ inputs.proofType }}-${{ inputs.size }}-instance:${{ inputs.tag }} .
+
+    - name: Push TEE instance Docker images 
+      run: | 
+        ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance

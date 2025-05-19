@@ -1,23 +1,27 @@
-name: OpenPassport CI/CD
+name: Deploy TEE images
 on:
   workflow_call:
     inputs:
-      runner:
-        description: The runner
-        required: true
-        type: string
       environment:
         description: The GitHub Actions environment
+        required: true
+        type: string
+      proofType:
+        description: The proof type
+        required: true
+        type: string
+      size:
+        description: The size
         required: true
         type: string
       tag:
         description: The tag
         required: true
         type: string
-
+      
 jobs:
-  prod:
-    runs-on: [self-hosted, "${{ inputs.runner }}"]
+  deploy:
+    runs-on: [self-hosted]
 
     steps:
       - name: Checkout Repository
@@ -43,6 +47,12 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -o artifact.zip \
             "$ARTIFACT_URL"
+
+      - name: Sort circuits
+        run: | 
+          unzip artifact.zip -d ./circuits/
+          chmod +x sort_circuits.sh
+          ./sort_circuits.sh
 
       - name: Login to AWS
         run: |
@@ -75,38 +85,21 @@ jobs:
           sudo docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push Docker enclave images
+        if: inputs.proofType == null
+        run: |
+          chmod +x ./build_docker_images.sh
+          ./build_docker_images.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
+      
+      - name: Build and push Docker enclave image
+        if: inputs.proofType != null
         run: |
           chmod +x ./build_docker.sh
-          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
+          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.proofType }} ${{ inputs.size }} ${{ inputs.tag }}
 
       - name: Cleanup zkeys
         run: rm -rf zkeys*
 
-      - name: Build eifs
-        run: |
-          mkdir measurements && sudo chmod 777 measurements
-          touch measurements/register.log        && sudo chmod 777 measurements/register.log
-          touch measurements/register-medium.log && sudo chmod 777 measurements/register-medium.log
-          touch measurements/register-large.log  && sudo chmod 777 measurements/register-large.log
-          touch measurements/disclose.log        && sudo chmod 777 measurements/disclose.log
-          touch measurements/dsc.log             && sudo chmod 777 measurements/dsc.log
-          touch measurements/dsc-medium.log      && sudo chmod 777 measurements/dsc-medium.log
-          touch measurements/dsc-large.log       && sudo chmod 777 measurements/dsc-large.log
-          chmod +x build_eif.sh
-          ./build_eif.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
-
-      - name: Build and push Docker instance images
-        run: |
-          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
-
       - name: Push images
         run: |
           chmod +x push_docker.sh
-          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} 
-          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: measurements
-          path: measurements
+          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }}
