@@ -1,4 +1,4 @@
-name: OpenPassport CI/CD
+name: Deploy TEE images
 on:
   workflow_call:
     inputs:
@@ -85,13 +85,13 @@ jobs:
           sudo docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push Docker enclave images
-        if: inputs.proofType == null && inputs.size == null && inputs.tag == null
+        if: inputs.proofType == null
         run: |
           chmod +x ./build_docker_images.sh
           ./build_docker_images.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
       
       - name: Build and push Docker enclave image
-        if: inputs.proofType != null && inputs.size != null && inputs.tag != null
+        if: inputs.proofType != null
         run: |
           chmod +x ./build_docker.sh
           ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.proofType }} ${{ inputs.size }} ${{ inputs.tag }}

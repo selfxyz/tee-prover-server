@@ -61,7 +61,7 @@ in {
     cmdline = builtins.readFile nitro.blobs.${eifArch}.cmdLine;
 
     entrypoint = "/app/setup.sh";
-    env = "IMAGE_NAME=${dockerOrganization}/${dockerType}:${dockerTag}";
+    env = "IMAGE_NAME=${dockerOrganization}/tee-server-${dockerType}:${dockerTag}";
     copyToRoot = pkgs.buildEnv {
       name = "image-root";
       paths = [app pkgs.busybox pkgs.nettools pkgs.iproute2 pkgs.iptables-legacy pkgs.ipset pkgs.cacert pkgs.docker];

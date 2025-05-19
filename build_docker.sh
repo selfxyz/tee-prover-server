@@ -12,6 +12,6 @@ SIZE=$3
 TAG=$4
 
 IMAGE_NAME="${DOCKER_ORG}/tee-server-${PROOF}"
-[[ "$SIZE" != "small" ]] && IMAGE_NAME+="-${SIZE}"
+IMAGE_NAME+="-${SIZE}"
 
 sudo docker build --build-arg PROOFTYPE=$PROOF --build-arg SIZE_FILTER=$SIZE -f Dockerfile.tee -t ${IMAGE_NAME}:${TAG} .")

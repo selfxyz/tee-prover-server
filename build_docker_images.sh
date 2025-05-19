@@ -12,8 +12,8 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
     SIZE="${ITEM##*:}"   
 
     IMAGE_NAME="${DOCKER_ORG}/tee-server-${PROOF}"
+    IMAGE_NAME+="-${SIZE}"
     [[ ${TARGET} == "instance" ]] && IMAGE_NAME+="-${TARGET}"
-    [[ "$SIZE" != "small" ]] && IMAGE_NAME+="-${SIZE}"
     DOCKERFILE="Dockerfile.tee"
     [[ ${TARGET} == "instance" ]] && DOCKERFILE+=".instance"
 
