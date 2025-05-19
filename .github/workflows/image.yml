@@ -2,10 +2,6 @@ name: Deploy TEE images
 on:
   workflow_call:
     inputs:
-      environment:
-        description: The GitHub Actions environment
-        required: true
-        type: string
       proofType:
         description: The proof type
         required: true
