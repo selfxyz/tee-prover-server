@@ -38,6 +38,7 @@ jobs:
           sh -s -- install
 
       - name: Build EIFs
+      - uses: DeterminateSystems/nix-installer-action@main
         run: |
           ./build_eif.sh ${{ inputs.tag }}
 

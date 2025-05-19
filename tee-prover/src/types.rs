@@ -36,6 +36,8 @@ pub enum EndpointType {
     Https,
     StagingCelo,
     StagingHttps,
+    TestCelo,
+    TestHttps,
 }
 
 #[derive(Deserialize, Clone)]
