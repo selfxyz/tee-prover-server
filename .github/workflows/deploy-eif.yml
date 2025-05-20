@@ -14,6 +14,10 @@ on:
         description: "Tag"
         required: true
         type: string
+  push:
+    branches:
+      - main
+      - stg
 
 jobs:
   prod:
