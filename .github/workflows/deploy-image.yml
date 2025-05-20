@@ -36,4 +36,4 @@ jobs:
     with:
       proofType: "all"
       size: "dummy"
-      tag: "stg"
+      tag: "staging"

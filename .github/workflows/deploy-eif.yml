@@ -27,7 +27,6 @@ jobs:
     with:
       proofType: "all"
       size: "dummy"
-      environment: "PRD"
       tag: "latest"
 
   stg:
@@ -37,6 +36,5 @@ jobs:
     with:
       proofType: "all"
       size: "dummy"
-      environment: "STG"
-      tag: "stg"
+      tag: "staging"
       
