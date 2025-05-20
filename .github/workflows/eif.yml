@@ -21,8 +21,7 @@ jobs:
     steps:
       - name: Remove existing EIFs
         run: | 
-          echo $(pwd)
-          # cd tee-prover-server && sudo rm -rf result tmp-result && cd ..
+          sudo rm -rf result tmp-result
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -38,7 +37,6 @@ jobs:
       - name: Build EIFs
         run: |
           chmod +x build_eif.sh
-          sudo rm -rf result tmp-result
           ./build_eif.sh ${{ inputs.tag }}
 
       - name: Upload EIFs
