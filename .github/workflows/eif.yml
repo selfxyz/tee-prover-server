@@ -32,8 +32,9 @@ jobs:
         run: | 
           git submodule update --init
 
-      - name: Build EIFs
       - uses: DeterminateSystems/nix-installer-action@main
+      
+      - name: Build EIFs
         run: |
           ./build_eif.sh ${{ inputs.tag }}
 
