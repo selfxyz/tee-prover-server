@@ -32,6 +32,7 @@ jobs:
       
       - name: Build EIFs
         run: |
+          chmod +x build_eif.sh
           ./build_eif.sh ${{ inputs.tag }}
 
       - name: Upload EIFs
@@ -44,6 +45,7 @@ jobs:
       - name: Build TEE instance Docker images
         if: inputs.proofType == 'all'
         run: | 
+          chmod +x build_docker_images.sh
           ./build_docker_images.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
 
       - name: Build TEE instance Docker image
@@ -53,4 +55,5 @@ jobs:
 
       - name: Push TEE instance Docker images 
         run: | 
+          chmod +x push_docker.sh
           ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
