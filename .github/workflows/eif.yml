@@ -28,7 +28,7 @@ jobs:
         run: | 
           git submodule update --init
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/determinate-nix-action@v3
       
       - name: Build EIFs
         run: |
