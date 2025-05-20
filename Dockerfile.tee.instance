@@ -38,9 +38,6 @@ RUN cargo build --locked --release
 
 FROM docker.io/library/amazonlinux:2@sha256:b1b123fdcccab612861866f6e6d10823b2aee22357f10f27a66044207ccc3c89 AS instance_full_image
 
-RUN apt-get update
-RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
-
 # Install packages
 #
 RUN amazon-linux-extras install aws-nitro-enclaves-cli && \
