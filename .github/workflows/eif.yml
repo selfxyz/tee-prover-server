@@ -19,6 +19,10 @@ jobs:
     runs-on: [self-hosted]
 
     steps:
+      - name: Remove existing EIFs
+        run: | 
+          cd tee-prover-server && sudo rm -rf result tmp-result && cd ..
+
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
