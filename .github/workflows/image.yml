@@ -22,7 +22,6 @@ jobs:
     steps:
       - name: Remove existing EIFs
         run: | 
-          echo $(pwd)
           sudo rm -rf result tmp-result
 
       - name: Checkout Repository
