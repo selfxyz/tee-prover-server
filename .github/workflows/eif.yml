@@ -54,6 +54,10 @@ jobs:
         run: | 
           sudo docker build --build-arg PROOFTYPE=${{ inputs.proofType }} --build-arg SIZE_FILTER=${{ inputs.size }} --build-arg TAG=${{ inputs.tag }} -f Dockerfile.tee.instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-${{ inputs.proofType }}-${{ inputs.size }}-instance:${{ inputs.tag }} .
 
+      - name: Login to Docker Hub
+        run: |
+          sudo docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+
       - name: Push TEE instance Docker images 
         run: | 
           chmod +x push_docker.sh
