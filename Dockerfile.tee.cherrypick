@@ -1,0 +1,39 @@
+FROM public.ecr.aws/docker/library/rust:1.81-bookworm AS chef
+
+RUN cargo install cargo-chef 
+
+WORKDIR /src/
+
+FROM chef AS planner
+COPY tee-prover/Cargo.toml tee-prover/Cargo.lock ./
+COPY tee-prover/src src/
+RUN cargo chef prepare  --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY tee-prover/Cargo.toml tee-prover/Cargo.lock ./
+COPY tee-prover/src src/
+
+RUN cargo build --locked --release --features "cherrypick"
+
+FROM public.ecr.aws/docker/library/debian:12.6-slim@sha256:2ccc7e39b0a6f504d252f807da1fc4b5bcd838e83e4dec3e2f57b2a4a64e7214 AS nitro-enclave
+
+RUN apt-get update
+RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
+
+WORKDIR /rapidsnark
+COPY ./rapidsnark .
+RUN ./build_gmp.sh host && \
+    mkdir build_prover && cd build_prover && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=../package && \
+    make -j16 && make install
+
+WORKDIR /
+
+COPY ./circuits /circuits
+
+COPY --from=builder /src/target/release/tee-server /usr/local/bin/
+COPY ./zkeys /zkeys
+
+ENTRYPOINT ["/usr/local/bin/tee-server"]
