@@ -56,6 +56,8 @@
         { dockerType = "dsc-large"; tag = "latest"; }
         { dockerType = "disclose-small"; tag = "staging"; }
         { dockerType = "disclose-small"; tag = "latest"; }
+        { dockerType = "cherrypick"; tag = "staging"; }
+        { dockerType = "cherrypick"; tag = "latest"; }
       ];
 
       enclaves = builtins.listToAttrs (builtins.map (variant:

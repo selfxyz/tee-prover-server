@@ -171,8 +171,11 @@ impl RpcServer for RpcServerImpl {
                     allowed_proof_type = "register";
                 } else if cfg!(feature = "dsc") {
                     allowed_proof_type = "dsc";
-                } else {
+                } else if cfg!(feature = "disclose") {
                     allowed_proof_type = "disclose";
+                } else {
+                    //else the cherry pick flag is allowed
+                    allowed_proof_type = "register, dsc, disclose";
                 }
 
                 let invalid_proof_type_response =
@@ -183,20 +186,20 @@ impl RpcServer for RpcServerImpl {
                     ));
 
                 match submit_request.proof_request_type {
-                    ProofRequest::Register { .. } => {
-                        if !cfg!(feature = "register") {
+                    ProofRequest::Register { .. } | ProofRequest::RegisterId { .. } => {
+                        if !cfg!(feature = "register") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
-                    ProofRequest::Dsc { .. } => {
-                        if !cfg!(feature = "dsc") {
+                    ProofRequest::Dsc { .. } | ProofRequest::DscId { .. } => {
+                        if !cfg!(feature = "dsc") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
-                    ProofRequest::Disclose { .. } => {
-                        if !cfg!(feature = "disclose") {
+                    ProofRequest::Disclose { .. } | ProofRequest::DiscloseId { .. } => {
+                        if !cfg!(feature = "disclose") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
@@ -236,6 +239,21 @@ impl RpcServer for RpcServerImpl {
                 ..
             } => (endpoint_type.as_ref(), endpoint.as_ref()),
             ProofRequest::Disclose {
+                endpoint_type,
+                endpoint,
+                ..
+            } => (Some(endpoint_type), Some(endpoint)),
+            ProofRequest::RegisterId {
+                endpoint_type,
+                endpoint,
+                ..
+            } => (endpoint_type.as_ref(), endpoint.as_ref()),
+            ProofRequest::DscId {
+                endpoint_type,
+                endpoint,
+                ..
+            } => (endpoint_type.as_ref(), endpoint.as_ref()),
+            ProofRequest::DiscloseId {
                 endpoint_type,
                 endpoint,
                 ..
