@@ -20,4 +20,4 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
     BUILD_COMMANDS+=("sudo docker build --build-arg PROOFTYPE=$PROOF --build-arg SIZE_FILTER=$SIZE --build-arg TAG=${TAG} -f ${DOCKERFILE} -t ${IMAGE_NAME}:${TAG} .")
 done
 
-printf "%s\n" "${BUILD_COMMANDS[@]}" | xargs -I {} -P 2 bash -c "{}"
+printf "%s\n" "${BUILD_COMMANDS[@]}" | xargs -I {} -P 1 bash -c "{}"
