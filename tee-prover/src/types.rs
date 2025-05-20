@@ -110,9 +110,9 @@ impl Into<ProofType> for &ProofRequest {
             ProofRequest::Register { .. } => ProofType::Register,
             ProofRequest::Dsc { .. } => ProofType::Dsc,
             ProofRequest::Disclose { .. } => ProofType::Disclose,
-            ProofRequest::RegisterId { .. } => ProofType::Register,
-            ProofRequest::DscId { .. } => ProofType::Dsc,
-            ProofRequest::DiscloseId { .. } => ProofType::Disclose,
+            ProofRequest::RegisterId { .. } => ProofType::RegisterId,
+            ProofRequest::DscId { .. } => ProofType::DscId,
+            ProofRequest::DiscloseId { .. } => ProofType::DiscloseId,
         }
     }
 }
