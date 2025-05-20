@@ -21,3 +21,14 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
 done
 
 wait "${pids[@]}"
+
+mkdir ./tmp-result
+for DIR in $(find ./result/* -type l); do
+    type=$(basename $DIR)
+    REAL_PATH=$(realpath $DIR)
+    unlink $DIR
+    echo $REAL_PATH $type
+    cp -r $REAL_PATH ./tmp-result/$type
+done
+
+cp -r tmp-result/* ./result/

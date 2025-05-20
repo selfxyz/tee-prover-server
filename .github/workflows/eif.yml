@@ -33,6 +33,7 @@ jobs:
       - name: Build EIFs
         run: |
           chmod +x build_eif.sh
+          sudo rm -rf result tmp-result
           ./build_eif.sh ${{ inputs.tag }}
 
       - name: Upload EIFs
