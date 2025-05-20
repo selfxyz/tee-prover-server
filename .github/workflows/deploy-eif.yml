@@ -25,6 +25,7 @@ jobs:
     secrets: inherit
     if: github.ref == 'refs/heads/main'
     with:
+      proofType: "all"
       environment: "PRD"
       tag: "latest"
 
@@ -33,6 +34,7 @@ jobs:
     secrets: inherit
     if: github.ref == 'refs/heads/stg'
     with:
+      proofType: "all"
       environment: "STG"
       tag: "stg"
       
