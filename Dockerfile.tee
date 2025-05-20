@@ -36,8 +36,8 @@ ARG SIZE_FILTER=${SIZE_FILTER}
 ARG PROOFTYPE=${PROOFTYPE}
 
 COPY ./circuits/$PROOFTYPE/$SIZE_FILTER /circuits
+COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
-COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
 
 ENTRYPOINT ["/usr/local/bin/tee-server"]

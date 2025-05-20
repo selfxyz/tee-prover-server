@@ -32,8 +32,8 @@ RUN ./build_gmp.sh host && \
 WORKDIR /
 
 COPY ./circuits /circuits
+COPY ./zkeys /zkeys
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
-COPY ./zkeys /zkeys
 
 ENTRYPOINT ["/usr/local/bin/tee-server"]
