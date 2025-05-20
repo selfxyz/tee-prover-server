@@ -26,6 +26,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     with:
       proofType: "all"
+      size: "dummy"
       environment: "PRD"
       tag: "latest"
 
@@ -35,6 +36,7 @@ jobs:
     if: github.ref == 'refs/heads/stg'
     with:
       proofType: "all"
+      size: "dummy"
       environment: "STG"
       tag: "stg"
       
