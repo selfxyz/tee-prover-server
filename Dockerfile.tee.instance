@@ -81,7 +81,7 @@ RUN \
     mkdir -p /ne-deps/run/nitro_enclaves && \
     mkdir -p /ne-deps/var/log/nitro_enclaves && \
     cp -rf /usr/local/ /ne-deps/usr/ && \
-    cp -rf /usr/share/nitro_enclaves/ /ne-deps/usr/share/ && \
+    cp -rf /usr/share/nitro_enclaves/ /ne-deps/usr/share/ 
     # cp -f /etc/nitro_enclaves/vsock-proxy.yaml /ne-deps/etc/nitro_enclaves
 
 FROM amazonlinux:2 as instance
