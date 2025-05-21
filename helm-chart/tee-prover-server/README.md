@@ -25,8 +25,10 @@ The prover server allows a seamless interface to request proofs from a server. I
 | affinity | object | `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"labelSelector":{"matchLabels":{"app":"tee-server-register-2"}},"topologyKey":"kubernetes.io/hostname"}]}}` | Pod affinity and anti-affinity rules |
 | containerArgs | string | `"chmod +x /usr/bin/socat\n/usr/bin/socat tcp-listen:8888,fork,reuseaddr vsock-connect:7:8888 & /usr/bin/socat vsock-listen:8889,fork,reuseaddr TCP4:{{ .Values.db.url }}:5432 &\nEIF_PATH=/home/tee-server.eif ENCLAVE_CPU_COUNT=16 ENCLAVE_MEMORY_SIZE=100000\nnitro-cli run-enclave --enclave-cid=7 --cpu-count $ENCLAVE_CPU_COUNT --memory $ENCLAVE_MEMORY_SIZE --eif-path $EIF_PATH &\nyum update -y -q >/dev/null 2>&1 && yum install -y -q procps >/dev/null 2>&1\nsleep 300\necho \"postgres://{{ .Values.db.user }}:{{ .Values.db.password }}@host:5432/postgres\" | /usr/bin/socat -t 1 - VSOCK-CONNECT:7:8890 &\ntail -f /dev/null\n"` | Shell script arguments passed to the container |
 | containerCommand | list | `["/bin/sh","-c"]` | Command to run in the container |
+| db | object | `{"password":"postgres","url":"localhost","user":"postgres"}` | Database connection configuration |
 | deploymentAnnotations | object | `{}` | Annotations to add to the deployment resource |
 | dnsPolicy | string | `"ClusterFirst"` | DNS policy for the pod |
+| envs | list | `[]` | Environment variables to set in the container |
 | fullnameOverride | string | `""` | Override the full name of the chart |
 | hostPID | bool | `true` | Run pod in the host's PID namespace |
 | image | object | `{"pullPolicy":"Always","repository":"selfdotxyz/tee-server-register-instance-medium","tag":"latest"}` | Docker image configuration |

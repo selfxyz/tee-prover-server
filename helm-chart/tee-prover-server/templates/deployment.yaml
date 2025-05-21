@@ -45,6 +45,10 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
         name: tee-server-register
+        {{- with .Values.envs }}
+        env:
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         ports:
         - containerPort: 8888
           protocol: TCP
