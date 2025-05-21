@@ -144,7 +144,20 @@ containerArgs: |
   echo "postgres://{{ .Values.db.user }}:{{ .Values.db.password }}@host:5432/postgres" | /usr/bin/socat -t 1 - VSOCK-CONNECT:7:8890 &
   tail -f /dev/null
 
+# -- Database connection configuration
+db:
+  url: localhost
+  user: postgres
+  password: postgres
+
 # -- Command to run in the container
 containerCommand:
   - /bin/sh
   - -c
+
+# -- Environment variables to set in the container
+envs: []
+# Example:
+# envs:
+#   - name: EXAMPLE_ENV
+#     value: example-value
