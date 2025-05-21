@@ -97,6 +97,5 @@ ARG SIZE_FILTER=${SIZE_FILTER}
 ARG TAG=${TAG}
 
 COPY ./result/$PROOFTYPE-$SIZE_FILTER-$TAG/image.eif /home/tee-server.eif
-# COPY instance-deps/run.sh /home
 
 CMD ["/usr/local/bin/init-server"]

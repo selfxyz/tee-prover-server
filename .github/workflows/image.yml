@@ -54,11 +54,14 @@ jobs:
           chmod +x sort_circuits.sh
           ./sort_circuits.sh
 
+      # don't install if the aws cli is already installed
       - name: Install aws cli
         run: | 
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip awscliv2.zip
-          sudo ./aws/install
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
 
       - name: Login to AWS
         run: |
