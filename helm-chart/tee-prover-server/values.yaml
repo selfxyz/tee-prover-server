@@ -135,18 +135,18 @@ strategy:
 
 # -- Shell script arguments passed to the container
 containerArgs: |
-  chmod +x /usr/bin/socat
-  /usr/bin/socat tcp-listen:8888,fork,reuseaddr vsock-connect:7:8888 & /usr/bin/socat vsock-listen:8889,fork,reuseaddr TCP4:{{ .Values.db.url }}:5432 &
+  echo "DATABASE_URL=postgres://{{ .Values.db.user }}@{{ .Values.db.password }}:{{ .Values.db.host }}" >> .env
+  sudo iptables -A INPUT -p tcp -i ens5 --dport 1024:61439 -j NFQUEUE --queue-num 0 # iptables
+  sudo /usr/local/bin/self-init-server --vsock-addr 3:1300 --init-params-path .env #init server for .env vars
+  sudo /usr/local/bin/ip-to-vsock-raw-incoming --vsock-addr 7:1200 --queue-num 0 #ip to vsock proxy 
+  sudo /usr/local/bin/vsock-to-ip-raw-outgoing --vsock-addr 3:1200 #vsock to ip proxy
   EIF_PATH=/home/tee-server.eif ENCLAVE_CPU_COUNT=16 ENCLAVE_MEMORY_SIZE=100000
   nitro-cli run-enclave --enclave-cid=7 --cpu-count $ENCLAVE_CPU_COUNT --memory $ENCLAVE_MEMORY_SIZE --eif-path $EIF_PATH &
-  yum update -y -q >/dev/null 2>&1 && yum install -y -q procps >/dev/null 2>&1
-  sleep 300
-  echo "postgres://{{ .Values.db.user }}:{{ .Values.db.password }}@host:5432/postgres" | /usr/bin/socat -t 1 - VSOCK-CONNECT:7:8890 &
-  tail -f /dev/null
+  tail -f /dev/null #tail to keep the container running
 
 # -- Database connection configuration
 db:
-  url: localhost
+  host: localhost
   user: postgres
   password: postgres
 
