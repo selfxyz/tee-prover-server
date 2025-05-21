@@ -1,0 +1,150 @@
+---
+# Default values for tee-prover-server Helm chart
+
+# -- Number of pod replicas to deploy
+replicas: 1
+
+# -- Docker image configuration
+image:
+  repository: selfdotxyz/tee-server-register-instance-medium
+  tag: latest
+  pullPolicy: Always
+
+# -- Override the name of the chart
+nameOverride: ""
+# -- Override the full name of the chart
+fullnameOverride: ""
+
+# -- Maximum time in seconds for a deployment to make progress
+progressDeadlineSeconds: 600
+# -- Number of old ReplicaSets to retain for rollback
+revisionHistoryLimit: 10
+# -- Annotations to add to the deployment resource
+deploymentAnnotations: {}
+# -- Annotations to add to the pod template
+podAnnotations: {}
+
+# -- Resource requests and limits for the container
+resources:
+  limits:
+    aws.ec2.nitro/nitro_enclaves: "4"
+    hugepages-1Gi: 120Gi
+  requests:
+    aws.ec2.nitro/nitro_enclaves: "4"
+    cpu: "3"
+    hugepages-1Gi: 120Gi
+
+# -- Pod affinity and anti-affinity rules
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app: tee-server-register-2
+        topologyKey: kubernetes.io/hostname
+
+# -- Security context for the container
+securityContext:
+  privileged: true
+
+# -- Node selector for scheduling pods to specific nodes
+nodeSelector:
+  alpha.eksctl.io/nodegroup-name: pop-group-r6a-24xlarge
+
+# -- Tolerations for scheduling pods on tainted nodes
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+
+# -- List of image pull secrets for private registries
+imagePullSecrets: []
+  # - name: dockerhub-secret
+
+# -- Liveness probe configuration for the container
+livenessProbe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - pgrep -f '^nitro-cli run-enclave' >/dev/null
+  failureThreshold: 5
+  initialDelaySeconds: 500
+  periodSeconds: 20
+  successThreshold: 1
+  timeoutSeconds: 1
+
+# -- Readiness probe configuration for the container
+readinessProbe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - pgrep -f '^nitro-cli run-enclave' >/dev/null
+  failureThreshold: 3
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  successThreshold: 1
+  timeoutSeconds: 1
+
+# -- Volumes to mount into the pod
+volumes:
+  - name: hugepage-1gi
+    emptyDir:
+      medium: HugePages-1Gi
+  - name: hugepage-2mi
+    emptyDir:
+      medium: HugePages-2Mi
+  - name: systemd-run
+    hostPath:
+      path: /run/systemd
+      type: Directory
+  - name: cgroup
+    hostPath:
+      path: /sys/fs/cgroup
+      type: DirectoryOrCreate
+
+# -- Volume mounts for the container
+volumeMounts:
+  - name: hugepage-1gi
+    mountPath: /dev/hugepages
+  - name: systemd-run
+    mountPath: /run/systemd
+  - name: cgroup
+    mountPath: /sys/fs/cgroup
+    readOnly: true
+
+# -- Time to wait before forcefully terminating the pod
+terminationGracePeriodSeconds: 30
+# -- Run pod in the host's PID namespace
+hostPID: true
+# -- Scheduler to use for the pod
+schedulerName: default-scheduler
+# -- DNS policy for the pod
+dnsPolicy: ClusterFirst
+# -- Pod restart policy
+restartPolicy: Always
+
+# -- Deployment update strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
+
+# -- Shell script arguments passed to the container
+containerArgs: |
+  chmod +x /usr/bin/socat
+  /usr/bin/socat tcp-listen:8888,fork,reuseaddr vsock-connect:7:8888 & /usr/bin/socat vsock-listen:8889,fork,reuseaddr TCP4:{{ .Values.db.url }}:5432 &
+  EIF_PATH=/home/tee-server.eif ENCLAVE_CPU_COUNT=16 ENCLAVE_MEMORY_SIZE=100000
+  nitro-cli run-enclave --enclave-cid=7 --cpu-count $ENCLAVE_CPU_COUNT --memory $ENCLAVE_MEMORY_SIZE --eif-path $EIF_PATH &
+  yum update -y -q >/dev/null 2>&1 && yum install -y -q procps >/dev/null 2>&1
+  sleep 300
+  echo "postgres://{{ .Values.db.user }}:{{ .Values.db.password }}@host:5432/postgres" | /usr/bin/socat -t 1 - VSOCK-CONNECT:7:8890 &
+  tail -f /dev/null
+
+# -- Command to run in the container
+containerCommand:
+  - /bin/sh
+  - -c
