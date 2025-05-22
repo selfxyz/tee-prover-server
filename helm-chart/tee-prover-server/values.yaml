@@ -170,3 +170,13 @@ serviceAccount:
   annotations: {}
   # The name of the service account to use. If not set and create is true, a name is generated using the fullname template
   name: ""
+
+# -- Service configuration
+service:
+  # Service type (e.g., ClusterIP, NodePort, LoadBalancer)
+  type: LoadBalancer
+  # Custom annotations for the service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+  # Set a specific clusterIP (optional, only for ClusterIP type)
+  clusterIP: ""
