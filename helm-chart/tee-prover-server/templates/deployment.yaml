@@ -33,9 +33,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-      - args:
-        - |
-          {{- tpl (toYaml .Values.containerArgs) $ | nindent 10 }}
+      - name: tee-server-register
+        args:
+          - |
+            {{- tpl .Values.containerArgs $ | nindent 12 }}
         command:
         {{- toYaml .Values.containerCommand | nindent 8 }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
@@ -44,7 +45,6 @@ spec:
         livenessProbe:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-        name: tee-server-register
         {{- with .Values.envs }}
         env:
         {{- toYaml . | nindent 8 }}
@@ -70,6 +70,7 @@ spec:
         volumeMounts:
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      serviceAccountName: {{ include "tee-prover-server.serviceAccountName" . }}
       dnsPolicy: {{ .Values.dnsPolicy | default "ClusterFirst" }}
       hostPID: {{ .Values.hostPID | default true }}
       {{- with .Values.imagePullSecrets }}

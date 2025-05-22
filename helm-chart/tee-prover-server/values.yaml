@@ -138,7 +138,7 @@ containerArgs: |
   echo "DATABASE_URL=postgres://{{ .Values.db.user }}@{{ .Values.db.password }}:{{ .Values.db.host }}" >> .env
   sudo iptables -A INPUT -p tcp -i ens5 --dport 1024:61439 -j NFQUEUE --queue-num 0 # iptables
   sudo /usr/local/bin/self-init-server --vsock-addr 3:1300 --init-params-path .env #init server for .env vars
-  sudo /usr/local/bin/ip-to-vsock-raw-incoming --vsock-addr 7:1200 --queue-num 0 #ip to vsock proxy 
+  sudo /usr/local/bin/ip-to-vsock-raw-incoming --vsock-addr 7:1200 --queue-num 0 #ip to vsock proxy
   sudo /usr/local/bin/vsock-to-ip-raw-outgoing --vsock-addr 3:1200 #vsock to ip proxy
   EIF_PATH=/home/tee-server.eif ENCLAVE_CPU_COUNT=16 ENCLAVE_MEMORY_SIZE=100000
   nitro-cli run-enclave --enclave-cid=7 --cpu-count $ENCLAVE_CPU_COUNT --memory $ENCLAVE_MEMORY_SIZE --eif-path $EIF_PATH &
@@ -161,3 +161,12 @@ envs: []
 # envs:
 #   - name: EXAMPLE_ENV
 #     value: example-value
+
+# -- Service account configuration
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use. If not set and create is true, a name is generated using the fullname template
+  name: ""
