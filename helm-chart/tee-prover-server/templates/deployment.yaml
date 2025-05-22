@@ -41,13 +41,28 @@ spec:
         {{- toYaml .Values.containerCommand | nindent 8 }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.image.pullPolicy | default "Always" }}
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "tee-prover-server.fullname" . }}-db
+              key: DB_HOST
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "tee-prover-server.fullname" . }}-db
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "tee-prover-server.fullname" . }}-db
+              key: DB_PASSWORD
+        {{- with .Values.envs }}
+        {{- toYaml .Values.envs | nindent 8 }}
+        {{- end }}
         {{- with .Values.livenessProbe }}
         livenessProbe:
           {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.envs }}
-        env:
-        {{- toYaml . | nindent 8 }}
         {{- end }}
         ports:
         - containerPort: 8888
