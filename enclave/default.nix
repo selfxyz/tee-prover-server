@@ -64,7 +64,7 @@ in {
     env = "IMAGE_NAME=${dockerOrganization}/tee-server-${dockerType}:${dockerTag}";
     copyToRoot = pkgs.buildEnv {
       name = "image-root";
-      paths = [app pkgs.busybox pkgs.nettools pkgs.iproute2 pkgs.iptables-legacy pkgs.ipset pkgs.cacert pkgs.docker];
+      paths = [app pkgs.busybox pkgs.nettools pkgs.iproute2 pkgs.iptables-legacy pkgs.iptables-nft pkgs.ipset pkgs.cacert pkgs.docker];
       pathsToLink = ["/bin" "/app" "/etc"];
     };
   };
