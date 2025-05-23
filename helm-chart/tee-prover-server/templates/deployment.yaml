@@ -87,7 +87,9 @@ spec:
         {{- end }}
       serviceAccountName: {{ include "tee-prover-server.serviceAccountName" . }}
       dnsPolicy: {{ .Values.dnsPolicy | default "ClusterFirst" }}
+      hostNetwork: {{ .Values.hostNetwork | default true }}
       hostPID: {{ .Values.hostPID | default true }}
+      hostIPC: {{ .Values.hostIPC | default true }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

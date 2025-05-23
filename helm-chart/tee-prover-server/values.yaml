@@ -117,8 +117,12 @@ volumeMounts:
 
 # -- Time to wait before forcefully terminating the pod
 terminationGracePeriodSeconds: 30
+# -- Host network configuration (if true, the pod will use the host's network namespace)
+hostNetwork: true
 # -- Run pod in the host's PID namespace
 hostPID: true
+# -- Run pod in the host's IPC namespace
+hostIPC: true
 # -- Scheduler to use for the pod
 schedulerName: default-scheduler
 # -- DNS policy for the pod
