@@ -109,6 +109,8 @@ volumes:
 volumeMounts:
   - name: hugepage-1gi
     mountPath: /dev/hugepages
+  - name: hugepage-2mi
+    mountPath: /dev/hugepages-2mi
   - name: systemd-run
     mountPath: /run/systemd
   - name: cgroup
