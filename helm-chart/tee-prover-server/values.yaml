@@ -35,13 +35,13 @@ resources:
     hugepages-1Gi: 120Gi
 
 # -- Pod affinity and anti-affinity rules
-affinity:
-  podAntiAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-      - labelSelector:
-          matchLabels:
-            app: tee-server-register-2
-        topologyKey: kubernetes.io/hostname
+affinity: {}
+  # podAntiAffinity:
+  #   requiredDuringSchedulingIgnoredDuringExecution:
+  #     - labelSelector:
+  #         matchLabels:
+  #           app: tee-server-register-2
+  #       topologyKey: kubernetes.io/hostname
 
 # -- Security context for the container
 securityContext:

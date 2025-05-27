@@ -22,7 +22,7 @@ The prover server allows a seamless interface to request proofs from a server. I
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| affinity | object | `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"labelSelector":{"matchLabels":{"app":"tee-server-register-2"}},"topologyKey":"kubernetes.io/hostname"}]}}` | Pod affinity and anti-affinity rules |
+| affinity | object | `{}` | Pod affinity and anti-affinity rules |
 | containerArgs | string | `"echo \"DATABASE_URL=postgres://${DB_USER}@${DB_PASSWORD}:${DB_HOST}\" >> .env\nsudo iptables -A INPUT -p tcp -i ens5 --dport 1024:61439 -j NFQUEUE --queue-num 0 # iptables\nsudo /usr/local/bin/self-init-server --vsock-addr 3:1300 --init-params-path .env #init server for .env vars\nsudo /usr/local/bin/ip-to-vsock-raw-incoming --vsock-addr 7:1200 --queue-num 0 #ip to vsock proxy\nsudo /usr/local/bin/vsock-to-ip-raw-outgoing --vsock-addr 3:1200 #vsock to ip proxy\nEIF_PATH=/home/tee-server.eif ENCLAVE_CPU_COUNT=16 ENCLAVE_MEMORY_SIZE=100000\nnitro-cli run-enclave --enclave-cid=7 --cpu-count $ENCLAVE_CPU_COUNT --memory $ENCLAVE_MEMORY_SIZE --eif-path $EIF_PATH &\ntail -f /dev/null #tail to keep the container running\n"` | Shell script arguments passed to the container |
 | containerCommand | list | `["/bin/sh","-c"]` | Command to run in the container |
 | db | object | `{"host":"localhost","password":"postgres","user":"postgres"}` | Database connection configuration |
