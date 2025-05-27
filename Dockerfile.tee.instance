@@ -36,15 +36,10 @@ COPY tee-monorepo/networking/raw-proxy/src src/
 
 RUN cargo build --locked --release
 
-# FROM docker.io/library/amazonlinux:2@sha256:b1b123fdcccab612861866f6e6d10823b2aee22357f10f27a66044207ccc3c89 AS instance_full_image
 FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 AS instance_full_image
 
 # Install packages
 #
-# RUN amazon-linux-extras install aws-nitro-enclaves-cli && \
-#     yum install aws-nitro-enclaves-cli-devel jq util-linux \
-#         unzip curl which file socat -y
-
 RUN dnf install -y \
     aws-nitro-enclaves-cli \
     aws-nitro-enclaves-cli-devel \
