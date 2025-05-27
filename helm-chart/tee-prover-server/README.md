@@ -23,13 +23,15 @@ The prover server allows a seamless interface to request proofs from a server. I
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"labelSelector":{"matchLabels":{"app":"tee-server-register-2"}},"topologyKey":"kubernetes.io/hostname"}]}}` | Pod affinity and anti-affinity rules |
-| containerArgs | string | `"echo \"DATABASE_URL=postgres://{{ .Values.db.user }}@{{ .Values.db.password }}:{{ .Values.db.host }}\" >> .env\nsudo iptables -A INPUT -p tcp -i ens5 --dport 1024:61439 -j NFQUEUE --queue-num 0 # iptables\nsudo /usr/local/bin/self-init-server --vsock-addr 3:1300 --init-params-path .env #init server for .env vars\nsudo /usr/local/bin/ip-to-vsock-raw-incoming --vsock-addr 7:1200 --queue-num 0 #ip to vsock proxy\nsudo /usr/local/bin/vsock-to-ip-raw-outgoing --vsock-addr 3:1200 #vsock to ip proxy\nEIF_PATH=/home/tee-server.eif ENCLAVE_CPU_COUNT=16 ENCLAVE_MEMORY_SIZE=100000\nnitro-cli run-enclave --enclave-cid=7 --cpu-count $ENCLAVE_CPU_COUNT --memory $ENCLAVE_MEMORY_SIZE --eif-path $EIF_PATH &\ntail -f /dev/null #tail to keep the container running\n"` | Shell script arguments passed to the container |
+| containerArgs | string | `"echo \"DATABASE_URL=postgres://${DB_USER}@${DB_PASSWORD}:${DB_HOST}\" >> .env\nsudo iptables -A INPUT -p tcp -i ens5 --dport 1024:61439 -j NFQUEUE --queue-num 0 # iptables\nsudo /usr/local/bin/self-init-server --vsock-addr 3:1300 --init-params-path .env #init server for .env vars\nsudo /usr/local/bin/ip-to-vsock-raw-incoming --vsock-addr 7:1200 --queue-num 0 #ip to vsock proxy\nsudo /usr/local/bin/vsock-to-ip-raw-outgoing --vsock-addr 3:1200 #vsock to ip proxy\nEIF_PATH=/home/tee-server.eif ENCLAVE_CPU_COUNT=16 ENCLAVE_MEMORY_SIZE=100000\nnitro-cli run-enclave --enclave-cid=7 --cpu-count $ENCLAVE_CPU_COUNT --memory $ENCLAVE_MEMORY_SIZE --eif-path $EIF_PATH &\ntail -f /dev/null #tail to keep the container running\n"` | Shell script arguments passed to the container |
 | containerCommand | list | `["/bin/sh","-c"]` | Command to run in the container |
 | db | object | `{"host":"localhost","password":"postgres","user":"postgres"}` | Database connection configuration |
 | deploymentAnnotations | object | `{}` | Annotations to add to the deployment resource |
 | dnsPolicy | string | `"ClusterFirst"` | DNS policy for the pod |
 | envs | list | `[]` | Environment variables to set in the container |
 | fullnameOverride | string | `""` | Override the full name of the chart |
+| hostIPC | bool | `true` | Run pod in the host's IPC namespace |
+| hostNetwork | bool | `true` | Host network configuration (if true, the pod will use the host's network namespace) |
 | hostPID | bool | `true` | Run pod in the host's PID namespace |
 | image | object | `{"pullPolicy":"Always","repository":"selfdotxyz/tee-server-register-instance-medium","tag":"latest"}` | Docker image configuration |
 | imagePullSecrets | list | `[]` | List of image pull secrets for private registries |
@@ -45,7 +47,14 @@ The prover server allows a seamless interface to request proofs from a server. I
 | revisionHistoryLimit | int | `10` | Number of old ReplicaSets to retain for rollback |
 | schedulerName | string | `"default-scheduler"` | Scheduler to use for the pod |
 | securityContext | object | `{"privileged":true}` | Security context for the container |
+| service | object | `{"annotations":{"service.beta.kubernetes.io/aws-load-balancer-type":"nlb"},"clusterIP":"","type":"LoadBalancer"}` | Service configuration |
+| service.annotations | object | `{"service.beta.kubernetes.io/aws-load-balancer-type":"nlb"}` | Custom annotations for the service |
+| service.clusterIP | string | `""` | Set a specific clusterIP (optional, only for ClusterIP type) |
+| service.type | string | `"LoadBalancer"` | Service type (e.g., ClusterIP, NodePort, LoadBalancer) |
 | serviceAccount | object | `{"annotations":{},"create":true,"name":""}` | Service account configuration |
+| serviceAccount.annotations | object | `{}` | Annotations to add to the service account |
+| serviceAccount.create | bool | `true` | Specifies whether a service account should be created |
+| serviceAccount.name | string | `""` | The name of the service account to use. If not set and create is true, a name is generated using the fullname template |
 | strategy | object | `{"rollingUpdate":{"maxSurge":0,"maxUnavailable":1},"type":"RollingUpdate"}` | Deployment update strategy |
 | terminationGracePeriodSeconds | int | `30` | Time to wait before forcefully terminating the pod |
 | tolerations | list | `[{"effect":"NoSchedule","operator":"Exists"},{"effect":"NoExecute","operator":"Exists"}]` | Tolerations for scheduling pods on tainted nodes |
