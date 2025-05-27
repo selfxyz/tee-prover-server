@@ -1,4 +1,8 @@
-FROM public.ecr.aws/docker/library/rust:1.81-bookworm AS chef-init-server
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 AS chef-init-server
+
+RUN yum groupinstall -y "Development Tools"
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN cargo install cargo-chef 
 
@@ -17,7 +21,11 @@ COPY tee-monorepo/initialization/init-server/src src/
 
 RUN cargo build --locked --release
 
-FROM public.ecr.aws/docker/library/rust:1.81-bookworm AS chef-raw-proxy
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 AS chef-raw-proxy
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+RUN yum groupinstall -y "Development Tools"
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN cargo install cargo-chef 
 
@@ -36,13 +44,20 @@ COPY tee-monorepo/networking/raw-proxy/src src/
 
 RUN cargo build --locked --release
 
-FROM docker.io/library/amazonlinux:2@sha256:b1b123fdcccab612861866f6e6d10823b2aee22357f10f27a66044207ccc3c89 AS instance_full_image
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 AS instance_full_image
 
 # Install packages
 #
-RUN amazon-linux-extras install aws-nitro-enclaves-cli && \
-    yum install aws-nitro-enclaves-cli-devel jq util-linux \
-        unzip curl which file socat -y
+RUN dnf install -y \
+    aws-nitro-enclaves-cli \
+    aws-nitro-enclaves-cli-devel \
+    jq \
+    util-linux \
+    unzip \
+    which \
+    file \
+    socat \ 
+    glibc
 
 # Install awscli v2
 #
@@ -84,7 +99,7 @@ RUN \
     cp -rf /usr/share/nitro_enclaves/ /ne-deps/usr/share/ 
     # cp -f /etc/nitro_enclaves/vsock-proxy.yaml /ne-deps/etc/nitro_enclaves
 
-FROM amazonlinux:2 as instance
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 as instance
 
 COPY --from=instance_full_image / /
 
@@ -97,5 +112,6 @@ ARG SIZE_FILTER=${SIZE_FILTER}
 ARG TAG=${TAG}
 
 COPY ./result/$PROOFTYPE-$SIZE_FILTER-$TAG/image.eif /home/tee-server.eif
+# COPY instance-deps/run.sh /home
 
 CMD ["/usr/local/bin/init-server"]
