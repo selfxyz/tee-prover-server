@@ -1,0 +1,67 @@
+name: Deploy EIFs and TEE instance images
+on:
+  workflow_call:
+    inputs:
+      proofType:
+        description: The proof type
+        required: true
+        type: string
+      size:
+        description: The size
+        required: true
+        type: string
+      tag:
+        description: The tag
+        required: true
+        type: string
+jobs: 
+  deploy-eif:
+    runs-on: [self-hosted]
+
+    steps:
+      - name: Remove existing EIFs
+        run: | 
+          sudo rm -rf result tmp-result
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install submodules
+        run: | 
+          git submodule update --init
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      
+      - name: Build EIFs
+        run: |
+          chmod +x build_eif.sh
+          ./build_eif.sh ${{ inputs.tag }}
+
+      - name: Upload EIFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: eif
+          path: result
+
+    # build and push the TEE instance Docker image
+      - name: Build TEE instance Docker images
+        if: inputs.proofType == 'all'
+        run: | 
+          chmod +x build_docker_images.sh
+          ./build_docker_images.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
+
+      - name: Build TEE instance Docker image
+        if: inputs.proofType != 'all'
+        run: | 
+          sudo docker build --build-arg PROOFTYPE=${{ inputs.proofType }} --build-arg SIZE_FILTER=${{ inputs.size }} --build-arg TAG=${{ inputs.tag }} -f Dockerfile.tee.instance -t ${{ secrets.DOCKER_ORGANIZATION }}/tee-server-${{ inputs.proofType }}-${{ inputs.size }}-instance:${{ inputs.tag }} .
+
+      - name: Login to Docker Hub
+        run: |
+          sudo docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push TEE instance Docker images 
+        run: | 
+          chmod +x push_docker.sh
+          ./push_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance

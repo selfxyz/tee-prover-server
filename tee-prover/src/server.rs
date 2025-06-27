@@ -1,24 +1,22 @@
-use aws_nitro_enclaves_nsm_api::api::ErrorCode;
 use jsonrpsee::core::async_trait;
+use jsonrpsee::http_client::HttpClient;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types;
 use jsonrpsee::{types::ErrorObjectOwned, ResponsePayload};
-use p256::ecdh::EphemeralSecret;
-use p256::elliptic_curve::PublicKey;
-use rand_core::{CryptoRng, RngCore};
 use sqlx::Pool;
 use std::collections::HashMap;
-use std::io;
 use std::sync::Arc;
 
 use crate::db::create_proof_status;
 use crate::store::LruStore;
 use crate::types::{ProofRequest, SubmitRequest};
-use crate::utils::{self, nsm_get_random};
+use crate::utils;
 use crate::{generator::file_generator::FileGenerator, types::HelloResponse};
 
 #[rpc(server, namespace = "openpassport")]
 pub trait Rpc {
+    #[method(name = "health")]
+    async fn health(&self) -> ResponsePayload<'static, String>;
     #[method(name = "hello")]
     async fn hello(
         &self,
@@ -35,8 +33,15 @@ pub trait Rpc {
     ) -> ResponsePayload<'static, String>;
 }
 
+#[rpc(client)]
+pub trait Attestation {
+    #[method(name = "attestation")]
+    fn get_attestation(&self, user_pubkey: Vec<u8>)
+        -> ResponsePayload<'static, (Vec<u8>, Vec<u8>)>;
+}
+
 pub struct RpcServerImpl {
-    fd: i32,
+    attestation_client: HttpClient,
     store: LruStore,
     file_generator_sender: tokio::sync::mpsc::Sender<FileGenerator>,
     circuit_zkey_map: Arc<HashMap<String, String>>,
@@ -45,14 +50,14 @@ pub struct RpcServerImpl {
 
 impl RpcServerImpl {
     pub fn new(
-        fd: i32,
+        attestation_client: HttpClient,
         store: LruStore,
         file_generator_sender: tokio::sync::mpsc::Sender<FileGenerator>,
         circuit_zkey_map: Arc<HashMap<String, String>>,
         db: Pool<sqlx::Postgres>,
     ) -> Self {
         Self {
-            fd,
+            attestation_client,
             store,
             file_generator_sender,
             circuit_zkey_map,
@@ -63,6 +68,10 @@ impl RpcServerImpl {
 
 #[async_trait]
 impl RpcServer for RpcServerImpl {
+    async fn health(&self) -> ResponsePayload<'static, String> {
+        ResponsePayload::success("OK".to_string())
+    }
+
     async fn hello(
         &self,
         user_pubkey: Vec<u8>,
@@ -76,42 +85,17 @@ impl RpcServer for RpcServerImpl {
             ));
         };
 
-        let mut nitro_rng = NitroRng::new(self.fd);
-
-        let my_private_key = EphemeralSecret::random(&mut nitro_rng);
-        let my_public_key = PublicKey::from(&my_private_key).to_sec1_bytes().to_vec();
-
-        let attestation = match utils::get_attestation(
-            self.fd,
-            Some(user_pubkey.clone()),
-            None,
-            Some(my_public_key.clone()),
-        ) {
-            Ok(attestation) => attestation,
-            Err(err) => {
-                return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
-                    types::ErrorCode::InternalError.code(), //INTERNAL_SERVER_ERROR
-                    format!("{:?}", err),
-                    None,
-                ));
-            }
-        };
-
-        let their_public_key = match PublicKey::from_sec1_bytes(&user_pubkey) {
-            Ok(pubkey) => pubkey,
-            Err(err) => {
-                return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
-                    types::ErrorCode::InvalidParams.code(), //INVALID_PARAMS
-                    format!("{:?}", err),
-                    None,
-                ));
-            }
-        };
-
-        let derived_key_result = my_private_key
-            .diffie_hellman(&their_public_key)
-            .raw_secret_bytes()
-            .to_vec();
+        let (attestation, derived_key_result) =
+            match AttestationClient::get_attestation(&self.attestation_client, user_pubkey).await {
+                Ok((attestation, shared_secret)) => (attestation, shared_secret),
+                Err(e) => {
+                    return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
+                        types::ErrorCode::InternalError.code(), //INTERNAL_SERVER_ERROR
+                        format!("{:?}", e),
+                        None,
+                    ));
+                }
+            };
 
         match self
             .store
@@ -187,8 +171,11 @@ impl RpcServer for RpcServerImpl {
                     allowed_proof_type = "register";
                 } else if cfg!(feature = "dsc") {
                     allowed_proof_type = "dsc";
-                } else {
+                } else if cfg!(feature = "disclose") {
                     allowed_proof_type = "disclose";
+                } else {
+                    //else the cherry pick flag is allowed
+                    allowed_proof_type = "register, dsc, disclose";
                 }
 
                 let invalid_proof_type_response =
@@ -199,20 +186,20 @@ impl RpcServer for RpcServerImpl {
                     ));
 
                 match submit_request.proof_request_type {
-                    ProofRequest::Register { .. } => {
-                        if !cfg!(feature = "register") {
+                    ProofRequest::Register { .. } | ProofRequest::RegisterId { .. } => {
+                        if !cfg!(feature = "register") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
-                    ProofRequest::Dsc { .. } => {
-                        if !cfg!(feature = "dsc") {
+                    ProofRequest::Dsc { .. } | ProofRequest::DscId { .. } => {
+                        if !cfg!(feature = "dsc") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
-                    ProofRequest::Disclose { .. } => {
-                        if !cfg!(feature = "disclose") {
+                    ProofRequest::Disclose { .. } | ProofRequest::DiscloseId { .. } => {
+                        if !cfg!(feature = "disclose") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
@@ -230,7 +217,8 @@ impl RpcServer for RpcServerImpl {
                 }
                 submit_request
             }
-            Err(_) => {
+            Err(e) => {
+                dbg!(&e);
                 self.store.remove_agreement(&uuid).await;
                 return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
                     types::ErrorCode::InvalidRequest.code(),
@@ -240,23 +228,58 @@ impl RpcServer for RpcServerImpl {
             }
         };
 
-        let (endpoint_type, endpoint) = match &submit_request.proof_request_type {
-            ProofRequest::Register {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::Dsc {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::Disclose {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (Some(endpoint_type), Some(endpoint)),
-        };
+        let (endpoint_type, endpoint, user_defined_data, version) =
+            match &submit_request.proof_request_type {
+                ProofRequest::Register {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1 as i32),
+                ProofRequest::Dsc {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::Disclose {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => {
+                    dbg!(&version);
+                    (
+                        Some(endpoint_type),
+                        Some(endpoint),
+                        user_defined_data.as_str(),
+                        *version as i32,
+                    )
+                }
+                ProofRequest::RegisterId {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DscId {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DiscloseId {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => (
+                    Some(endpoint_type),
+                    Some(endpoint),
+                    user_defined_data.as_str(),
+                    *version as i32,
+                ),
+            };
+
+        dbg!(&version);
 
         if let Err(e) = create_proof_status(
             uuid,
@@ -266,6 +289,8 @@ impl RpcServer for RpcServerImpl {
             &self.db,
             endpoint_type,
             endpoint,
+            version,
+            &user_defined_data,
         )
         .await
         {
@@ -294,54 +319,3 @@ impl RpcServer for RpcServerImpl {
         ResponsePayload::success(uuid.to_string())
     }
 }
-
-pub struct NitroRng {
-    fd: i32, // File descriptor for NitroSecureModule
-}
-
-impl NitroRng {
-    pub fn new(fd: i32) -> Self {
-        Self { fd }
-    }
-}
-
-impl RngCore for NitroRng {
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        unsafe {
-            let mut buf_len = dest.len();
-            let res = nsm_get_random(self.fd, dest.as_mut_ptr(), &mut buf_len);
-            match res {
-                ErrorCode::Success => (),
-                _ => panic!("Failed to get random bytes: {:?}", res),
-            }
-        }
-    }
-
-    fn next_u32(&mut self) -> u32 {
-        let mut buf = [0u8; 4];
-        self.fill_bytes(&mut buf);
-        u32::from_le_bytes(buf)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut buf = [0u8; 8];
-        self.fill_bytes(&mut buf);
-        u64::from_le_bytes(buf)
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        unsafe {
-            let mut buf_len = dest.len();
-            let res = nsm_get_random(self.fd, dest.as_mut_ptr(), &mut buf_len);
-            match res {
-                ErrorCode::Success => Ok(()),
-                _ => Err(rand_core::Error::new(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Could not generate random data",
-                ))),
-            }
-        }
-    }
-}
-
-impl CryptoRng for NitroRng {}

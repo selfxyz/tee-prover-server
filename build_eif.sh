@@ -1,30 +1,34 @@
 #!/bin/bash
 
-PROOFS_SIZES=(
-    "register:small"
-    "register:medium"
-    "register:large"
-    "disclose:small"
-    "dsc:small"
-    "dsc:medium"
-    "dsc:large"
-)
+source constants.sh
 
-DOCKER_ORG=$1
-TAG=$2
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <tag>"
+    exit 1
+fi
 
-BUILD_COMMANDS=()
+TAG=$1
+
+pids=()
+
 for ITEM in "${PROOFS_SIZES[@]}"; do
     PROOF="${ITEM%%:*}"
-    SIZE="${ITEM##*:}" 
+    SIZE="${ITEM##*:}"
 
-    IMAGE_NAME="${DOCKER_ORG}/tee-server-${PROOF}"
-    [[ "$SIZE" != "small" ]] && IMAGE_NAME+="-${SIZE}"
-
-    OUTPUT_FILE="prover-server-${PROOF}-${SIZE}.eif"
-
-    LOG_FILE="measurements/${PROOF}-${SIZE}.log"
-    BUILD_COMMANDS+=("sudo nitro-cli build-enclave --docker-uri ${IMAGE_NAME}:${TAG} --output-file ${OUTPUT_FILE} > ${LOG_FILE} 2>&1")
+    echo "Building EIF for ${PROOF} with size ${SIZE}"
+    nix build .#musl.enclave-${PROOF}-${SIZE}-${TAG}.default --out-link ./result/${PROOF}-${SIZE}-${TAG} & 
+    pids+=($!)
 done
 
-printf "%s\n" "${BUILD_COMMANDS[@]}" | xargs -I {} -P 1 bash -c "{}"
+wait "${pids[@]}"
+
+mkdir ./tmp-result
+for DIR in $(find ./result/* -type l); do
+    type=$(basename $DIR)
+    REAL_PATH=$(realpath $DIR)
+    unlink $DIR
+    echo $REAL_PATH $type
+    cp -r $REAL_PATH ./tmp-result/$type
+done
+
+cp -r tmp-result/* ./result/

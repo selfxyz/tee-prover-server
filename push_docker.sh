@@ -20,8 +20,8 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
     SIZE="${ITEM##*:}"
 
     IMAGE_NAME="${DOCKER_ORG}/tee-server-${PROOF}"
+    IMAGE_NAME+="-${SIZE}"
     [[ "$TYPE" == "instance" ]] && IMAGE_NAME+="-${TYPE}"
-    [[ "$SIZE" != "small" ]] && IMAGE_NAME+="-${SIZE}"
     PUSH_COMMANDS+=("sudo docker push ${IMAGE_NAME}:${TAG}")
 done
 

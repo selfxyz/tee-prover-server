@@ -1,3 +1,6 @@
 [submodule "rapidsnark"]
 	path = rapidsnark
 	url = git@github.com:iden3/rapidsnark.git
+[submodule "tee-monorepo"]
+	path = tee-monorepo
+	url = git@github.com:selfxyz/tee-monorepo.git

@@ -1,0 +1,117 @@
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 AS chef-init-server
+
+RUN yum groupinstall -y "Development Tools"
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN cargo install cargo-chef 
+
+WORKDIR /src/
+
+FROM chef-init-server AS planner-init-server
+COPY tee-monorepo/initialization/init-server/Cargo.toml tee-monorepo/initialization/init-server/Cargo.lock ./
+COPY tee-monorepo/initialization/init-server/src src/
+RUN cargo chef prepare  --recipe-path recipe.json
+
+FROM chef-init-server AS builder-init-server
+COPY --from=planner-init-server /src/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY tee-monorepo/initialization/init-server/Cargo.toml tee-monorepo/initialization/init-server/Cargo.lock ./
+COPY tee-monorepo/initialization/init-server/src src/
+
+RUN cargo build --locked --release
+
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 AS chef-raw-proxy
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+RUN yum groupinstall -y "Development Tools"
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN cargo install cargo-chef 
+
+WORKDIR /src/
+
+FROM chef-raw-proxy AS planner-raw-proxy
+COPY tee-monorepo/networking/raw-proxy/Cargo.toml tee-monorepo/networking/raw-proxy/Cargo.lock ./
+COPY tee-monorepo/networking/raw-proxy/src src/
+RUN cargo chef prepare  --recipe-path recipe.json
+
+FROM chef-raw-proxy AS builder-raw-proxy
+COPY --from=planner-raw-proxy /src/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY tee-monorepo/networking/raw-proxy/Cargo.toml tee-monorepo/networking/raw-proxy/Cargo.lock ./
+COPY tee-monorepo/networking/raw-proxy/src src/
+
+RUN cargo build --locked --release
+
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 AS instance_full_image
+
+# Install packages
+#
+RUN dnf install -y \
+    aws-nitro-enclaves-cli \
+    aws-nitro-enclaves-cli-devel \
+    jq \
+    util-linux \
+    unzip \
+    which \
+    file \
+    socat \ 
+    glibc
+
+# Install awscli v2
+#
+RUN \
+    cd tmp && \
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-$(arch).zip" -o "awscliv2.zip" && \
+    unzip awscliv2.zip && \
+    ./aws/install
+
+WORKDIR /ne-deps
+
+# Copy only the required binaries to /ne-deps folder.
+#
+RUN BINS="\
+    /usr/local/bin/aws \
+    /usr/bin/nitro-cli \
+    # /usr/bin/vsock-proxy \
+    /usr/bin/file \
+    /usr/bin/jq \
+    /usr/bin/lscpu \
+    /usr/bin/which \
+    # /usr/bin/socat \
+    " && \
+    for bin in $BINS; do \
+        { echo "$bin"; ldd "$bin" | grep -Eo "/.*lib.*/[^ ]+"; } | \
+            while read path; do \
+                mkdir -p ".$(dirname $path)"; \
+                cp -fL "$path" ".$path"; \
+            done \
+    done
+
+# Prepare other required files and folders for the final image.
+#
+RUN \
+    mkdir -p /ne-deps/etc/nitro_enclaves && \
+    mkdir -p /ne-deps/run/nitro_enclaves && \
+    mkdir -p /ne-deps/var/log/nitro_enclaves && \
+    cp -rf /usr/local/ /ne-deps/usr/ && \
+    cp -rf /usr/share/nitro_enclaves/ /ne-deps/usr/share/ 
+    # cp -f /etc/nitro_enclaves/vsock-proxy.yaml /ne-deps/etc/nitro_enclaves
+
+FROM amazonlinux:2023@sha256:a72ad02c10cc535f7b34da08c2a06b191a0c5824f1454531dd06db1236478102 as instance
+
+COPY --from=instance_full_image / /
+
+COPY --from=builder-init-server /src/target/release/self-init-server /usr/local/bin/
+COPY --from=builder-raw-proxy /src/target/release/vsock-to-ip-raw-outgoing /usr/local/bin/
+COPY --from=builder-raw-proxy /src/target/release/ip-to-vsock-raw-incoming /usr/local/bin/
+
+ARG PROOFTYPE=${PROOFTYPE}
+ARG SIZE_FILTER=${SIZE_FILTER}
+ARG TAG=${TAG}
+
+COPY ./result/$PROOFTYPE-$SIZE_FILTER-$TAG/image.eif /home/tee-server.eif
+# COPY instance-deps/run.sh /home
+
+CMD ["/usr/local/bin/init-server"]
