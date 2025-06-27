@@ -29,6 +29,14 @@ pub struct SubmitRequest {
     pub proof_request_type: ProofRequest,
 }
 
+fn default_version() -> u32 {
+    1
+}
+
+fn default_user_defined_data() -> String {
+    "".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointType {
@@ -60,6 +68,10 @@ pub enum ProofRequest {
         circuit: Circuit,
         endpoint_type: EndpointType,
         endpoint: String,
+        #[serde(default = "default_user_defined_data")]
+        user_defined_data: String,
+        #[serde(default = "default_version")]
+        version: u32,
     },
     #[serde(rename_all = "camelCase")]
     RegisterId {
@@ -78,6 +90,10 @@ pub enum ProofRequest {
         circuit: Circuit,
         endpoint_type: EndpointType,
         endpoint: String,
+        #[serde(default = "default_user_defined_data")]
+        user_defined_data: String,
+        #[serde(default = "default_version")]
+        version: u32,
     },
 }
 

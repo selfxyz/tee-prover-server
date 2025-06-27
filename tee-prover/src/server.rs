@@ -217,7 +217,8 @@ impl RpcServer for RpcServerImpl {
                 }
                 submit_request
             }
-            Err(_) => {
+            Err(e) => {
+                dbg!(&e);
                 self.store.remove_agreement(&uuid).await;
                 return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
                     types::ErrorCode::InvalidRequest.code(),
@@ -227,38 +228,58 @@ impl RpcServer for RpcServerImpl {
             }
         };
 
-        let (endpoint_type, endpoint) = match &submit_request.proof_request_type {
-            ProofRequest::Register {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::Dsc {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::Disclose {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (Some(endpoint_type), Some(endpoint)),
-            ProofRequest::RegisterId {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::DscId {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::DiscloseId {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (Some(endpoint_type), Some(endpoint)),
-        };
+        let (endpoint_type, endpoint, user_defined_data, version) =
+            match &submit_request.proof_request_type {
+                ProofRequest::Register {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1 as i32),
+                ProofRequest::Dsc {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::Disclose {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => {
+                    dbg!(&version);
+                    (
+                        Some(endpoint_type),
+                        Some(endpoint),
+                        user_defined_data.as_str(),
+                        *version as i32,
+                    )
+                }
+                ProofRequest::RegisterId {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DscId {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DiscloseId {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => (
+                    Some(endpoint_type),
+                    Some(endpoint),
+                    user_defined_data.as_str(),
+                    *version as i32,
+                ),
+            };
+
+        dbg!(&version);
 
         if let Err(e) = create_proof_status(
             uuid,
@@ -268,6 +289,8 @@ impl RpcServer for RpcServerImpl {
             &self.db,
             endpoint_type,
             endpoint,
+            version,
+            &user_defined_data,
         )
         .await
         {

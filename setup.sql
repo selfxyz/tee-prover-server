@@ -12,10 +12,12 @@ CREATE TABLE IF NOT EXISTS proofs (
     endpoint VARCHAR(128),
     public_inputs TEXT[],
     reason TEXT, 
-    identifier VARCHAR(255)
+    identifier VARCHAR(255), 
+    version SMALLINT,
+    user_defined_data VARCHAR(255)
 );
 
-CREATE OR REPLACE FUNCTION status_update_notify() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION status_update_notify_staging() RETURNS trigger AS $$
 DECLARE
   notification_payload JSON;
 BEGIN
@@ -34,24 +36,26 @@ BEGIN
       'endpoint', NEW.endpoint,
       'public_inputs', NEW.public_inputs,
       'reason', NEW.reason,
-      'identifier', NEW.identifier
+      'identifier', NEW.identifier,
+      'version', NEW.version,
+      'user_defined_data', NEW.user_defined_data
     );
 
-    PERFORM pg_notify('status_update', notification_payload::text);
+    PERFORM pg_notify('status_update_staging', notification_payload::text);
   END IF;
 
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS status_update_notify ON proofs;
-CREATE TRIGGER status_update_notify
+DROP TRIGGER IF EXISTS status_update_notify_staging ON proofs;
+CREATE TRIGGER status_update_notify_staging
 AFTER UPDATE ON proofs
 FOR EACH ROW
-EXECUTE PROCEDURE status_update_notify();
+EXECUTE PROCEDURE status_update_notify_staging();
 
-DROP TRIGGER IF EXISTS status_insert_notify ON proofs;
-CREATE TRIGGER status_insert_notify
+DROP TRIGGER IF EXISTS status_insert_notify_staging ON proofs;
+CREATE TRIGGER status_insert_notify_staging
 AFTER INSERT ON proofs
 FOR EACH ROW
-EXECUTE PROCEDURE status_update_notify();
+EXECUTE PROCEDURE status_update_notify_staging();

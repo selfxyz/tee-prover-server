@@ -17,6 +17,8 @@ pub async fn create_proof_status(
     db: &sqlx::Pool<sqlx::Postgres>,
     endpoint_type: Option<&EndpointType>,
     endpoint: Option<&String>,
+    version: i32,
+    user_defined_data: &str,
 ) -> Result<(), String> {
     let proof_type_id: i32 = proof_type.into();
     let now = Utc::now();
@@ -24,7 +26,7 @@ pub async fn create_proof_status(
     let status: i32 = types::Status::Pending.into();
 
     let _ = sqlx::query(
-        "INSERT INTO proofs (proof_type, request_id, status, created_at, circuit_name, onchain, endpoint_type, endpoint) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO proofs (proof_type, request_id, status, created_at, circuit_name, onchain, endpoint_type, endpoint, version, user_defined_data) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(proof_type_id)
     .bind(sqlx::types::Uuid::from(uuid))
@@ -34,6 +36,8 @@ pub async fn create_proof_status(
     .bind(on_chain)
     .bind(endpoint_type.map(|e| serde_plain::to_string(e).unwrap()))
     .bind(endpoint)
+    .bind(version)
+    .bind(user_defined_data)
     .execute(db)
     .await.map_err(|e| {
         dbg!(e);
