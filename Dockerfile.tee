@@ -36,16 +36,10 @@ COPY start.sh /usr/local/bin
 RUN chown root:root /usr/local/bin/start.sh
 RUN chmod 755 /usr/local/bin/start.sh
 
-WORKDIR /
-COPY artifact.zip artifact.zip
-RUN mkdir /circuits
-RUN unzip artifact.zip -d /all-circuits
-
 ARG SIZE_FILTER=${SIZE_FILTER}
 ARG PROOFTYPE=${PROOFTYPE}
 
-RUN mv /all-circuits/$PROOFTYPE/*_cpp /circuits && \
-    rm -rf /artifact.zip /all-circuits
+COPY ./circuits/$PROOFTYPE/$SIZE_FILTER /circuits
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys

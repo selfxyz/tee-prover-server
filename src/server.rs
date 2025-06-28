@@ -19,6 +19,8 @@ use crate::{generator::file_generator::FileGenerator, types::HelloResponse};
 
 #[rpc(server, namespace = "openpassport")]
 pub trait Rpc {
+    #[method(name = "health")]
+    async fn health(&self) -> ResponsePayload<'static, String>;
     #[method(name = "hello")]
     async fn hello(
         &self,
@@ -63,6 +65,10 @@ impl RpcServerImpl {
 
 #[async_trait]
 impl RpcServer for RpcServerImpl {
+    async fn health(&self) -> ResponsePayload<'static, String> {
+        ResponsePayload::success("OK".to_string())
+    }
+
     async fn hello(
         &self,
         user_pubkey: Vec<u8>,
@@ -199,19 +205,19 @@ impl RpcServer for RpcServerImpl {
                     ));
 
                 match submit_request.proof_request_type {
-                    ProofRequest::Register { .. } => {
+                    ProofRequest::Register { .. } | ProofRequest::RegisterId { .. } => {
                         if !cfg!(feature = "register") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
-                    ProofRequest::Dsc { .. } => {
+                    ProofRequest::Dsc { .. } | ProofRequest::DscId { .. } => {
                         if !cfg!(feature = "dsc") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
-                    ProofRequest::Disclose { .. } => {
+                    ProofRequest::Disclose { .. } | ProofRequest::DiscloseId { .. } => {
                         if !cfg!(feature = "disclose") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
@@ -240,23 +246,56 @@ impl RpcServer for RpcServerImpl {
             }
         };
 
-        let (endpoint_type, endpoint) = match &submit_request.proof_request_type {
-            ProofRequest::Register {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::Dsc {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (endpoint_type.as_ref(), endpoint.as_ref()),
-            ProofRequest::Disclose {
-                endpoint_type,
-                endpoint,
-                ..
-            } => (Some(endpoint_type), Some(endpoint)),
-        };
+        let (endpoint_type, endpoint, user_defined_data, version) =
+            match &submit_request.proof_request_type {
+                ProofRequest::Register {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1 as i32),
+                ProofRequest::Dsc {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::Disclose {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => {
+                    dbg!(&version);
+                    (
+                        Some(endpoint_type),
+                        Some(endpoint),
+                        user_defined_data.as_str(),
+                        *version as i32,
+                    )
+                }
+                ProofRequest::RegisterId {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DscId {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DiscloseId {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => (
+                    Some(endpoint_type),
+                    Some(endpoint),
+                    user_defined_data.as_str(),
+                    *version as i32,
+                ),
+            };
 
         if let Err(e) = create_proof_status(
             uuid,
@@ -266,6 +305,8 @@ impl RpcServer for RpcServerImpl {
             &self.db,
             endpoint_type,
             endpoint,
+            version,
+            user_defined_data,
         )
         .await
         {

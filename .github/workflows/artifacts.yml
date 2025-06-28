@@ -25,6 +25,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Login to AWS
+        run: |
+          aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws --profile default configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
       - name: Install Artifacts
         run: |
           ARTIFACT_URL=$(curl -L \
@@ -44,10 +49,19 @@ jobs:
             -o artifact.zip \
             "$ARTIFACT_URL"
 
-      - name: Login to AWS
+      - name: Sort circuits
         run: |
-          aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws --profile default configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          unzip artifact.zip -d ./circuits/
+          chmod +x sort_circuits.sh
+          ./sort_circuits.sh
+
+      - name: Install aws cli
+        run: |
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
 
       - name: Download and unpack zkeys
         run: |

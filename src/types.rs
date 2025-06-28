@@ -29,6 +29,14 @@ pub struct SubmitRequest {
     pub proof_request_type: ProofRequest,
 }
 
+fn default_version() -> u32 {
+    1
+}
+
+fn default_user_defined_data() -> String {
+    "".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointType {
@@ -36,10 +44,12 @@ pub enum EndpointType {
     Https,
     StagingCelo,
     StagingHttps,
+    TestCelo,
+    TestHttps,
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProofRequest {
     #[serde(rename_all = "camelCase")]
     Register {
@@ -58,6 +68,32 @@ pub enum ProofRequest {
         circuit: Circuit,
         endpoint_type: EndpointType,
         endpoint: String,
+        #[serde(default = "default_user_defined_data")]
+        user_defined_data: String,
+        #[serde(default = "default_version")]
+        version: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    RegisterId {
+        circuit: Circuit,
+        endpoint_type: Option<EndpointType>,
+        endpoint: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    DscId {
+        circuit: Circuit,
+        endpoint_type: Option<EndpointType>,
+        endpoint: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    DiscloseId {
+        circuit: Circuit,
+        endpoint_type: EndpointType,
+        endpoint: String,
+        #[serde(default = "default_user_defined_data")]
+        user_defined_data: String,
+        #[serde(default = "default_version")]
+        version: u32,
     },
 }
 
@@ -67,6 +103,9 @@ impl ProofRequest {
             ProofRequest::Register { circuit, .. } => circuit,
             ProofRequest::Dsc { circuit, .. } => circuit,
             ProofRequest::Disclose { circuit, .. } => circuit,
+            ProofRequest::RegisterId { circuit, .. } => circuit,
+            ProofRequest::DscId { circuit, .. } => circuit,
+            ProofRequest::DiscloseId { circuit, .. } => circuit,
         }
     }
 }
@@ -76,6 +115,9 @@ pub enum ProofType {
     Register,
     Dsc,
     Disclose,
+    RegisterId,
+    DscId,
+    DiscloseId,
 }
 
 impl Into<ProofType> for &ProofRequest {
@@ -84,6 +126,9 @@ impl Into<ProofType> for &ProofRequest {
             ProofRequest::Register { .. } => ProofType::Register,
             ProofRequest::Dsc { .. } => ProofType::Dsc,
             ProofRequest::Disclose { .. } => ProofType::Disclose,
+            ProofRequest::RegisterId { .. } => ProofType::RegisterId,
+            ProofRequest::DscId { .. } => ProofType::DscId,
+            ProofRequest::DiscloseId { .. } => ProofType::DiscloseId,
         }
     }
 }
@@ -94,6 +139,9 @@ impl std::fmt::Display for ProofType {
             ProofType::Register => write!(f, "register"),
             ProofType::Dsc => write!(f, "dsc"),
             ProofType::Disclose => write!(f, "disclose"),
+            ProofType::RegisterId => write!(f, "register_id"),
+            ProofType::DscId => write!(f, "dsc_id"),
+            ProofType::DiscloseId => write!(f, "disclose_id"),
         }
     }
 }
@@ -104,6 +152,9 @@ impl Into<i32> for &ProofType {
             ProofType::Register => 0,
             ProofType::Dsc => 1,
             ProofType::Disclose => 2,
+            ProofType::RegisterId => 3,
+            ProofType::DscId => 4,
+            ProofType::DiscloseId => 5,
         }
     }
 }
@@ -115,6 +166,9 @@ impl TryFrom<i32> for ProofType {
             0 => Ok(ProofType::Register),
             1 => Ok(ProofType::Dsc),
             2 => Ok(ProofType::Disclose),
+            3 => Ok(ProofType::RegisterId),
+            4 => Ok(ProofType::DscId),
+            5 => Ok(ProofType::DiscloseId),
             _ => Err(()),
         }
     }
