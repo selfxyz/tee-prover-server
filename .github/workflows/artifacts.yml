@@ -68,13 +68,13 @@ jobs:
           rm -rf zkeys
           chmod +x download_zkeys.sh && ./download_zkeys.sh
           mkdir zkeys
-          for file in *_final.zkey; do mv "$file" "zkeys/${file%_final.zkey}.zkey"; done
+          mv *.zkey zkeys/
 
       - name: Reformat zkeys
         run: |
           mkdir -p zkeys/register zkeys/disclose zkeys/dsc
           mv zkeys/register_* zkeys/register/
-          mv zkeys/vc_and_disclose.zkey zkeys/disclose/ 
+          mv zkeys/vc_and_disclose*.zkey zkeys/disclose/ 
           mv zkeys/dsc_* zkeys/dsc/
           chmod +x sort_zkeys.sh
           ./sort_zkeys.sh
