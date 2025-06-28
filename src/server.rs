@@ -206,19 +206,19 @@ impl RpcServer for RpcServerImpl {
 
                 match submit_request.proof_request_type {
                     ProofRequest::Register { .. } | ProofRequest::RegisterId { .. } => {
-                        if !cfg!(feature = "register") {
+                        if !cfg!(feature = "register") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
                     ProofRequest::Dsc { .. } | ProofRequest::DscId { .. } => {
-                        if !cfg!(feature = "dsc") {
+                        if !cfg!(feature = "dsc") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
                     }
                     ProofRequest::Disclose { .. } | ProofRequest::DiscloseId { .. } => {
-                        if !cfg!(feature = "disclose") {
+                        if !cfg!(feature = "disclose") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
                         }
