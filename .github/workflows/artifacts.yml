@@ -111,6 +111,7 @@ jobs:
 
       - name: Build and push Docker instance images
         run: |
+          chmod +x ./build_docker.sh
           ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} instance
 
       - name: Push images
