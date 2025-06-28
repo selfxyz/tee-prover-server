@@ -88,13 +88,13 @@ jobs:
         run: |
           sudo docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push Docker enclave images
-        run: |
-          chmod +x ./build_docker.sh
-          ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
+      # - name: Build and push Docker enclave images
+      #   run: |
+      #     chmod +x ./build_docker.sh
+      #     ./build_docker.sh ${{ secrets.DOCKER_ORGANIZATION }} ${{ inputs.tag }} nitro-enclave
 
-      - name: Cleanup zkeys
-        run: rm -rf zkeys*
+      # - name: Cleanup zkeys
+      #   run: rm -rf zkeys*
 
       - name: Build eifs
         run: |
