@@ -25,6 +25,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Login to AWS
+        run: |
+          aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws --profile default configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
       - name: Install Artifacts
         run: |
           ARTIFACT_URL=$(curl -L \
@@ -44,23 +49,32 @@ jobs:
             -o artifact.zip \
             "$ARTIFACT_URL"
 
-      - name: Login to AWS
+      - name: Sort circuits
         run: |
-          aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws --profile default configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          unzip artifact.zip -d ./circuits/
+          chmod +x sort_circuits.sh
+          ./sort_circuits.sh
+
+      - name: Install aws cli
+        run: |
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
 
       - name: Download and unpack zkeys
         run: |
           rm -rf zkeys
           chmod +x download_zkeys.sh && ./download_zkeys.sh
           mkdir zkeys
-          for file in *_final.zkey; do mv "$file" "zkeys/${file%_final.zkey}.zkey"; done
+          mv *.zkey zkeys/
 
       - name: Reformat zkeys
         run: |
           mkdir -p zkeys/register zkeys/disclose zkeys/dsc
           mv zkeys/register_* zkeys/register/
-          mv zkeys/vc_and_disclose.zkey zkeys/disclose/ 
+          mv zkeys/vc_and_disclose*.zkey zkeys/disclose/ 
           mv zkeys/dsc_* zkeys/dsc/
           chmod +x sort_zkeys.sh
           ./sort_zkeys.sh
