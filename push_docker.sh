@@ -25,6 +25,6 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
     PUSH_COMMANDS+=("sudo docker push ${IMAGE_NAME}:${TAG}")
 done
 
-printf "%s\n" "${PUSH_COMMANDS[@]}" | xargs -I {} -P 3 bash -c "{}"
+printf "%s\n" "${PUSH_COMMANDS[@]}" | xargs -I {} -P 1 bash -c "{}"
 
 echo "Docker images pushed successfully!"
