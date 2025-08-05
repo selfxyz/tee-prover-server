@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main
-      - stg
+      - staging
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   prod:
