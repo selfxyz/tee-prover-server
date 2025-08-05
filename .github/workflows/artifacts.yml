@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: [self-hosted]
+    runs-on: [self-hosted-gha]
 
     steps:
       - name: Checkout Repository
