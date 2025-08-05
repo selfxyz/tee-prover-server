@@ -29,6 +29,13 @@ jobs:
           ARTIFACT_REPOSITORY: ${{ secrets.GCP_ARTIFACT_REPOSITORY }}
           ARTIFACT_URL: ${{ env.GAR_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}
 
+      - name: Print environment variables
+        run: |
+          echo "PROJECT_ID='${{ env.PROJECT_ID }}'"
+          echo "GAR_REGISTRY='${{ env.GAR_REGISTRY }}'"
+          echo "ARTIFACT_REPOSITORY='${{ env.ARTIFACT_REPOSITORY }}'"
+          echo "ARTIFACT_URL='${{ env.ARTIFACT_URL }}'"
+
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
