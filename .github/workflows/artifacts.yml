@@ -18,16 +18,17 @@ jobs:
       id-token: write
     runs-on: [self-hosted-gha]
 
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GAR_REGISTRY: us-docker.pkg.dev
+      ARTIFACT_REPOSITORY: ${{ secrets.GCP_ARTIFACT_REPOSITORY }}
+      ARTIFACT_URL: us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_ARTIFACT_REPOSITORY }}
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-        env:
-          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GAR_REGISTRY: us-docker.pkg.dev
-          ARTIFACT_REPOSITORY: ${{ secrets.GCP_ARTIFACT_REPOSITORY }}
-          ARTIFACT_URL: ${{ env.GAR_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}
 
       - name: Print environment variables
         run: |
