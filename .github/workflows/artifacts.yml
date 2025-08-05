@@ -30,13 +30,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Print environment variables
-        run: |
-          echo "PROJECT_ID='${{ env.PROJECT_ID }}'"
-          echo "GAR_REGISTRY='${{ env.GAR_REGISTRY }}'"
-          echo "ARTIFACT_REPOSITORY='${{ env.ARTIFACT_REPOSITORY }}'"
-          echo "ARTIFACT_URL='${{ env.ARTIFACT_URL }}'"
-
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
@@ -61,20 +54,20 @@ jobs:
           aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws --profile default configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      # - name: Download and unpack artifact
-      #   run: |
-      #     curl -L \
-      #       -H "Accept: application/vnd.github+json" \
-      #       -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-      #       -H "X-GitHub-Api-Version: 2022-11-28" \
-      #       -o artifact.zip \
-      #       https://api.github.com/repos/selfxyz/self/actions/artifacts/3424161964/zip
+      - name: Download and unpack artifact
+        run: |
+          curl -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o artifact.zip \
+            https://api.github.com/repos/selfxyz/self/actions/artifacts/3424161964/zip
 
-      # - name: Sort circuits
-      #   run: |
-      #     unzip artifact.zip -d ./circuits/
-      #     chmod +x sort_circuits.sh
-      #     ./sort_circuits.sh
+      - name: Sort circuits
+        run: |
+          unzip artifact.zip -d ./circuits/
+          chmod +x sort_circuits.sh
+          ./sort_circuits.sh
 
       - name: Install aws cli
         run: |
@@ -84,21 +77,21 @@ jobs:
             sudo ./aws/install
           fi
 
-      # - name: Download and unpack zkeys
-      #   run: |
-      #     rm -rf zkeys
-      #     chmod +x download_zkeys.sh && ./download_zkeys.sh
-      #     mkdir zkeys
-      #     mv *.zkey zkeys/
+      - name: Download and unpack zkeys
+        run: |
+          rm -rf zkeys
+          chmod +x download_zkeys.sh && ./download_zkeys.sh
+          mkdir zkeys
+          mv *.zkey zkeys/
 
-      # - name: Reformat zkeys
-      #   run: |
-      #     mkdir -p zkeys/register zkeys/disclose zkeys/dsc
-      #     mv zkeys/register_* zkeys/register/
-      #     mv zkeys/vc_and_disclose*.zkey zkeys/disclose/
-      #     mv zkeys/dsc_* zkeys/dsc/
-      #     chmod +x sort_zkeys.sh
-      #     ./sort_zkeys.sh
+      - name: Reformat zkeys
+        run: |
+          mkdir -p zkeys/register zkeys/disclose zkeys/dsc
+          mv zkeys/register_* zkeys/register/
+          mv zkeys/vc_and_disclose*.zkey zkeys/disclose/
+          mv zkeys/dsc_* zkeys/dsc/
+          chmod +x sort_zkeys.sh
+          ./sort_zkeys.sh
 
       - name: Init submodules
         run: |
