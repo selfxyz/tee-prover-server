@@ -16,7 +16,6 @@ jobs:
     secrets: inherit
     if: github.ref == 'refs/heads/main'
     with:
-      runner: "prod-runner"
       environment: "PRD"
       tag: "latest"
 
@@ -25,6 +24,5 @@ jobs:
     secrets: inherit
     if: github.ref == 'refs/heads/staging'
     with:
-      runner: "stg-runner"
       environment: "STG"
       tag: "stg"

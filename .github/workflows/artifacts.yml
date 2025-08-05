@@ -2,10 +2,6 @@ name: TEE Docker Build
 on:
   workflow_call:
     inputs:
-      runner:
-        description: The runner
-        required: true
-        type: string
       environment:
         description: The GitHub Actions environment
         required: true
@@ -20,8 +16,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # runs-on: [self-hosted, "${{ inputs.runner }}"]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
 
     steps:
       - name: Checkout Repository
