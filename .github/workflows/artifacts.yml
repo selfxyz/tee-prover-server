@@ -99,6 +99,8 @@ jobs:
 
       - name: Build docker enclave images
         run: |
+          echo "TAG='${{ inputs.tag }}'"
+          echo "ARTIFACT_URL='${{ env.ARTIFACT_URL }}'"
           chmod +x ./build_docker.sh
           ./build_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }}
 
