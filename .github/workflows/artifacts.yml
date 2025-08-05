@@ -53,13 +53,6 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
 
-      - name: Docker Login to GAR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GAR_REGISTRY }}
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
-
       - name: Login to AWS
         run: |
           aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
