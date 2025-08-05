@@ -20,7 +20,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: [self-hosted, "${{ inputs.runner }}"]
+    # runs-on: [self-hosted, "${{ inputs.runner }}"]
     runs-on: ubuntu-latest
 
     steps:
