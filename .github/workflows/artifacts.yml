@@ -17,7 +17,8 @@ on:
 
 jobs:
   prod:
-    runs-on: [self-hosted, "${{ inputs.runner }}"]
+    # runs-on: [self-hosted, "${{ inputs.runner }}"]
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
