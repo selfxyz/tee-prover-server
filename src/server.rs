@@ -1,20 +1,20 @@
-use aws_nitro_enclaves_nsm_api::api::ErrorCode;
+use base64::engine::{general_purpose, Engine};
 use jsonrpsee::core::async_trait;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types;
 use jsonrpsee::{types::ErrorObjectOwned, ResponsePayload};
 use p256::ecdh::EphemeralSecret;
+use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::elliptic_curve::PublicKey;
-use rand_core::{CryptoRng, RngCore};
+use rand_core::OsRng;
 use sqlx::Pool;
 use std::collections::HashMap;
-use std::io;
 use std::sync::Arc;
 
 use crate::db::create_proof_status;
 use crate::store::LruStore;
 use crate::types::{ProofRequest, SubmitRequest};
-use crate::utils::{self, nsm_get_random};
+use crate::utils;
 use crate::{generator::file_generator::FileGenerator, types::HelloResponse};
 
 #[rpc(server, namespace = "openpassport")]
@@ -38,7 +38,6 @@ pub trait Rpc {
 }
 
 pub struct RpcServerImpl {
-    fd: i32,
     store: LruStore,
     file_generator_sender: tokio::sync::mpsc::Sender<FileGenerator>,
     circuit_zkey_map: Arc<HashMap<String, String>>,
@@ -47,14 +46,12 @@ pub struct RpcServerImpl {
 
 impl RpcServerImpl {
     pub fn new(
-        fd: i32,
         store: LruStore,
         file_generator_sender: tokio::sync::mpsc::Sender<FileGenerator>,
         circuit_zkey_map: Arc<HashMap<String, String>>,
         db: Pool<sqlx::Postgres>,
     ) -> Self {
         Self {
-            fd,
             store,
             file_generator_sender,
             circuit_zkey_map,
@@ -74,40 +71,47 @@ impl RpcServer for RpcServerImpl {
         user_pubkey: Vec<u8>,
         uuid: uuid::Uuid,
     ) -> ResponsePayload<'static, HelloResponse> {
-        if user_pubkey.len() != 65 {
+        if user_pubkey.len() != 33 {
             return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
                 types::ErrorCode::InvalidRequest.code(), //BAD_REQUEST
-                "Public key must be 65 bytes",
+                "Public key must be 33 bytes",
                 None,
             ));
         };
 
-        let mut nitro_rng = NitroRng::new(self.fd);
-
-        let my_private_key = EphemeralSecret::random(&mut nitro_rng);
-        let my_public_key = PublicKey::from(&my_private_key).to_sec1_bytes().to_vec();
-
-        let attestation = match utils::get_attestation(
-            self.fd,
-            Some(user_pubkey.clone()),
-            None,
-            Some(my_public_key.clone()),
-        ) {
-            Ok(attestation) => attestation,
-            Err(err) => {
-                return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
-                    types::ErrorCode::InternalError.code(), //INTERNAL_SERVER_ERROR
-                    format!("{:?}", err),
-                    None,
-                ));
-            }
-        };
+        let mut rng = OsRng;
+        let my_private_key = EphemeralSecret::random(&mut rng);
+        let my_public_key = PublicKey::from(&my_private_key);
 
         let their_public_key = match PublicKey::from_sec1_bytes(&user_pubkey) {
             Ok(pubkey) => pubkey,
             Err(err) => {
                 return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
                     types::ErrorCode::InvalidParams.code(), //INVALID_PARAMS
+                    format!("{:?}", err),
+                    None,
+                ));
+            }
+        };
+
+        let their_public_key_compressed =
+            their_public_key.to_encoded_point(true).to_bytes().to_vec();
+        let my_public_key_compressed = my_public_key.to_encoded_point(true).to_bytes().to_vec();
+
+        let their_public_key_string =
+            general_purpose::STANDARD.encode(&their_public_key_compressed);
+        let my_public_key_string = general_purpose::STANDARD.encode(&my_public_key_compressed);
+
+        let attestation = match utils::attestation::get_custom_token_bytes(vec![
+            &their_public_key_string,
+            &my_public_key_string,
+        ])
+        .await
+        {
+            Ok(attestation) => attestation,
+            Err(err) => {
+                return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
+                    types::ErrorCode::InternalError.code(), //INTERNAL_SERVER_ERROR
                     format!("{:?}", err),
                     None,
                 ));
@@ -335,54 +339,3 @@ impl RpcServer for RpcServerImpl {
         ResponsePayload::success(uuid.to_string())
     }
 }
-
-pub struct NitroRng {
-    fd: i32, // File descriptor for NitroSecureModule
-}
-
-impl NitroRng {
-    pub fn new(fd: i32) -> Self {
-        Self { fd }
-    }
-}
-
-impl RngCore for NitroRng {
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        unsafe {
-            let mut buf_len = dest.len();
-            let res = nsm_get_random(self.fd, dest.as_mut_ptr(), &mut buf_len);
-            match res {
-                ErrorCode::Success => (),
-                _ => panic!("Failed to get random bytes: {:?}", res),
-            }
-        }
-    }
-
-    fn next_u32(&mut self) -> u32 {
-        let mut buf = [0u8; 4];
-        self.fill_bytes(&mut buf);
-        u32::from_le_bytes(buf)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut buf = [0u8; 8];
-        self.fill_bytes(&mut buf);
-        u64::from_le_bytes(buf)
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        unsafe {
-            let mut buf_len = dest.len();
-            let res = nsm_get_random(self.fd, dest.as_mut_ptr(), &mut buf_len);
-            match res {
-                ErrorCode::Success => Ok(()),
-                _ => Err(rand_core::Error::new(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Could not generate random data",
-                ))),
-            }
-        }
-    }
-}
-
-impl CryptoRng for NitroRng {}
