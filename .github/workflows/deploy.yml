@@ -19,7 +19,7 @@ jobs:
   stg:
     uses: ./.github/workflows/artifacts.yml
     secrets: inherit
-    if: github.ref == 'refs/heads/stg'
+    if: github.ref == 'refs/heads/staging'
     with:
       runner: "stg-runner"
       environment: "STG"

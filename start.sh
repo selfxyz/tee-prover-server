@@ -15,10 +15,6 @@ DB_NAME=$(echo "$DB_PARAMS" | sed -E 's#^.*/([^/]+)$#\1#')
 
 DATABASE_URL="postgres://$DB_USER:$DB_PASS@127.0.0.2:8889/$DB_NAME"
 
-echo $DATABASE_URL
-
-cd / && ./merge_zkeys.sh
-
 ulimit -s 500000
 
 ./usr/local/bin/tee-server \
