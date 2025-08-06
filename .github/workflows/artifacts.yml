@@ -47,7 +47,7 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
-          gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
+          sudo gcloud auth configure-docker ${{ env.GAR_REGISTRY }}
 
       # - name: Install aws cli
       #   run: |
