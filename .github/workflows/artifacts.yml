@@ -45,9 +45,10 @@ jobs:
           version: ">= 363.0.0"
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Configure Docker for Artifact Registry
+      - name: Configure Docker for Artifact Registry (sudo with explicit path)
         run: |
-          sudo gcloud auth configure-docker ${{ env.GAR_REGISTRY }}
+          GCLOUD_BIN=$(which gcloud)
+          sudo "$GCLOUD_BIN" auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
 
       # - name: Install aws cli
       #   run: |
