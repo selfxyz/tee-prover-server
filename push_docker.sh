@@ -20,7 +20,7 @@ for ITEM in "${PROOFS_SIZES[@]}"; do
 
     IMAGE_NAME="${DOCKER_ORG}/tee-server-${PROOF}"
     [[ "$SIZE" != "small" ]] && IMAGE_NAME+="-${SIZE}"
-    PUSH_COMMANDS+=("sudo docker push ${IMAGE_NAME}:${TAG}")
+    PUSH_COMMANDS+=("docker push ${IMAGE_NAME}:${TAG}")
 done
 
 printf "%s\n" "${PUSH_COMMANDS[@]}" | xargs -I {} -P 1 bash -c "{}"
