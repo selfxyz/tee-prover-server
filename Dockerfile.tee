@@ -45,6 +45,6 @@ COPY start.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/start.sh
 
 EXPOSE 8888
+LABEL "tee.launch_policy.allow_env_override"="DATABASE_URL"
 
 CMD ["/usr/local/bin/start.sh"]
-

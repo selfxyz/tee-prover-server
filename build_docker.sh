@@ -14,8 +14,6 @@ PROOFS_SIZES=(
 DOCKER_ORG=$1
 TAG=$2
 
-echo "DOCKER_ORG='${DOCKER_ORG}', TAG='${TAG}'"
-
 BUILD_COMMANDS=()
 for ITEM in "${PROOFS_SIZES[@]}"; do
     PROOF="${ITEM%%:*}"  
