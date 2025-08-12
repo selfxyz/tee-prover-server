@@ -13,6 +13,7 @@ use std::sync::Arc;
 use clap::Parser;
 use db::{set_witness_generated, update_proof};
 use generator::{proof_generator::ProofGenerator, witness_generator::WitnessGenerator};
+use google_cloud_secretmanager_v1::client::SecretManagerService;
 use jsonrpsee::server::Server;
 use server::RpcServer;
 use sqlx::postgres::PgPoolOptions;
@@ -20,6 +21,23 @@ use utils::{cleanup, get_tmp_folder_path};
 
 #[tokio::main]
 async fn main() {
+    let client = SecretManagerService::builder().build().await.unwrap();
+
+    let project = std::env::var("PROJECT_ID").unwrap();
+    let secret = std::env::var("SECRET_ID").unwrap();
+    let name = format!("projects/{}/secrets/{}/versions/latest", project, secret);
+
+    let resp = client
+        .access_secret_version()
+        .set_name(name)
+        .send()
+        .await
+        .unwrap();
+
+    let payload = resp.payload.unwrap().data.to_vec();
+    //creds is a plain string with the db url
+    let database_url = String::from_utf8(payload).unwrap();
+
     let config = args::Config::parse();
     let server_url = config.server_address;
 
@@ -35,7 +53,7 @@ async fn main() {
 
     let pool = match PgPoolOptions::new()
         .max_connections(20)
-        .connect(&config.database_url)
+        .connect(&database_url)
         .await
     {
         Ok(pool) => pool,

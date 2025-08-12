@@ -6,13 +6,14 @@ pub struct Config {
     #[arg(short, long, default_value = "0.0.0.0:3001")]
     pub server_address: String,
 
-    /// PostgreSQL database connection URL
-    #[arg(
-        short,
-        long,
-        default_value = "postgres://postgres:mysecretpassword@localhost:5433/db"
-    )]
-    pub database_url: String,
+    /// Secret manager project id
+    #[arg(short, long)]
+    pub project_id: String,
+
+    /// Secret manager secret id
+    #[arg(short, long, default_value = "DB_URL")]
+    pub secret_id: String,
+
     /// Circuit folder path
     #[arg(short = 'c', long, default_value = "../circuits")]
     pub circuit_folder: String,

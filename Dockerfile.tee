@@ -41,11 +41,14 @@ COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 RUN chmod +x /usr/local/bin/tee-server
 
+COPY update_creds.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/update_creds.sh
+
 COPY start.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/start.sh
 
 EXPOSE 8888
-LABEL "tee.launch_policy.allow_env_override"="DATABASE_URL"
+LABEL "tee.launch_policy.allow_env_override"="PROJECT_ID,POOL_NAME,SECRET_ID"
 
 WORKDIR /usr/local/bin
 
