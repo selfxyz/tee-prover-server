@@ -30,7 +30,7 @@ impl WitnessGenerator {
             return Err(format!("Circuit not found: {}", path.to_str().unwrap()));
         }
 
-        let circuit_exe = format!("./{}", path.into_os_string().into_string().unwrap());
+        let circuit_exe = format!("{}", path.into_os_string().into_string().unwrap());
 
         match tokio::process::Command::new("chmod")
             .arg("+x")
