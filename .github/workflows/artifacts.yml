@@ -30,14 +30,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Authenticate to Google Cloud (ID token)
+      - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          token_format: id_token
-          audience: ${{ secrets.GCP_CF_URL }}
+          token_format: access_token
           project_id: ${{ env.PROJECT_ID }}
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }} # full resource path
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
@@ -116,6 +115,16 @@ jobs:
           chmod +x push_docker.sh
           ./push_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }}
 
+      - name: Mint ID token for Cloud Function
+        id: cf_token
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: id_token
+          audience: ${{ secrets.GCP_CF_URL }}                            # CF Gen2 HTTPS URL
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+          create_credentials_file: false
+
       - name: Trigger Cloud Function (notify image publish)
         if: success()
         env:
@@ -123,30 +132,9 @@ jobs:
           TAG: ${{ inputs.tag }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            (sudo yum -y install jq || (sudo apt-get update && sudo apt-get install -y jq))
-          fi
-
-          if [ ! -f pushed-image-digests.txt ]; then
-            echo "pushed-image-digests.txt not found" >&2
-            exit 1
-          fi
-
-          jq -R -s 'split("\n") | map(select(length>0))' pushed-image-digests.txt > digests.json
-
-          PAYLOAD=$(jq -n \
-            --arg tag "$TAG" \
-            --arg env "$ENVIRONMENT" \
-            --arg repo "${{ github.repository }}" \
-            --arg sha "${{ github.sha }}" \
-            --arg actor "${{ github.actor }}" \
-            --slurpfile imgs digests.json \
-            '{tag:$tag, environment:$env, repository:$repo, sha:$sha, actor:$actor, image_digests:$imgs[0]}')
-
-          IDTOKEN=$(gcloud auth print-identity-token --audiences="$CF_URL")
-
+          # (build your PAYLOAD as before)
           curl -fsSL -X POST \
-            -H "Authorization: Bearer $IDTOKEN" \
+            -H "Authorization: Bearer ${{ steps.cf_token.outputs.id_token }}" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" \
             "$CF_URL"
