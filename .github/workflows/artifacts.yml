@@ -48,8 +48,8 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
-          sudo usermod -aG docker ec2-user
-          newgrp docker
+          # sudo usermod -aG docker ec2-user
+          # newgrp docker
           gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
 
       - name: Install aws cli
