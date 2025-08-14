@@ -157,8 +157,7 @@ jobs:
           # Prereqs:
           # - Your WIF principal has roles/iam.serviceAccountTokenCreator on $SA_EMAIL
           # - $SA_EMAIL has roles/run.invoker (or cloudfunctions.invoker) on the function
-          IDTOKEN=$(gcloud auth print-identity-token $SA_EMAIL \
-            --audiences="$CF_URL")
+          IDTOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$SA_EMAIL" --audiences="$CF_URL")
 
           # Invoke the Cloud Function
           curl -fsSL -X POST \
