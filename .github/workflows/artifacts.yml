@@ -39,6 +39,11 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }} # full resource path
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
+      - name: Echo service account email to file
+        run: |
+          echo "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}" > service_account_email.txt
+          echo "Service account email written to service_account_email.txt"
+
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
