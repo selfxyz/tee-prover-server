@@ -115,6 +115,12 @@ jobs:
           chmod +x push_docker.sh
           ./push_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }}
 
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 15
+        with:
+          limit-access-to-actor: true
+
       - name: Trigger Cloud Function (notify image publish)
         if: success()
         env:
