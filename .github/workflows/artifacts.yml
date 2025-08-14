@@ -16,8 +16,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # runs-on: [self-hosted-gha]
-    runs-on: [ubuntu-latest]
+    runs-on: [self-hosted-gha]
 
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
