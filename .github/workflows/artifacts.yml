@@ -30,13 +30,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud (ID token)
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          token_format: access_token
+          token_format: id_token
+          audience: ${{ secrets.GCP_CF_URL }}
           project_id: ${{ env.PROJECT_ID }}
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }} # full resource path
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
@@ -142,7 +143,7 @@ jobs:
             --slurpfile imgs digests.json \
             '{tag:$tag, environment:$env, repository:$repo, sha:$sha, actor:$actor, image_digests:$imgs[0]}')
 
-          IDTOKEN=$(gcloud auth print-identity-token)
+          IDTOKEN=$(gcloud auth print-identity-token --audiences="$CF_URL")
 
           curl -fsSL -X POST \
             -H "Authorization: Bearer $IDTOKEN" \
