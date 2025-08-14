@@ -39,11 +39,6 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }} # full resource path
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
-      - name: Echo service account email to file
-        run: |
-          echo "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}" > service_account_email.txt
-          echo "Service account email written to service_account_email.txt"
-
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
@@ -163,8 +158,7 @@ jobs:
           # - Your WIF principal has roles/iam.serviceAccountTokenCreator on $SA_EMAIL
           # - $SA_EMAIL has roles/run.invoker (or cloudfunctions.invoker) on the function
           IDTOKEN=$(gcloud auth print-identity-token \
-            --audiences="$CF_URL" \
-            --impersonate-service-account="$SA_EMAIL")
+            --audiences="$CF_URL")
 
           # Invoke the Cloud Function
           curl -fsSL -X POST \
