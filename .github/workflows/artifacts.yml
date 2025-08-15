@@ -36,7 +36,7 @@ jobs:
         with:
           token_format: access_token
           project_id: ${{ env.PROJECT_ID }}
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }} # full resource path
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
@@ -47,8 +47,8 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
-          # sudo usermod -aG docker ec2-user
-          # newgrp docker
+          sudo usermod -aG docker ec2-user
+          newgrp docker
           gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
 
       - name: Install aws cli
@@ -89,9 +89,9 @@ jobs:
       - name: Reformat zkeys
         run: |
           mkdir -p zkeys/register zkeys/disclose zkeys/dsc
-          # mv zkeys/register_* zkeys/register/
+          mv zkeys/register_* zkeys/register/
           mv zkeys/vc_and_disclose*.zkey zkeys/disclose/
-          # mv zkeys/dsc_* zkeys/dsc/
+          mv zkeys/dsc_* zkeys/dsc/
           chmod +x sort_zkeys.sh
           ./sort_zkeys.sh
 
@@ -118,32 +118,26 @@ jobs:
       - name: Trigger Cloud Function (notify image publish)
         if: success()
         env:
-          # HTTPS URL of your Cloud Function (Gen2), e.g. https://us-central1-<proj>.cloudfunctions.net/notifyImagePublish
           CF_URL: ${{ secrets.GCP_CF_URL }}
-          # The same service account you use for WIF (must have Invoker on the function)
           SA_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
           TAG: ${{ inputs.tag }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
 
-          # Ensure jq is available (supports Amazon Linux or Ubuntu runners)
           if ! command -v jq >/dev/null 2>&1; then
             (sudo yum -y install jq || (sudo apt-get update && sudo apt-get install -y jq)) || {
               echo "jq not found and failed to install" >&2; exit 1;
             }
           fi
 
-          # Ensure your push script created the digests file
           if [ ! -f pushed-image-digests.txt ]; then
             echo "pushed-image-digests.txt not found. Did push_docker.sh write it?" >&2
             exit 1
           fi
 
-          # Convert newline-separated digests -> JSON array
           jq -R -s 'split("\n") | map(select(length>0))' pushed-image-digests.txt > digests.json
 
-          # Build the payload your function expects
           PAYLOAD=$(jq -n \
             --arg tag "$TAG" \
             --arg env "$ENVIRONMENT" \
@@ -153,13 +147,8 @@ jobs:
             --slurpfile digests digests.json \
             '{tag:$tag, environment:$env, repository:$repo, sha:$sha, actor:$actor, image_digests:$digests[0]}')
 
-          # Mint an ID token for the Cloud Function *via impersonation*
-          # Prereqs:
-          # - Your WIF principal has roles/iam.serviceAccountTokenCreator on $SA_EMAIL
-          # - $SA_EMAIL has roles/run.invoker (or cloudfunctions.invoker) on the function
           IDTOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$SA_EMAIL" --audiences="$CF_URL")
 
-          # Invoke the Cloud Function
           curl -fsSL -X POST \
             -H "Authorization: Bearer $IDTOKEN" \
             -H "Content-Type: application/json" \

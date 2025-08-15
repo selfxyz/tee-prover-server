@@ -2,13 +2,13 @@
 
 # Define proof type and size as pairs
 PROOFS_SIZES=(
-    # "register:small"
-    # "register:medium"
-    # "register:large"
+    "register:small"
+    "register:medium"
+    "register:large"
     "disclose:small"
-    # "dsc:small"
-    # "dsc:medium"
-    # "dsc:large"
+    "dsc:small"
+    "dsc:medium"
+    "dsc:large"
 )
 
 DOCKER_ORG=$1
