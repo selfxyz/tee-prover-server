@@ -4,11 +4,11 @@ Terraform module for TEE (Trusted Execution Environment) Confidential Compute wo
 
 ## What It Creates
 
-- **Instance Template** - Confidential Compute VMs with SEV encryption
-- **Managed Instance Group** - Auto-healing and rolling updates  
-- **Health Check** - TCP connectivity check on port 8888
+- **Instance Templates** - Confidential Compute VMs with SEV encryption
+- **Managed Instance Groups** - Auto-healing and rolling updates  
+- **Health Checks** - TCP connectivity check on configured ports
 
-Currently configured for **disclose** workloads, designed to extend for `register` and `dsc` types.
+Supports **disclose**, **register**, and **dsc** workload types simultaneously.
 
 ## Instance Configuration
 - **Machine**: `n2d-standard-16` (AMD Milan)
@@ -27,8 +27,24 @@ Currently configured for **disclose** workloads, designed to extend for `registe
 1. **Configure variables** in `terraform.tfvars`:
    ```hcl
    project_id = "your-project-id"
-   disclose_target_size = 2
-   disclose_tee_image_reference = "your-container-image:latest"
+   
+   workloads = {
+     disclose = {
+       target_size = 2
+       tee_image_reference = "your-disclose-image:latest"
+       # ... other settings
+     }
+     register = {
+       target_size = 1
+       tee_image_reference = "your-register-image:latest"
+       # ... other settings  
+     }
+     dsc = {
+       target_size = 1
+       tee_image_reference = "your-dsc-image:latest"
+       # ... other settings
+     }
+   }
    ```
 
 2. **Deploy**:
@@ -41,7 +57,7 @@ Currently configured for **disclose** workloads, designed to extend for `registe
 3. **Verify**:
    ```bash
    gcloud compute instance-groups managed list
-   gcloud compute instances list --filter="name:tee-disclose-instance"
+   gcloud compute instances list --filter="name~'tee-(disclose|register|dsc)-instance'"
    ```
 
 ## Key Variables
@@ -49,25 +65,30 @@ Currently configured for **disclose** workloads, designed to extend for `registe
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `project_id` | GCP Project ID | Required |
-| `disclose_target_size` | Number of instances | `1` |
-| `disclose_tee_image_reference` | Container image | Required |
-| `machine_type` | VM machine type | `n2d-standard-16` |
+| `workloads` | Map of workload configurations | Required |
 | `zone` | GCP Zone | `us-west1-b` |
+
+Each workload in the `workloads` map supports:
+- `machine_type`, `target_size`, `tee_image_reference`
+- `instance_group_name`, `pool_name`, `secret_id`
+- `http_port`, `health_check_path`, etc.
 
 ## Operations
 
-**Scaling:**
+**Scaling specific workload:**
+Edit `terraform.tfvars` and modify `target_size` for any workload, then:
 ```bash
-tofu apply -var="disclose_target_size=3"
+tofu apply
 ```
 
 **Update container image:**
+Edit `terraform.tfvars` and modify `tee_image_reference` for any workload, then:
 ```bash
-tofu apply -var="disclose_tee_image_reference=new-image:latest"
+tofu apply
 ```
 
 ## Outputs
 
-- `disclose_instance_template_id`
-- `disclose_instance_group_manager_id` 
-- `disclose_health_check_id`
+- `instance_template_ids` - Map of template IDs by workload type
+- `instance_group_manager_ids` - Map of instance group IDs by workload type  
+- `health_check_ids` - Map of health check IDs by workload type
