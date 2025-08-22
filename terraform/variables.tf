@@ -57,8 +57,9 @@ variable "workloads" {
     target_size                = number
     pool_name                  = string
     secret_id                  = string
-    http_port                  = number
+    tee_port                   = number
     health_check_path          = string
     health_check_initial_delay = number
+    use_spot_instances         = bool
   }))
 }
