@@ -1,7 +1,3 @@
-# Terraform files
-*.tfvars
-*.tfvars.json
-
 # Terraform state files
 *.tfstate
 *.tfstate.*
