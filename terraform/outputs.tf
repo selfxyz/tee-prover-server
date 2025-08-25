@@ -28,25 +28,50 @@ output "health_check_ids" {
   value       = { for k, v in google_compute_health_check.tee_health_checks : k => v.id }
 }
 
-# Load Balancer Outputs
+# HTTP Load Balancer Outputs
 output "load_balancer_ip" {
-  description = "External IP address of the load balancer"
-  value       = google_compute_address.tee_lb_ip.address
+  description = "External IP address of the HTTP load balancer"
+  value       = google_compute_global_address.tee_lb_ip.address
 }
 
 output "load_balancer_endpoints" {
-  description = "Load balancer endpoints for each workload"
+  description = "HTTP load balancer endpoints for each workload"
   value = {
-    for k, v in google_compute_forwarding_rule.tee_forwarding_rules : k => {
-      external_ip   = google_compute_address.tee_lb_ip.address
-      external_port = local.workload_external_ports[k]
-      endpoint_url  = "${google_compute_address.tee_lb_ip.address}:${local.workload_external_ports[k]}"
-      workload_type = k
+    disclose = {
+      external_ip   = google_compute_global_address.tee_lb_ip.address
+      external_port = "80"
+      endpoint_url  = "http://${google_compute_global_address.tee_lb_ip.address}/disclose"
+      workload_type = "disclose"
+      path         = "/disclose"
+    }
+    register = {
+      external_ip   = google_compute_global_address.tee_lb_ip.address
+      external_port = "80"
+      endpoint_url  = "http://${google_compute_global_address.tee_lb_ip.address}/register"
+      workload_type = "register"
+      path         = "/register"
+    }
+    dsc = {
+      external_ip   = google_compute_global_address.tee_lb_ip.address
+      external_port = "80"
+      endpoint_url  = "http://${google_compute_global_address.tee_lb_ip.address}/dsc"
+      workload_type = "dsc"
+      path         = "/dsc"
     }
   }
 }
 
 output "backend_service_ids" {
   description = "Map of backend service IDs by workload type"
-  value       = { for k, v in google_compute_region_backend_service.tee_backend_services : k => v.id }
+  value       = { for k, v in google_compute_backend_service.tee_backend_services : k => v.id }
+}
+
+output "url_map_id" {
+  description = "URL map ID for the HTTP load balancer"
+  value       = google_compute_url_map.tee_url_map.id
+}
+
+output "http_proxy_id" {
+  description = "HTTP target proxy ID"
+  value       = google_compute_target_http_proxy.tee_http_proxy.id
 }

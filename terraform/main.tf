@@ -27,10 +27,10 @@ resource "google_compute_instance_template" "tee_templates" {
 
   # Scheduling configuration for confidential compute
   scheduling {
-    on_host_maintenance = each.value.use_spot_instances ? "TERMINATE" : "MIGRATE"
-    preemptible = each.value.use_spot_instances
-    provisioning_model = each.value.use_spot_instances ? "SPOT" : "STANDARD"
-    automatic_restart = !each.value.use_spot_instances
+    on_host_maintenance         = each.value.use_spot_instances ? "TERMINATE" : "MIGRATE"
+    preemptible                 = each.value.use_spot_instances
+    provisioning_model          = each.value.use_spot_instances ? "SPOT" : "STANDARD"
+    automatic_restart           = !each.value.use_spot_instances
     instance_termination_action = "STOP"
   }
 
@@ -38,7 +38,7 @@ resource "google_compute_instance_template" "tee_templates" {
     source_image = "${var.image_project}/${var.image_family}"
     auto_delete  = true
     boot         = true
-    disk_type    = "pd-standard"
+    disk_type    = "pd-balanced"
     disk_size_gb = each.value.disk_size_gb
   }
 
@@ -86,7 +86,7 @@ resource "google_compute_instance_group_manager" "tee_instance_groups" {
 
   named_port {
     name = "tee"
-    port = each.value.tee_port
+    port = 8888
   }
 
   auto_healing_policies {
@@ -111,17 +111,18 @@ resource "google_compute_firewall" "allow_health_checks" {
 
   allow {
     protocol = "tcp"
-    ports    = toset([for workload in var.workloads : tostring(workload.tee_port)])
+    ports    = ["8888"]
   }
 
   # Google Cloud health check IP ranges
   source_ranges = [
-    "35.191.0.0/16",    # Google Cloud health check IPs
-    "130.211.0.0/22"    # Google Cloud health check IPs  
+    "35.191.0.0/16",  # Google Cloud health check IPs
+    "130.211.0.0/22", # Google Cloud health check IPs
+    "0.0.0.0/0"       # Allow external traffic through load balancer
   ]
 
   target_tags = ["tee-traffic"]
-  
+
   description = "Allow health check traffic to TEE instances"
 }
 
@@ -132,33 +133,34 @@ resource "google_compute_firewall" "allow_lb_to_instances" {
 
   allow {
     protocol = "tcp"
-    ports    = toset([for workload in var.workloads : tostring(workload.tee_port)])
+    ports    = ["8888"]
   }
 
   # Load balancer IP ranges (Google Cloud load balancer source IPs)
   source_ranges = [
-    "35.191.0.0/16",     # Google Cloud load balancer IPs
-    "130.211.0.0/22"     # Google Cloud load balancer IPs
+    "35.191.0.0/16",  # Google Cloud load balancer IPs
+    "130.211.0.0/22", # Google Cloud load balancer IPs
+    "0.0.0.0/0"       # Allow external traffic through load balancer
   ]
 
   target_tags = ["tee-traffic"]
-  
+
   description = "Allow load balancer traffic to TEE instances"
 }
 
-# Firewall rule to allow external traffic to load balancer ports
+# Firewall rule to allow external HTTP traffic to load balancer
 resource "google_compute_firewall" "allow_external_to_lb" {
   name    = "allow-external-to-tee-lb"
   network = var.network
 
   allow {
     protocol = "tcp"
-    ports    = [for k, v in local.workload_external_ports : v]
+    ports    = ["80"]
   }
 
   source_ranges = ["0.0.0.0/0"]
-  
-  description = "Allow external traffic to TEE load balancer ports"
+
+  description = "Allow external HTTP traffic to TEE load balancer"
 }
 
 # Health Checks for MIG auto-healing
@@ -167,76 +169,115 @@ resource "google_compute_health_check" "tee_health_checks" {
 
   name = "${each.value.instance_group_name}-health-check"
 
-  timeout_sec        = 10
-  check_interval_sec = 30
+  timeout_sec         = 15
+  check_interval_sec  = 60
+  healthy_threshold   = 1
+  unhealthy_threshold = 5
 
   tcp_health_check {
-    port = each.value.tee_port
+    port = 8888
   }
 }
 
-# Regional TCP Health Checks for Load Balancer
-resource "google_compute_region_health_check" "tee_lb_health_checks" {
+# Global TCP Health Checks for Load Balancer
+resource "google_compute_health_check" "tee_lb_health_checks" {
   for_each = var.workloads
 
-  name   = "${each.value.instance_group_name}-lb-health-check"
-  region = var.region
+  name = "${each.value.instance_group_name}-lb-health-check"
 
-  timeout_sec         = 5
-  check_interval_sec  = 10
-  healthy_threshold   = 2
-  unhealthy_threshold = 3
+  timeout_sec         = 10
+  check_interval_sec  = 30
+  healthy_threshold   = 1
+  unhealthy_threshold = 5
 
   tcp_health_check {
-    port = each.value.tee_port
+    port = 8888
   }
 }
 
-# Regional Backend Services for Load Balancer
-resource "google_compute_region_backend_service" "tee_backend_services" {
+# Global Backend Services for HTTP Load Balancer
+resource "google_compute_backend_service" "tee_backend_services" {
   for_each = var.workloads
 
   name                  = "${each.key}-backend-service"
-  region                = var.region
-  protocol              = "TCP"
+  protocol              = "HTTP"
   load_balancing_scheme = "EXTERNAL"
 
-  health_checks = [google_compute_region_health_check.tee_lb_health_checks[each.key].id]
+  health_checks = [google_compute_health_check.tee_lb_health_checks[each.key].id]
 
   backend {
-    group = google_compute_instance_group_manager.tee_instance_groups[each.key].instance_group
+    group          = google_compute_instance_group_manager.tee_instance_groups[each.key].instance_group
+    balancing_mode = "UTILIZATION"
   }
+
+  port_name = "tee"
 
   connection_draining_timeout_sec = 60
 }
 
-# Static IP for Load Balancer
-resource "google_compute_address" "tee_lb_ip" {
-  name   = "tee-load-balancer-ip"
-  region = var.region
+# Global Static IP for HTTP Load Balancer
+resource "google_compute_global_address" "tee_lb_ip" {
+  name = "tee-load-balancer-ip"
 }
 
-# Network Load Balancer Forwarding Rules (one per workload)
-resource "google_compute_forwarding_rule" "tee_forwarding_rules" {
-  for_each = var.workloads
+# URL Map for HTTP Load Balancer - routes based on path with path rewriting
+resource "google_compute_url_map" "tee_url_map" {
+  name            = "tee-url-map"
+  default_service = google_compute_backend_service.tee_backend_services["register"].id
 
-  name                  = "${each.key}-forwarding-rule"
-  region                = var.region
-  ip_address            = google_compute_address.tee_lb_ip.id
+  host_rule {
+    hosts        = ["*"]
+    path_matcher = "allpaths"
+  }
+
+  path_matcher {
+    name            = "allpaths"
+    default_service = google_compute_backend_service.tee_backend_services["register"].id
+
+    path_rule {
+      paths   = ["/disclose", "/disclose/*"]
+      service = google_compute_backend_service.tee_backend_services["disclose"].id
+      route_action {
+        url_rewrite {
+          path_prefix_rewrite = "/"
+        }
+      }
+    }
+
+    path_rule {
+      paths   = ["/register", "/register/*"]
+      service = google_compute_backend_service.tee_backend_services["register"].id
+      route_action {
+        url_rewrite {
+          path_prefix_rewrite = "/"
+        }
+      }
+    }
+
+    path_rule {
+      paths   = ["/dsc", "/dsc/*"]
+      service = google_compute_backend_service.tee_backend_services["dsc"].id
+      route_action {
+        url_rewrite {
+          path_prefix_rewrite = "/"
+        }
+      }
+    }
+  }
+}
+
+# HTTP(S) Target Proxy
+resource "google_compute_target_http_proxy" "tee_http_proxy" {
+  name    = "tee-http-proxy"
+  url_map = google_compute_url_map.tee_url_map.id
+}
+
+# Global Forwarding Rule for HTTP Load Balancer
+resource "google_compute_global_forwarding_rule" "tee_forwarding_rule" {
+  name                  = "tee-forwarding-rule"
   ip_protocol           = "TCP"
   load_balancing_scheme = "EXTERNAL"
-  
-  # Use different external ports for each workload
-  port_range = local.workload_external_ports[each.key]
-  
-  backend_service = google_compute_region_backend_service.tee_backend_services[each.key].id
-}
-
-# Local values for external port mapping
-locals {
-  workload_external_ports = {
-    disclose = "8880"
-    register = "8881" 
-    dsc      = "8882"
-  }
+  port_range            = "80"
+  target                = google_compute_target_http_proxy.tee_http_proxy.id
+  ip_address            = google_compute_global_address.tee_lb_ip.id
 }
