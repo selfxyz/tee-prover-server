@@ -35,28 +35,31 @@ output "load_balancer_ip" {
 }
 
 output "load_balancer_endpoints" {
-  description = "HTTP load balancer endpoints for each workload"
+  description = "HTTPS load balancer endpoints for each workload"
   value = {
     disclose = {
       external_ip   = google_compute_global_address.tee_lb_ip.address
-      external_port = "80"
-      endpoint_url  = "http://${google_compute_global_address.tee_lb_ip.address}/disclose"
+      external_port = "443"
+      endpoint_url  = "https://${var.domain}/disclose"
       workload_type = "disclose"
       path         = "/disclose"
+      domain       = var.domain
     }
     register = {
       external_ip   = google_compute_global_address.tee_lb_ip.address
-      external_port = "80"
-      endpoint_url  = "http://${google_compute_global_address.tee_lb_ip.address}/register"
+      external_port = "443"
+      endpoint_url  = "https://${var.domain}/register"
       workload_type = "register"
       path         = "/register"
+      domain       = var.domain
     }
     dsc = {
       external_ip   = google_compute_global_address.tee_lb_ip.address
-      external_port = "80"
-      endpoint_url  = "http://${google_compute_global_address.tee_lb_ip.address}/dsc"
+      external_port = "443"
+      endpoint_url  = "https://${var.domain}/dsc"
       workload_type = "dsc"
       path         = "/dsc"
+      domain       = var.domain
     }
   }
 }
@@ -72,6 +75,35 @@ output "url_map_id" {
 }
 
 output "http_proxy_id" {
-  description = "HTTP target proxy ID"
+  description = "HTTP target proxy ID (for redirect)"
   value       = google_compute_target_http_proxy.tee_http_proxy.id
+}
+
+output "https_proxy_id" {
+  description = "HTTPS target proxy ID"
+  value       = google_compute_target_https_proxy.tee_https_proxy.id
+}
+
+output "ssl_certificate_id" {
+  description = "SSL certificate ID"
+  value       = google_compute_managed_ssl_certificate.tee_ssl_cert.id
+}
+
+output "ssl_certificate_status" {
+  description = "SSL certificate status and details"
+  value = {
+    certificate_id = google_compute_managed_ssl_certificate.tee_ssl_cert.id
+    domains        = google_compute_managed_ssl_certificate.tee_ssl_cert.managed[0].domains
+    creation_timestamp = google_compute_managed_ssl_certificate.tee_ssl_cert.creation_timestamp
+  }
+}
+
+output "domain_configuration" {
+  description = "Domain configuration instructions"
+  value = {
+    domain    = var.domain
+    ip_address = google_compute_global_address.tee_lb_ip.address
+    dns_record_type = "A"
+    instructions = "Create an A record in CloudFlare: ${var.domain} -> ${google_compute_global_address.tee_lb_ip.address}"
+  }
 }

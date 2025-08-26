@@ -45,6 +45,12 @@ variable "network_tags" {
   default     = []
 }
 
+# Domain configuration
+variable "domain" {
+  description = "Domain name for the TEE services (e.g., tee.self.xyz)"
+  type        = string
+}
+
 # Workload configurations map
 variable "workloads" {
   description = "Map of workload configurations for different TEE types"

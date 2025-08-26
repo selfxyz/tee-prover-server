@@ -163,6 +163,21 @@ resource "google_compute_firewall" "allow_external_to_lb" {
   description = "Allow external HTTP traffic to TEE load balancer"
 }
 
+# Firewall rule to allow external HTTPS traffic to load balancer
+resource "google_compute_firewall" "allow_external_https_to_lb" {
+  name    = "allow-external-https-to-tee-lb"
+  network = var.network
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  description = "Allow external HTTPS traffic to TEE load balancer"
+}
+
 # Health Checks for MIG auto-healing
 resource "google_compute_health_check" "tee_health_checks" {
   for_each = var.workloads
@@ -266,18 +281,59 @@ resource "google_compute_url_map" "tee_url_map" {
   }
 }
 
-# HTTP(S) Target Proxy
-resource "google_compute_target_http_proxy" "tee_http_proxy" {
-  name    = "tee-http-proxy"
-  url_map = google_compute_url_map.tee_url_map.id
+# URL Map for HTTP to HTTPS redirect
+resource "google_compute_url_map" "tee_http_redirect" {
+  name = "tee-http-redirect"
+
+  default_url_redirect {
+    https_redirect         = true
+    redirect_response_code = "MOVED_PERMANENTLY_DEFAULT"
+    strip_query            = false
+  }
 }
 
-# Global Forwarding Rule for HTTP Load Balancer
+# HTTP Target Proxy (for redirecting to HTTPS)
+resource "google_compute_target_http_proxy" "tee_http_proxy" {
+  name    = "tee-http-proxy"
+  url_map = google_compute_url_map.tee_http_redirect.id
+}
+
+# SSL Certificate
+resource "google_compute_managed_ssl_certificate" "tee_ssl_cert" {
+  name = "tee-ssl-certificate"
+
+  managed {
+    domains = [var.domain]
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# HTTPS Target Proxy
+resource "google_compute_target_https_proxy" "tee_https_proxy" {
+  name             = "tee-https-proxy"
+  url_map          = google_compute_url_map.tee_url_map.id
+  ssl_certificates = [google_compute_managed_ssl_certificate.tee_ssl_cert.id]
+}
+
+# Global Forwarding Rule for HTTP Load Balancer (redirect to HTTPS)
 resource "google_compute_global_forwarding_rule" "tee_forwarding_rule" {
   name                  = "tee-forwarding-rule"
   ip_protocol           = "TCP"
   load_balancing_scheme = "EXTERNAL"
   port_range            = "80"
   target                = google_compute_target_http_proxy.tee_http_proxy.id
+  ip_address            = google_compute_global_address.tee_lb_ip.id
+}
+
+# Global Forwarding Rule for HTTPS Load Balancer
+resource "google_compute_global_forwarding_rule" "tee_https_forwarding_rule" {
+  name                  = "tee-https-forwarding-rule"
+  ip_protocol           = "TCP"
+  load_balancing_scheme = "EXTERNAL"
+  port_range            = "443"
+  target                = google_compute_target_https_proxy.tee_https_proxy.id
   ip_address            = google_compute_global_address.tee_lb_ip.id
 }

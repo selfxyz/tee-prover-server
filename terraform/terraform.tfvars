@@ -1,5 +1,8 @@
 project_id = "self-protocol"
 
+# Domain configuration
+domain = "tee.self.xyz"
+
 # Infrastructure settings
 region = "us-west1"
 zone   = "us-west1-b"
