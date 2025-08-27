@@ -42,24 +42,56 @@ output "load_balancer_endpoints" {
       external_port = "443"
       endpoint_url  = "https://${var.domain}/disclose"
       workload_type = "disclose"
-      path         = "/disclose"
-      domain       = var.domain
+      path          = "/disclose"
+      domain        = var.domain
     }
     register = {
       external_ip   = google_compute_global_address.tee_lb_ip.address
       external_port = "443"
       endpoint_url  = "https://${var.domain}/register"
       workload_type = "register"
-      path         = "/register"
-      domain       = var.domain
+      path          = "/register"
+      domain        = var.domain
+    }
+    register-medium = {
+      external_ip   = google_compute_global_address.tee_lb_ip.address
+      external_port = "443"
+      endpoint_url  = "https://${var.domain}/register-medium"
+      workload_type = "register-medium"
+      path          = "/register-medium"
+      domain        = var.domain
+    }
+    register-large = {
+      external_ip   = google_compute_global_address.tee_lb_ip.address
+      external_port = "443"
+      endpoint_url  = "https://${var.domain}/register-large"
+      workload_type = "register-large"
+      path          = "/register-large"
+      domain        = var.domain
     }
     dsc = {
       external_ip   = google_compute_global_address.tee_lb_ip.address
       external_port = "443"
       endpoint_url  = "https://${var.domain}/dsc"
       workload_type = "dsc"
-      path         = "/dsc"
-      domain       = var.domain
+      path          = "/dsc"
+      domain        = var.domain
+    }
+    dsc-medium = {
+      external_ip   = google_compute_global_address.tee_lb_ip.address
+      external_port = "443"
+      endpoint_url  = "https://${var.domain}/dsc-medium"
+      workload_type = "dsc-medium"
+      path          = "/dsc-medium"
+      domain        = var.domain
+    }
+    dsc-large = {
+      external_ip   = google_compute_global_address.tee_lb_ip.address
+      external_port = "443"
+      endpoint_url  = "https://${var.domain}/dsc-large"
+      workload_type = "dsc-large"
+      path          = "/dsc-large"
+      domain        = var.domain
     }
   }
 }
@@ -92,8 +124,8 @@ output "ssl_certificate_id" {
 output "ssl_certificate_status" {
   description = "SSL certificate status and details"
   value = {
-    certificate_id = google_compute_managed_ssl_certificate.tee_ssl_cert.id
-    domains        = google_compute_managed_ssl_certificate.tee_ssl_cert.managed[0].domains
+    certificate_id     = google_compute_managed_ssl_certificate.tee_ssl_cert.id
+    domains            = google_compute_managed_ssl_certificate.tee_ssl_cert.managed[0].domains
     creation_timestamp = google_compute_managed_ssl_certificate.tee_ssl_cert.creation_timestamp
   }
 }
@@ -101,9 +133,9 @@ output "ssl_certificate_status" {
 output "domain_configuration" {
   description = "Domain configuration instructions"
   value = {
-    domain    = var.domain
-    ip_address = google_compute_global_address.tee_lb_ip.address
+    domain          = var.domain
+    ip_address      = google_compute_global_address.tee_lb_ip.address
     dns_record_type = "A"
-    instructions = "Create an A record in CloudFlare: ${var.domain} -> ${google_compute_global_address.tee_lb_ip.address}"
+    instructions    = "Create an A record in CloudFlare: ${var.domain} -> ${google_compute_global_address.tee_lb_ip.address}"
   }
 }

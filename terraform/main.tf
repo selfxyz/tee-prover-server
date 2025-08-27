@@ -268,10 +268,45 @@ resource "google_compute_url_map" "tee_url_map" {
         }
       }
     }
-
+    path_rule {
+      paths   = ["/register-medium", "/register-medium/*"]
+      service = google_compute_backend_service.tee_backend_services["register-medium"].id
+      route_action {
+        url_rewrite {
+          path_prefix_rewrite = "/"
+        }
+      }
+    }
+    path_rule {
+      paths   = ["/register-large", "/register-large/*"]
+      service = google_compute_backend_service.tee_backend_services["register-large"].id
+      route_action {
+        url_rewrite {
+          path_prefix_rewrite = "/"
+        }
+      }
+    }
     path_rule {
       paths   = ["/dsc", "/dsc/*"]
       service = google_compute_backend_service.tee_backend_services["dsc"].id
+      route_action {
+        url_rewrite {
+          path_prefix_rewrite = "/"
+        }
+      }
+    }
+    path_rule {
+      paths   = ["/dsc-medium", "/dsc-medium/*"]
+      service = google_compute_backend_service.tee_backend_services["dsc-medium"].id
+      route_action {
+        url_rewrite {
+          path_prefix_rewrite = "/"
+        }
+      }
+    }
+    path_rule {
+      paths   = ["/dsc-large", "/dsc-large/*"]
+      service = google_compute_backend_service.tee_backend_services["dsc-large"].id
       route_action {
         url_rewrite {
           path_prefix_rewrite = "/"
