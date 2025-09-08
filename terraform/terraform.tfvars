@@ -9,8 +9,8 @@ zone   = "us-west1-b"
 
 # Confidential Computing settings
 image_project = "confidential-space-images"
-image_family  = "confidential-space-debug" # Debug image
-# image_family  = "confidential-space" # Production image
+# image_family  = "confidential-space-debug" # Debug image
+image_family  = "confidential-space" # Production image
 
 # Service account
 service_account_email = "self-protocol-workload@self-protocol.iam.gserviceaccount.com"

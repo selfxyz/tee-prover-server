@@ -56,7 +56,7 @@ resource "google_compute_instance_template" "tee_templates" {
 
   metadata = {
     tee-image-reference        = each.value.tee_image_reference
-    tee-container-log-redirect = "true"
+    tee-container-log-redirect = var.image_family == "confidential-space-debug" ? "true" : "false"
     tee-env-PROJECT_ID         = var.project_id
     tee-env-POOL_NAME          = each.value.pool_name
     tee-env-SECRET_ID          = each.value.secret_id
