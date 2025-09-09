@@ -50,6 +50,7 @@ jobs:
           sudo usermod -aG docker ec2-user
           newgrp docker
           gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
+          # trigger ci
 
       - name: Install aws cli
         run: |
