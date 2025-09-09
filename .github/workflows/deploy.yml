@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main
-      - stg
+      - staging
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   prod:
@@ -12,7 +16,6 @@ jobs:
     secrets: inherit
     if: github.ref == 'refs/heads/main'
     with:
-      runner: "prod-runner"
       environment: "PRD"
       tag: "latest"
 
@@ -21,6 +24,5 @@ jobs:
     secrets: inherit
     if: github.ref == 'refs/heads/staging'
     with:
-      runner: "stg-runner"
       environment: "STG"
       tag: "stg"

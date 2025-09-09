@@ -35,7 +35,7 @@ impl ProofGenerator {
         // let public_inputs = get_tmp_folder_path(&self.uuid);
         let public_inputs = path::Path::new(&tmp_folder_path).join("public_inputs.json");
 
-        match tokio::process::Command::new(format!("./{}", rapid_snark_path_exe))
+        match tokio::process::Command::new(format!("{}", rapid_snark_path_exe))
             .arg(&self.zkey_file_path)
             .arg(witness_file_path)
             .arg(proof_file_path)

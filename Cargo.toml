@@ -17,6 +17,7 @@ clap = { version = "4.3", features = ["derive"] }
 hyper = { version = "0.14", features = ["client", "tcp"] }
 hyperlocal = "0.8"
 base64 = "0.21"
+google-cloud-secretmanager-v1 = "0.4.4"
 
 serde_bytes = "0.11.15"
 p256 = {version = "0.13.2", features = ["ecdh"]}

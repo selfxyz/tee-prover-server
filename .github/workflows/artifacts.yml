@@ -2,10 +2,6 @@ name: TEE Docker Build
 on:
   workflow_call:
     inputs:
-      runner:
-        description: The runner
-        required: true
-        type: string
       environment:
         description: The GitHub Actions environment
         required: true
@@ -17,18 +13,22 @@ on:
 
 jobs:
   prod:
-    runs-on: [self-hosted, "${{ inputs.runner }}"]
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: [self-hosted-gha]
+
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GAR_REGISTRY: us-docker.pkg.dev
+      ARTIFACT_REPOSITORY: ${{ secrets.GCP_ARTIFACT_REPOSITORY }}
+      ARTIFACT_URL: us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_ARTIFACT_REPOSITORY }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-        env:
-          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GAR_REGISTRY: us-docker.pkg.dev
-          ARTIFACT_REPOSITORY: ${{ secrets.GCP_ARTIFACT_REPOSITORY }}
-          ARTIFACT_URL: ${{ env.GAR_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}
 
       - name: Authenticate to Google Cloud
         id: auth
@@ -36,7 +36,7 @@ jobs:
         with:
           token_format: access_token
           project_id: ${{ env.PROJECT_ID }}
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }} # full resource path
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
@@ -47,14 +47,17 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
+          sudo usermod -aG docker ec2-user
+          newgrp docker
           gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
 
-      - name: Docker Login to GAR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GAR_REGISTRY }}
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
+      - name: Install aws cli
+        run: |
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
 
       - name: Login to AWS
         run: |
@@ -75,14 +78,6 @@ jobs:
           unzip artifact.zip -d ./circuits/
           chmod +x sort_circuits.sh
           ./sort_circuits.sh
-
-      - name: Install aws cli
-        run: |
-          if ! command -v aws &> /dev/null; then
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip awscliv2.zip
-            sudo ./aws/install
-          fi
 
       - name: Download and unpack zkeys
         run: |
@@ -107,6 +102,8 @@ jobs:
 
       - name: Build docker enclave images
         run: |
+          echo "TAG='${{ inputs.tag }}'"
+          echo "ARTIFACT_URL='${{ env.ARTIFACT_URL }}'"
           chmod +x ./build_docker.sh
           ./build_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }}
 
@@ -117,3 +114,43 @@ jobs:
         run: |
           chmod +x push_docker.sh
           ./push_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }}
+
+      - name: Trigger Cloud Function (notify image publish)
+        if: success()
+        env:
+          CF_URL: ${{ secrets.GCP_CF_URL }}
+          SA_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+          TAG: ${{ inputs.tag }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          if ! command -v jq >/dev/null 2>&1; then
+            (sudo yum -y install jq || (sudo apt-get update && sudo apt-get install -y jq)) || {
+              echo "jq not found and failed to install" >&2; exit 1;
+            }
+          fi
+
+          if [ ! -f pushed-image-digests.txt ]; then
+            echo "pushed-image-digests.txt not found. Did push_docker.sh write it?" >&2
+            exit 1
+          fi
+
+          jq -R -s 'split("\n") | map(select(length>0))' pushed-image-digests.txt > digests.json
+
+          PAYLOAD=$(jq -n \
+            --arg tag "$TAG" \
+            --arg env "$ENVIRONMENT" \
+            --arg repo "${{ github.repository }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg actor "${{ github.actor }}" \
+            --slurpfile digests digests.json \
+            '{tag:$tag, environment:$env, repository:$repo, sha:$sha, actor:$actor, image_digests:$digests[0]}')
+
+          IDTOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$SA_EMAIL" --audiences="$CF_URL")
+
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $IDTOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$CF_URL"
