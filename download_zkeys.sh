@@ -1,6 +1,8 @@
 #!/bin/bash
 
 circuits=(
+  "register_aadhaar:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "register_sha1_sha1_sha1_rsa_64321_4096:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
   "register_sha1_sha1_sha1_ecdsa_brainpoolP224r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "register_sha1_sha1_sha1_ecdsa_secp256r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "register_sha256_sha1_sha1_rsa_65537_4096:self-trusted-setup-sha-256-bytes-ph2-ceremony"
@@ -57,8 +59,13 @@ circuits=(
   "register_id_sha512_sha512_sha512_ecdsa_secp521r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "register_id_sha512_sha512_sha512_rsa_65537_4096:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "register_id_sha512_sha512_sha512_rsapss_65537_64_2048:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
-  "vc_and_disclose:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
-  "vc_and_disclose_id:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
+  "vc_and_disclose:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "vc_and_disclose_id:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "vc_and_disclose_aadhaar:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "dsc_sha256_rsa_107903_4096:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "dsc_sha256_rsa_122125_4096:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "dsc_sha256_rsa_130689_4096:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "dsc_sha256_rsa_56611_4096:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
   "dsc_sha1_ecdsa_brainpoolP256r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "dsc_sha1_ecdsa_secp256r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "dsc_sha1_rsa_65537_4096:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
