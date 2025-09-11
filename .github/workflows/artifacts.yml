@@ -72,7 +72,7 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -o artifact.zip \
-            https://api.github.com/repos/selfxyz/self/actions/artifacts/3968085122/zip
+            https://api.github.com/repos/selfxyz/self/actions/artifacts/3984125241/zip
 
       - name: Sort circuits
         run: |
