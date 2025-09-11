@@ -95,6 +95,22 @@ pub enum ProofRequest {
         #[serde(default = "default_version")]
         version: u32,
     },
+    #[serde(rename_all = "camelCase")]
+    RegisterAadhaar {
+        circuit: Circuit,
+        endpoint_type: Option<EndpointType>,
+        endpoint: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    DiscloseAadhaar {
+        circuit: Circuit,
+        endpoint_type: EndpointType,
+        endpoint: String,
+        #[serde(default = "default_user_defined_data")]
+        user_defined_data: String,
+        #[serde(default = "default_version")]
+        version: u32,
+    },
 }
 
 impl ProofRequest {
@@ -106,6 +122,8 @@ impl ProofRequest {
             ProofRequest::RegisterId { circuit, .. } => circuit,
             ProofRequest::DscId { circuit, .. } => circuit,
             ProofRequest::DiscloseId { circuit, .. } => circuit,
+            ProofRequest::RegisterAadhaar { circuit, .. } => circuit,
+            ProofRequest::DiscloseAadhaar { circuit, .. } => circuit,
         }
     }
 }
@@ -118,6 +136,8 @@ pub enum ProofType {
     RegisterId,
     DscId,
     DiscloseId,
+    RegisterAadhaar,
+    DiscloseAadhaar,
 }
 
 impl Into<ProofType> for &ProofRequest {
@@ -129,6 +149,8 @@ impl Into<ProofType> for &ProofRequest {
             ProofRequest::RegisterId { .. } => ProofType::RegisterId,
             ProofRequest::DscId { .. } => ProofType::DscId,
             ProofRequest::DiscloseId { .. } => ProofType::DiscloseId,
+            ProofRequest::RegisterAadhaar { .. } => ProofType::RegisterAadhaar,
+            ProofRequest::DiscloseAadhaar { .. } => ProofType::DiscloseAadhaar,
         }
     }
 }
@@ -142,6 +164,8 @@ impl std::fmt::Display for ProofType {
             ProofType::RegisterId => write!(f, "register_id"),
             ProofType::DscId => write!(f, "dsc_id"),
             ProofType::DiscloseId => write!(f, "disclose_id"),
+            ProofType::RegisterAadhaar => write!(f, "register_aadhaar"),
+            ProofType::DiscloseAadhaar => write!(f, "disclose_aadhaar"),
         }
     }
 }
@@ -155,6 +179,8 @@ impl Into<i32> for &ProofType {
             ProofType::RegisterId => 3,
             ProofType::DscId => 4,
             ProofType::DiscloseId => 5,
+            ProofType::RegisterAadhaar => 6,
+            ProofType::DiscloseAadhaar => 7,
         }
     }
 }
@@ -169,6 +195,8 @@ impl TryFrom<i32> for ProofType {
             3 => Ok(ProofType::RegisterId),
             4 => Ok(ProofType::DscId),
             5 => Ok(ProofType::DiscloseId),
+            6 => Ok(ProofType::RegisterAadhaar),
+            7 => Ok(ProofType::DiscloseAadhaar),
             _ => Err(()),
         }
     }
