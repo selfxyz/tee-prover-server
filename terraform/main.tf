@@ -98,9 +98,9 @@ resource "google_compute_instance_group_manager" "tee_instance_groups" {
     type                           = "PROACTIVE"
     minimal_action                 = "REPLACE"
     most_disruptive_allowed_action = "REPLACE"
-    max_surge_fixed                = 0
-    max_unavailable_fixed          = 2
-    replacement_method             = "RECREATE"
+    max_surge_fixed                = 1
+    max_unavailable_fixed          = 0
+    replacement_method             = "SUBSTITUTE"
   }
 }
 
@@ -217,6 +217,7 @@ resource "google_compute_backend_service" "tee_backend_services" {
   name                  = "${each.key}-backend-service"
   protocol              = "HTTP"
   load_balancing_scheme = "EXTERNAL"
+  timeout_sec           = 300
 
   health_checks = [google_compute_health_check.tee_lb_health_checks[each.key].id]
 
