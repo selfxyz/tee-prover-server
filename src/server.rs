@@ -209,7 +209,9 @@ impl RpcServer for RpcServerImpl {
                     ));
 
                 match submit_request.proof_request_type {
-                    ProofRequest::Register { .. } | ProofRequest::RegisterId { .. } => {
+                    ProofRequest::Register { .. }
+                    | ProofRequest::RegisterId { .. }
+                    | ProofRequest::RegisterAadhaar { .. } => {
                         if !cfg!(feature = "register") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
@@ -221,7 +223,9 @@ impl RpcServer for RpcServerImpl {
                             return invalid_proof_type_response;
                         }
                     }
-                    ProofRequest::Disclose { .. } | ProofRequest::DiscloseId { .. } => {
+                    ProofRequest::Disclose { .. }
+                    | ProofRequest::DiscloseId { .. }
+                    | ProofRequest::DiscloseAadhaar { .. } => {
                         if !cfg!(feature = "disclose") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
@@ -288,6 +292,23 @@ impl RpcServer for RpcServerImpl {
                     ..
                 } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
                 ProofRequest::DiscloseId {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => (
+                    Some(endpoint_type),
+                    Some(endpoint),
+                    user_defined_data.as_str(),
+                    *version as i32,
+                ),
+                ProofRequest::RegisterAadhaar {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DiscloseAadhaar {
                     endpoint_type,
                     endpoint,
                     user_defined_data,
