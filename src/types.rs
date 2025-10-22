@@ -70,6 +70,8 @@ pub enum ProofRequest {
         endpoint: String,
         #[serde(default = "default_user_defined_data")]
         user_defined_data: String,
+        #[serde(default = "default_user_defined_data")]
+        self_defined_data: String, 
         #[serde(default = "default_version")]
         version: u32,
     },
@@ -92,6 +94,8 @@ pub enum ProofRequest {
         endpoint: String,
         #[serde(default = "default_user_defined_data")]
         user_defined_data: String,
+        #[serde(default = "default_user_defined_data")]
+        self_defined_data: String, 
         #[serde(default = "default_version")]
         version: u32,
     },
@@ -108,6 +112,8 @@ pub enum ProofRequest {
         endpoint: String,
         #[serde(default = "default_user_defined_data")]
         user_defined_data: String,
+        #[serde(default = "default_user_defined_data")]
+        self_defined_data: String, 
         #[serde(default = "default_version")]
         version: u32,
     },
