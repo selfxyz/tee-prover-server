@@ -254,30 +254,31 @@ impl RpcServer for RpcServerImpl {
             }
         };
 
-        let (endpoint_type, endpoint, user_defined_data, version) =
+        let (endpoint_type, endpoint, user_defined_data, self_defined_data, version) =
             match &submit_request.proof_request_type {
                 ProofRequest::Register {
                     endpoint_type,
                     endpoint,
                     ..
-                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1 as i32),
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", "", 1 as i32),
                 ProofRequest::Dsc {
                     endpoint_type,
                     endpoint,
                     ..
-                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", "", 1),
                 ProofRequest::Disclose {
                     endpoint_type,
                     endpoint,
                     user_defined_data,
+                    self_defined_data,
                     version,
                     ..
                 } => {
-                    dbg!(&version);
                     (
                         Some(endpoint_type),
                         Some(endpoint),
                         user_defined_data.as_str(),
+                        self_defined_data.as_str(),
                         *version as i32,
                     )
                 }
@@ -285,39 +286,43 @@ impl RpcServer for RpcServerImpl {
                     endpoint_type,
                     endpoint,
                     ..
-                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", "", 1),
                 ProofRequest::DscId {
                     endpoint_type,
                     endpoint,
                     ..
-                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", "", 1),
                 ProofRequest::DiscloseId {
                     endpoint_type,
                     endpoint,
                     user_defined_data,
+                    self_defined_data,
                     version,
                     ..
                 } => (
                     Some(endpoint_type),
                     Some(endpoint),
                     user_defined_data.as_str(),
+                    self_defined_data.as_str(),
                     *version as i32,
                 ),
                 ProofRequest::RegisterAadhaar {
                     endpoint_type,
                     endpoint,
                     ..
-                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", "", 1),
                 ProofRequest::DiscloseAadhaar {
                     endpoint_type,
                     endpoint,
                     user_defined_data,
+                    self_defined_data,
                     version,
                     ..
                 } => (
                     Some(endpoint_type),
                     Some(endpoint),
                     user_defined_data.as_str(),
+                    self_defined_data.as_str(),
                     *version as i32,
                 ),
             };
@@ -332,6 +337,7 @@ impl RpcServer for RpcServerImpl {
             endpoint,
             version,
             user_defined_data,
+            self_defined_data,
         )
         .await
         {

@@ -78,6 +78,7 @@ circuits=(
   "dsc_sha256_rsapss_3_32_3072:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "dsc_sha256_rsapss_65537_32_3072:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "dsc_sha256_rsapss_65537_32_4096:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
+  "dsc_sha384_rsapss_65537_48_3072:self-trusted-setup-for-serbia"
   "dsc_sha384_ecdsa_brainpoolP384r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "dsc_sha384_ecdsa_brainpoolP512r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "dsc_sha384_ecdsa_secp384r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
