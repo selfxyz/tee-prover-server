@@ -31,7 +31,7 @@ resource "google_compute_instance_template" "tee_templates" {
     preemptible                 = each.value.use_spot_instances
     provisioning_model          = each.value.use_spot_instances ? "SPOT" : "STANDARD"
     automatic_restart           = !each.value.use_spot_instances
-    instance_termination_action = "STOP"
+    instance_termination_action = each.value.use_spot_instances ? "STOP" : "TERMINATE"
   }
 
   disk {
