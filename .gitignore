@@ -2,3 +2,4 @@ target
 /tmp*
 /circuits
 /relayer/node_modules
+.cache_ggshield
