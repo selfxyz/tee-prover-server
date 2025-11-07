@@ -47,7 +47,7 @@ resource "google_compute_instance" "rabbitmq" {
     on_host_maintenance         = var.use_spot_instances ? "TERMINATE" : "MIGRATE"
     automatic_restart           = !var.use_spot_instances
     provisioning_model          = var.use_spot_instances ? "SPOT" : "STANDARD"
-    instance_termination_action = "STOP"
+    instance_termination_action = var.use_spot_instances ? "STOP" : null
   }
 
   metadata = {

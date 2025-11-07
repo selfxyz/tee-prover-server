@@ -6,7 +6,7 @@ project_id = "self-protocol"
 
 # Instance configuration
 instance_name = "rabbitmq-server"
-machine_type  = "e2-micro"  # Very small instance as requested
+machine_type  = "e2-small"
 zone          = "us-west1-b"
 
 # Network configuration (using default VPC as requested)
@@ -32,7 +32,7 @@ ssh_source_ranges = [
 ]
 
 # Spot instances for cost savings
-use_spot_instances = true
+use_spot_instances = false
 
 # Fixed internal IP address
 internal_ip = "10.138.15.236"
