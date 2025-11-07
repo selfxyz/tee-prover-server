@@ -1,4 +1,4 @@
-/target
+target
 /tmp*
 /circuits
 /relayer/node_modules
