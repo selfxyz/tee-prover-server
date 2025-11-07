@@ -23,7 +23,6 @@ data_disk_size_gb = 10  # RabbitMQ data disk (balanced disk)
 allowed_source_ranges = [
   "10.128.0.0/9",    # Default VPC subnet range
   "10.0.0.0/8",      # Private networks
-  "0.0.0.0/0",
 ]
 
 # SSH access (restrict as needed for security)

@@ -39,6 +39,21 @@ output "rabbitmq_management_url_internal" {
   value       = "http://${google_compute_instance.rabbitmq.network_interface[0].network_ip}:15672"
 }
 
+output "redis_url" {
+  description = "Redis connection URL (internal)"
+  value       = "redis://${google_compute_instance.rabbitmq.network_interface[0].network_ip}:6379"
+}
+
+output "redis_host" {
+  description = "Redis host (internal IP)"
+  value       = google_compute_instance.rabbitmq.network_interface[0].network_ip
+}
+
+output "redis_port" {
+  description = "Redis port"
+  value       = "6379"
+}
+
 output "data_disk_id" {
   description = "ID of the RabbitMQ data disk"
   value       = google_compute_disk.rabbitmq_data.id

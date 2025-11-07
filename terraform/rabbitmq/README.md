@@ -1,15 +1,16 @@
-# RabbitMQ Terraform Module
+# RabbitMQ + Redis Terraform Module
 
-Simple Terraform module to deploy RabbitMQ on Google Cloud Platform using a single VM with Docker.
+Simple Terraform module to deploy RabbitMQ and Redis on Google Cloud Platform using a single VM with Docker.
 
 ## Features
 
 - **Simple VM deployment** - Single GCP VM running Ubuntu 24.04
 - **Docker-based RabbitMQ** - Uses official `rabbitmq:4-management` image
-- **Persistent storage** - Separate 10GB balanced disk for RabbitMQ data
+- **Docker-based Redis** - Uses official `redis:7-alpine` image with persistence
+- **Shared persistent storage** - 10GB balanced disk shared between RabbitMQ and Redis
 - **VPC integration** - Works with default VPC, accessible by other VMs
-- **Management UI** - Web interface available on port 15672
-- **Auto-healing** - Systemd service ensures RabbitMQ restarts on failure
+- **Management UI** - RabbitMQ web interface available on port 15672
+- **Auto-healing** - Systemd services ensure both containers restart on failure
 - **Spot instance support** - Optional cost savings up to 80% with preemptible instances
 - **Fixed internal IP** - Optional static internal IP for predictable networking
 
@@ -21,14 +22,19 @@ Simple Terraform module to deploy RabbitMQ on Google Cloud Platform using a sing
 │ ┌─────────────────────────────────┐ │
 │ │ Ubuntu 24.04                    │ │
 │ │ ┌─────────────────────────────┐ │ │
-│ │ │ Docker Container            │ │ │
+│ │ │ RabbitMQ Container          │ │ │
 │ │ │ rabbitmq:4-management       │ │ │
 │ │ │ Ports: 5672, 15672, etc.   │ │ │
+│ │ └─────────────────────────────┘ │ │
+│ │ ┌─────────────────────────────┐ │ │
+│ │ │ Redis Container             │ │ │
+│ │ │ redis:7-alpine              │ │ │
+│ │ │ Port: 6379                  │ │ │
 │ │ └─────────────────────────────┘ │ │
 │ └─────────────────────────────────┘ │
 │ Disks:                              │
 │ • Boot: 50GB (pd-balanced)          │
-│ • Data: 10GB (pd-balanced)          │
+│ • Data: 10GB (pd-balanced, shared)  │
 └─────────────────────────────────────┘
 ```
 
@@ -52,9 +58,10 @@ Simple Terraform module to deploy RabbitMQ on Google Cloud Platform using a sing
    terraform apply
    ```
 
-4. **Access RabbitMQ:**
-   - **AMQP**: `amqp://admin:password@INTERNAL_IP:5672/`
-   - **Management UI**: `http://EXTERNAL_IP:15672`
+4. **Access Services:**
+   - **RabbitMQ AMQP**: `amqp://admin:password@INTERNAL_IP:5672/`
+   - **RabbitMQ Management UI**: `http://EXTERNAL_IP:15672`
+   - **Redis**: `redis://INTERNAL_IP:6379`
 
 ## Configuration
 
@@ -82,8 +89,8 @@ Simple Terraform module to deploy RabbitMQ on Google Cloud Platform using a sing
 
 ### Firewall Rules Created
 
-1. **RabbitMQ Internal Access:**
-   - Ports: `5672, 15672, 25672, 4369, 35672-35682`
+1. **RabbitMQ + Redis Internal Access:**
+   - Ports: `5672, 15672, 25672, 4369, 35672-35682, 6379`
    - Source: VPC internal ranges (configurable)
    - Target: `rabbitmq-server` tag
 

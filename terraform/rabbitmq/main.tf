@@ -83,13 +83,13 @@ resource "google_compute_firewall" "rabbitmq_internal" {
 
   allow {
     protocol = "tcp"
-    ports    = ["5672", "15672", "25672", "4369", "35672-35682"]
+    ports    = ["5672", "15672", "25672", "4369", "35672-35682", "6379"]
   }
 
   source_ranges = var.allowed_source_ranges
   target_tags   = ["rabbitmq-server"]
 
-  description = "Allow RabbitMQ traffic from specified sources"
+  description = "Allow RabbitMQ and Redis traffic from specified sources"
 }
 
 # Firewall rule to allow SSH access

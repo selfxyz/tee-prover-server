@@ -66,6 +66,10 @@ chmod 755 "$MOUNT_POINT"
 mkdir -p /opt/rabbitmq/config
 chown -R 999:999 /opt/rabbitmq/config
 
+# Create Redis data directory on shared disk
+mkdir -p /opt/rabbitmq/data/redis
+chown -R 999:999 /opt/rabbitmq/data/redis
+
 # Create RabbitMQ configuration file
 cat > /opt/rabbitmq/config/rabbitmq.conf << EOF
 # RabbitMQ Configuration
@@ -121,13 +125,39 @@ TimeoutStopSec=30
 WantedBy=multi-user.target
 EOF
 
-# Enable and start RabbitMQ service
+# Create systemd service for Redis container
+cat > /etc/systemd/system/redis.service << EOF
+[Unit]
+Description=Redis Container
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStartPre=-/usr/bin/docker stop redis
+ExecStartPre=-/usr/bin/docker rm redis
+ExecStart=/usr/bin/docker run --rm --name redis \\
+    -p 6379:6379 \\
+    -v /opt/rabbitmq/data/redis:/data \\
+    redis:7-alpine redis-server --appendonly yes
+ExecStop=/usr/bin/docker stop redis
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start services
 systemctl daemon-reload
 systemctl enable rabbitmq.service
+systemctl enable redis.service
 systemctl start rabbitmq.service
+systemctl start redis.service
 
-# Wait for RabbitMQ to be ready
-echo "Waiting for RabbitMQ to start..."
+# Wait for services to be ready
+echo "Waiting for RabbitMQ and Redis to start..."
 sleep 30
 
 # Check if RabbitMQ is running
@@ -148,6 +178,22 @@ else
     systemctl status rabbitmq.service
 fi
 
-echo "RabbitMQ setup completed at $(date)"
-echo "Management UI available at: http://$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip -H "Metadata-Flavor: Google"):15672"
-echo "Default credentials: ${rabbitmq_user}/${rabbitmq_password}"
+# Check if Redis is running
+if systemctl is-active --quiet redis.service; then
+    echo "Redis service is running successfully"
+    
+    # Test Redis connection
+    if docker exec redis redis-cli ping > /dev/null 2>&1; then
+        echo "Redis is ready and responding"
+    else
+        echo "Redis is starting but not fully ready yet"
+    fi
+else
+    echo "Redis service failed to start"
+    systemctl status redis.service
+fi
+
+echo "RabbitMQ + Redis setup completed at $(date)"
+echo "RabbitMQ Management UI: http://$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip -H "Metadata-Flavor: Google"):15672"
+echo "RabbitMQ credentials: ${rabbitmq_user}/${rabbitmq_password}"
+echo "Redis available at: $(curl -s http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/network-ip -H "Metadata-Flavor: Google"):6379"
