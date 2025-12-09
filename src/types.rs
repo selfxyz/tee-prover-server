@@ -111,6 +111,22 @@ pub enum ProofRequest {
         #[serde(default = "default_version")]
         version: u32,
     },
+    #[serde(rename_all = "camelCase")]
+    RegisterKyc {
+        circuit: Circuit,
+        endpoint_type: Option<EndpointType>,
+        endpoint: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    DiscloseKyc {
+        circuit: Circuit,
+        endpoint_type: EndpointType,
+        endpoint: String,
+        #[serde(default = "default_user_defined_data")]
+        user_defined_data: String,
+        #[serde(default = "default_version")]
+        version: u32,
+    },
 }
 
 impl ProofRequest {
@@ -124,6 +140,8 @@ impl ProofRequest {
             ProofRequest::DiscloseId { circuit, .. } => circuit,
             ProofRequest::RegisterAadhaar { circuit, .. } => circuit,
             ProofRequest::DiscloseAadhaar { circuit, .. } => circuit,
+            ProofRequest::RegisterKyc { circuit, .. } => circuit,
+            ProofRequest::DiscloseKyc { circuit, .. } => circuit,
         }
     }
 }
@@ -138,6 +156,8 @@ pub enum ProofType {
     DiscloseId,
     RegisterAadhaar,
     DiscloseAadhaar,
+    RegisterKyc,
+    DiscloseKyc,
 }
 
 impl Into<ProofType> for &ProofRequest {
@@ -151,6 +171,8 @@ impl Into<ProofType> for &ProofRequest {
             ProofRequest::DiscloseId { .. } => ProofType::DiscloseId,
             ProofRequest::RegisterAadhaar { .. } => ProofType::RegisterAadhaar,
             ProofRequest::DiscloseAadhaar { .. } => ProofType::DiscloseAadhaar,
+            ProofRequest::RegisterKyc { .. } => ProofType::RegisterKyc,
+            ProofRequest::DiscloseKyc { .. } => ProofType::DiscloseKyc,
         }
     }
 }
@@ -166,6 +188,8 @@ impl std::fmt::Display for ProofType {
             ProofType::DiscloseId => write!(f, "disclose_id"),
             ProofType::RegisterAadhaar => write!(f, "register_aadhaar"),
             ProofType::DiscloseAadhaar => write!(f, "disclose_aadhaar"),
+            ProofType::RegisterKyc => write!(f, "register_kyc"),
+            ProofType::DiscloseKyc => write!(f, "disclose_kyc"),
         }
     }
 }
@@ -181,6 +205,8 @@ impl Into<i32> for &ProofType {
             ProofType::DiscloseId => 5,
             ProofType::RegisterAadhaar => 6,
             ProofType::DiscloseAadhaar => 7,
+            ProofType::RegisterKyc => 8,
+            ProofType::DiscloseKyc => 9,
         }
     }
 }
@@ -197,6 +223,8 @@ impl TryFrom<i32> for ProofType {
             5 => Ok(ProofType::DiscloseId),
             6 => Ok(ProofType::RegisterAadhaar),
             7 => Ok(ProofType::DiscloseAadhaar),
+            8 => Ok(ProofType::RegisterKyc),
+            9 => Ok(ProofType::DiscloseKyc),
             _ => Err(()),
         }
     }
