@@ -211,7 +211,8 @@ impl RpcServer for RpcServerImpl {
                 match submit_request.proof_request_type {
                     ProofRequest::Register { .. }
                     | ProofRequest::RegisterId { .. }
-                    | ProofRequest::RegisterAadhaar { .. } => {
+                    | ProofRequest::RegisterAadhaar { .. }
+                    | ProofRequest::RegisterKyc { .. } => {
                         if !cfg!(feature = "register") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
@@ -225,7 +226,8 @@ impl RpcServer for RpcServerImpl {
                     }
                     ProofRequest::Disclose { .. }
                     | ProofRequest::DiscloseId { .. }
-                    | ProofRequest::DiscloseAadhaar { .. } => {
+                    | ProofRequest::DiscloseAadhaar { .. }
+                    | ProofRequest::DiscloseKyc { .. } => {
                         if !cfg!(feature = "disclose") && !cfg!(feature = "cherrypick") {
                             self.store.remove_agreement(&uuid).await;
                             return invalid_proof_type_response;
@@ -309,6 +311,23 @@ impl RpcServer for RpcServerImpl {
                     ..
                 } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
                 ProofRequest::DiscloseAadhaar {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => (
+                    Some(endpoint_type),
+                    Some(endpoint),
+                    user_defined_data.as_str(),
+                    *version as i32,
+                ),
+                ProofRequest::RegisterKyc {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DiscloseKyc {
                     endpoint_type,
                     endpoint,
                     user_defined_data,
