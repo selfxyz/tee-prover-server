@@ -116,8 +116,8 @@ jobs:
       - name: Cherrypick circuits
         if: ${{ inputs.tag != 'latest' }}
         run: |
-          chmod +x sort_circuits.cherrypick.sh
-          ./sort_circuits.cherrypick.sh
+          chmod +x check_circuits.cherrypick.sh
+          ./check_circuits.cherrypick.sh
 
       - name: Init submodules
         run: |
