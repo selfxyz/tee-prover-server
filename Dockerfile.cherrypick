@@ -1,6 +1,6 @@
 ######## Enclave image ########
 
-FROM public.ecr.aws/docker/library/rust:1.81-bookworm AS chef
+FROM public.ecr.aws/docker/library/rust:1.86-bookworm AS chef
 
 RUN cargo install cargo-chef 
 
