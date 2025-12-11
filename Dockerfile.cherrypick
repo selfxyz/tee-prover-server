@@ -39,4 +39,6 @@ COPY ./circuits /circuits
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 COPY ./zkeys /zkeys
 
+LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
+
 CMD ["/usr/local/bin/start.sh"]
