@@ -1,7 +1,7 @@
 #!/bin/bash
 
 circuits=(
-  "register_aadhaar:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
+  "register_aadhaar:self-trusted-setup-new-aadhaar-ph2-ceremony"
   "register_sha1_sha1_sha1_rsa_64321_4096:self-trusted-setup-aadhaar-rsa-ph2-ceremony"
   "register_sha1_sha1_sha1_ecdsa_brainpoolP224r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"
   "register_sha1_sha1_sha1_ecdsa_secp256r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony"

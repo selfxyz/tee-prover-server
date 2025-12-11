@@ -13,9 +13,28 @@ PROOFS_SIZES=(
 
 DOCKER_ORG="$1"   # e.g. us-docker.pkg.dev/PROJECT/REPO
 TAG="$2"
+MODE="${3:-}"
 
 OUT_FILE="${GITHUB_WORKSPACE:-.}/pushed-image-digests.txt"
 : > "$OUT_FILE"
+
+if [[ "$MODE" == "cherrypick" || "$MODE" == "--cherrypick" ]]; then
+  IMAGE_NAME="${DOCKER_ORG}/tee-server-cherrypick"
+  IMAGE_REF="${IMAGE_NAME}:latest"
+  echo "Pushing ${IMAGE_REF} (cherrypick mode) ..."
+  docker push "${IMAGE_REF}"
+
+  DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}")
+  if [[ -n "$DIGEST" ]]; then
+    echo "$DIGEST" >> "$OUT_FILE"
+  else
+    echo "WARNING: No digest found for ${IMAGE_REF}" >&2
+  fi
+
+  echo "Docker images pushed successfully!"
+  echo "Wrote pushed image digests to ${OUT_FILE}"
+  exit 0
+fi
 
 for ITEM in "${PROOFS_SIZES[@]}"; do
   PROOF="${ITEM%%:*}"
