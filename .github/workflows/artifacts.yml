@@ -124,7 +124,7 @@ jobs:
           git submodule update --init
           cd rapidsnark && git submodule update --init && cd ..
 
-      - name: Build docker images
+      - name: Build docker images (latest)
         if: ${{ inputs.tag == 'latest' }}
         run: |
           echo "TAG='${{ inputs.tag }}'"
