@@ -149,6 +149,21 @@ impl RpcServer for RpcServerImpl {
         cipher_text: Vec<u8>,
         auth_tag: Vec<u8>,
     ) -> ResponsePayload<'static, String> {
+        if nonce.len() != 12 {
+            return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
+                types::ErrorCode::InvalidRequest.code(),
+                "Nonce must be 12 bytes",
+                None,
+            ));
+        }
+        if auth_tag.len() != 16 {
+            return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
+                types::ErrorCode::InvalidRequest.code(),
+                "Auth tag must be 16 bytes",
+                None,
+            ));
+        }
+        
         let nonce = nonce.as_slice();
         let auth_tag = auth_tag.as_slice();
         let key = {
