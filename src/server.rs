@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::db::create_proof_status;
-use crate::store::LruStore;
+use crate::store::UuidManager;
 use crate::types::{ProofRequest, SubmitRequest};
 use crate::utils;
 use crate::{generator::file_generator::FileGenerator, types::HelloResponse};
@@ -38,7 +38,7 @@ pub trait Rpc {
 }
 
 pub struct RpcServerImpl {
-    store: LruStore,
+    store: UuidManager,
     file_generator_sender: tokio::sync::mpsc::Sender<FileGenerator>,
     circuit_zkey_map: Arc<HashMap<String, String>>,
     db: Pool<sqlx::Postgres>,
@@ -46,7 +46,7 @@ pub struct RpcServerImpl {
 
 impl RpcServerImpl {
     pub fn new(
-        store: LruStore,
+        store: UuidManager,
         file_generator_sender: tokio::sync::mpsc::Sender<FileGenerator>,
         circuit_zkey_map: Arc<HashMap<String, String>>,
         db: Pool<sqlx::Postgres>,

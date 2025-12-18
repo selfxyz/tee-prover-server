@@ -1,45 +1,43 @@
-use std::num::NonZeroUsize;
+use base64::Engine;
+use redis::{AsyncCommands, aio::ConnectionManager};
 
-// use std::collections::HashMap;
-use lru::LruCache;
-use tokio::sync::Mutex;
-
-pub struct LruStore {
-    ecdh_store: Mutex<LruCache<String, Vec<u8>>>,
+pub struct UuidManager {
+    connection_manager: ConnectionManager,
 }
 
-impl LruStore {
-    pub fn new(size: usize) -> Self {
+impl UuidManager {
+    pub fn new(connection_manager: ConnectionManager) -> Self {
         Self {
-            ecdh_store: Mutex::new(LruCache::new(NonZeroUsize::new(size).unwrap())),
+            connection_manager,
         }
     }
 }
 
-impl LruStore {
+impl UuidManager {
     pub async fn insert_new_agreement(
         &self,
         uuid: uuid::Uuid,
         shared_secret: Vec<u8>,
     ) -> Result<(), String> {
-        let mut cache = self.ecdh_store.lock().await;
-
-        if cache.contains(&uuid.to_string()) {
-            return Err("Duplicate uuid".to_string());
-        } else {
-            cache.put(uuid.to_string(), shared_secret);
+        let mut connection = self.connection_manager.clone();
+        let uuid_str = uuid.to_string();
+        if connection.exists(uuid_str).await.map_err(|e| e.to_string())? {
+            return Err("UUID already exists".to_string());
         }
-
-        return Ok(());
+        let shared_secret_base64 = base64::engine::general_purpose::STANDARD.encode(shared_secret);
+        connection.set_ex::<String, String, ()>(uuid.to_string(), shared_secret_base64, 60 * 2).await.map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub async fn get_shared_secret(&self, uuid: &uuid::Uuid) -> Option<Vec<u8>> {
-        let mut cache = self.ecdh_store.lock().await;
-        cache.get(&uuid.to_string()).map(|x| x.clone())
+        let mut connection = self.connection_manager.clone();
+        let uuid_str = uuid.to_string();
+        let shared_secret_base64 = connection.get::<String, String>(uuid_str).await.ok();
+        shared_secret_base64.map(|x| base64::engine::general_purpose::STANDARD.decode::<&str>(x.as_ref()).ok()).flatten()
     }
 
     pub async fn remove_agreement(&self, uuid: &uuid::Uuid) {
-        let mut cache = self.ecdh_store.lock().await;
-        cache.pop(&uuid.to_string());
+        let mut connection = self.connection_manager.clone();
+        connection.del::<String, ()>(uuid.to_string()).await.ok();
     }
 }

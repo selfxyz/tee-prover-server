@@ -24,6 +24,7 @@ p256 = {version = "0.13.2", features = ["ecdh"]}
 rand_core = "0.6.4"
 serde_plain = "1.0.2"
 lru = "0.13.0"
+redis = { version = "0.30", features = ["tokio-comp", "connection-manager"] }
 
 [features]
 register = []

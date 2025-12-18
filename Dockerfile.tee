@@ -23,7 +23,7 @@ RUN cargo build --locked --release --features $PROOFTYPE
 FROM public.ecr.aws/docker/library/debian:12.6-slim@sha256:2ccc7e39b0a6f504d252f807da1fc4b5bcd838e83e4dec3e2f57b2a4a64e7214 AS nitro-enclave
 
 RUN apt-get update
-RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
+RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 redis-server redis-tools -y
 
 WORKDIR /rapidsnark
 COPY ./rapidsnark .
