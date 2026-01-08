@@ -81,13 +81,6 @@ jobs:
           chmod +x sort_circuits.sh
           ./sort_circuits.sh
 
-      - name: Sort circuits (cherrypick)
-        if: ${{ inputs.tag != 'latest' }}
-        run: |
-          unzip artifact.zip -d ./circuits/
-          chmod +x sort_circuits.cherrypick.sh
-          ./sort_circuits.cherrypick.sh
-
       - name: Download and unpack zkeys
         if: ${{ inputs.tag == 'latest' }}
         run: |
@@ -103,6 +96,13 @@ jobs:
           chmod +x download_zkeys.cherrypick.sh && ./download_zkeys.cherrypick.sh
           mkdir zkeys
           mv *.zkey zkeys/
+
+      - name: Sort circuits (cherrypick)
+        if: ${{ inputs.tag != 'latest' }}
+        run: |
+          unzip artifact.zip -d ./circuits/
+          chmod +x sort_circuits.cherrypick.sh
+          ./sort_circuits.cherrypick.sh
 
       - name: Reformat zkeys
         if: ${{ inputs.tag == 'latest' }}
