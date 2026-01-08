@@ -15,8 +15,10 @@ fi
 # 2) For every zkey present locally, move the matching circuit folder from
 #    ./circuits/{register|dsc}/<circuit_name[[_cpp]]> into ./circuits
 shopt -s nullglob
-for zkey in *.zkey; do
+for zkey in zkeys/*; do
   name="${zkey%.zkey}"
+  # strip zkeys/ from the beginning
+  name="${name#zkeys/}"
 
   # Determine category based on filename prefix
   if [[ "$name" == register* ]]; then
@@ -31,19 +33,15 @@ for zkey in *.zkey; do
     continue
   fi
 
-  base="./circuits/${category}/${name}"
+  base="./circuits/${category}/${name}_cpp"
 
-  # Some circuit folders may have a _cpp suffix
-  if [[ -d "${base}" ]]; then
-    src="${base}"
-  elif [[ -d "${base}_cpp" ]]; then
-    src="${base}_cpp"
-  else
+  # warn if the folder doesn't exist
+  if [[ ! -d "${base}" ]]; then
     echo "Warning: circuit folder not found for ${name} under ./circuits/${category}/" >&2
     continue
   fi
 
-  mv "${src}" ./circuits
+  mv "${base}" ./circuits
 done
 shopt -u nullglob
 
