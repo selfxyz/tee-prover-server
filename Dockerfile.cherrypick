@@ -37,16 +37,8 @@ RUN chmod 755 /usr/local/bin/start.sh
 COPY ./circuits /circuits
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
-RUN chmod +x /usr/local/bin/tee-server
 COPY ./zkeys /zkeys
 
 LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
-
-COPY update_creds.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/update_creds.sh
-
-WORKDIR /usr/local/bin
-
-EXPOSE 8888
 
 CMD ["/usr/local/bin/start.sh"]
