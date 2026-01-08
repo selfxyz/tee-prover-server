@@ -62,14 +62,6 @@ async fn main() {
         }
     };
 
-    let redis_url = "redis://127.0.0.1:6379";
-
-    let redis_client = redis::Client::open(redis_url).expect("Failed to connect to Redis");
-    let redis_connection_manager = redis_client
-        .get_connection_manager()
-        .await
-        .expect("Failed to get Redis connection manager");
-
     let circuit_folder = config.circuit_folder;
     let zkey_folder = config.zkey_folder;
 
@@ -98,7 +90,7 @@ async fn main() {
 
     let handle = server.start(
         server::RpcServerImpl::new(
-            store::UuidManager::new(redis_connection_manager),
+            store::LruStore::new(1000),
             file_generator_sender,
             Arc::clone(&circuit_zkey_map_arc),
             pool.clone(),
