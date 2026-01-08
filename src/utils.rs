@@ -1,7 +1,6 @@
 use crate::db::fail_proof;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
-use serde_bytes::ByteBuf;
 
 pub fn decrypt(
     key: [u8; 32],

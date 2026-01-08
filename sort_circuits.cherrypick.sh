@@ -15,10 +15,9 @@ fi
 # 2) For every zkey present locally, move the matching circuit folder from
 #    ./circuits/{register|dsc}/<circuit_name[[_cpp]]> into ./circuits
 shopt -s nullglob
-for zkey in zkeys/*; do
+for zkey in *.zkey; do
   name="${zkey%.zkey}"
-  # strip zkeys/ from the beginning
-  name="${name#zkeys/}"
+  echo "Processing $name"
 
   # Determine category based on filename prefix
   if [[ "$name" == register* ]]; then
@@ -46,4 +45,4 @@ done
 shopt -u nullglob
 
 # 3) Cleanup category folders
-rm -rf ./circuits/disclose ./circuits/dsc ./circuits/register
+rm -rf ./circuits/disclose/ ./circuits/dsc/ ./circuits/register/
