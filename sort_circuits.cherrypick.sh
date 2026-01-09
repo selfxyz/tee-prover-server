@@ -18,6 +18,7 @@ shopt -s nullglob
 for zkey in zkeys/*.zkey; do
   name="${zkey#zkeys/}"
   name="${name%.zkey}"
+  echo "Processing $name"
 
   # Determine category based on filename prefix
   if [[ "$name" == register* ]]; then
@@ -41,6 +42,7 @@ for zkey in zkeys/*.zkey; do
   fi
 
   mv "${base}" ./circuits
+  echo "Moved ${base} to ./circuits/"
 done
 shopt -u nullglob
 
