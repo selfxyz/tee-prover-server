@@ -41,6 +41,7 @@ RUN chmod +x /usr/local/bin/tee-server
 COPY ./zkeys /zkeys
 
 LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
+LABEL "tee.launch_policy.monitoring_memory_allow"="always"
 
 COPY update_creds.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/update_creds.sh
