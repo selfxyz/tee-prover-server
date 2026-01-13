@@ -49,6 +49,7 @@ RUN chmod +x /usr/local/bin/start.sh
 
 EXPOSE 8888
 LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
+LABEL "tee.launch_policy.monitoring_memory_allow"="always"
 
 WORKDIR /usr/local/bin
 
