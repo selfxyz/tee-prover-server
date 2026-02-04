@@ -46,16 +46,16 @@ jobs:
           version: ">= 363.0.0"
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Set up Docker
-        uses: docker/setup-docker-action@v4
-        with:
-          daemon-config: |
-            {
-              "debug": true,
-              "features": {
-                "containerd-snapshotter": true
-              }
-            }
+      # - name: Set up Docker
+      #   uses: docker/setup-docker-action@v4
+      #   with:
+      #     daemon-config: |
+      #       {
+      #         "debug": true,
+      #         "features": {
+      #           "containerd-snapshotter": true
+      #         }
+      #       }
 
       - name: Configure Docker for Artifact Registry
         run: |
