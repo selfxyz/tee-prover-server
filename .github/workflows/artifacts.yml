@@ -17,9 +17,7 @@ jobs:
       contents: read
       id-token: write
     runs-on:
-      - 'self-hosted'
-      - 'selfxyz-org'
-      - 'ubuntu-24-04'
+      - 'c4d-highmem-8'
 
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
