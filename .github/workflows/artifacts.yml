@@ -88,10 +88,9 @@ jobs:
 
       - name: Download and unpack artifact
         run: | 
-          gsutil cp -r gs://zk_circuits .
+          gsutil -m cp -r gs://zk_circuits .
           mkdir -p circuits
-          cp zk_circuits/output/* circuits/
-          
+          cp -r zk_circuits/output/* circuits/
 
       - name: Sort circuits
         if: ${{ inputs.tag == 'latest' }}
