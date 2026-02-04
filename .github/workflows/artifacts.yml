@@ -65,19 +65,26 @@ jobs:
           aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws --profile default configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
+      # - name: Download and unpack artifact
+      #   run: |
+      #     curl -L \
+      #       -H "Accept: application/vnd.github+json" \
+      #       -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+      #       -H "X-GitHub-Api-Version: 2022-11-28" \
+      #       -o artifact.zip \
+      #       https://api.github.com/repos/selfxyz/self/actions/artifacts/5288884331/zip
+
       - name: Download and unpack artifact
-        run: |
-          curl -L \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -o artifact.zip \
-            https://api.github.com/repos/selfxyz/self/actions/artifacts/4834317083/zip
+        run: | 
+          gsutil cp -r gs://zk_circuits .
+          mkdir -p circuits
+          cp zk_circuits/output/* circuits/
+          
 
       - name: Sort circuits
         if: ${{ inputs.tag == 'latest' }}
         run: |
-          unzip artifact.zip -d ./circuits/
+          # unzip artifact.zip -d ./circuits/
           chmod +x sort_circuits.sh
           ./sort_circuits.sh
 
@@ -100,7 +107,7 @@ jobs:
       - name: Sort circuits (cherrypick)
         if: ${{ inputs.tag != 'latest' }}
         run: |
-          unzip artifact.zip -d ./circuits/
+          # unzip artifact.zip -d ./circuits/
           chmod +x sort_circuits.cherrypick.sh
           ./sort_circuits.cherrypick.sh
 
