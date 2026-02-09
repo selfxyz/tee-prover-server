@@ -16,7 +16,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: [self-hosted-gha]
+    runs-on:
+      - 'sumsub-runner'
 
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -45,10 +46,21 @@ jobs:
           version: ">= 363.0.0"
           project_id: ${{ env.PROJECT_ID }}
 
+      # - name: Set up Docker
+      #   uses: docker/setup-docker-action@v4
+      #   with:
+      #     daemon-config: |
+      #       {
+      #         "debug": true,
+      #         "features": {
+      #           "containerd-snapshotter": true
+      #         }
+      #       }
+
       - name: Configure Docker for Artifact Registry
         run: |
-          sudo usermod -aG docker ec2-user
-          newgrp docker
+          # sudo usermod -aG docker ec2-user
+          # newgrp docker
           gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
           # trigger ci
 
@@ -65,19 +77,25 @@ jobs:
           aws --profile default configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws --profile default configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
+      # - name: Download and unpack artifact
+      #   run: |
+      #     curl -L \
+      #       -H "Accept: application/vnd.github+json" \
+      #       -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+      #       -H "X-GitHub-Api-Version: 2022-11-28" \
+      #       -o artifact.zip \
+      #       https://api.github.com/repos/selfxyz/self/actions/artifacts/5288884331/zip
+
       - name: Download and unpack artifact
-        run: |
-          curl -L \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -o artifact.zip \
-            https://api.github.com/repos/selfxyz/self/actions/artifacts/4834317083/zip
+        run: | 
+          gsutil -m cp -r gs://zk_circuits .
+          mkdir -p circuits
+          cp -r zk_circuits/output/* circuits/
 
       - name: Sort circuits
         if: ${{ inputs.tag == 'latest' }}
         run: |
-          unzip artifact.zip -d ./circuits/
+          # unzip artifact.zip -d ./circuits/
           chmod +x sort_circuits.sh
           ./sort_circuits.sh
 
@@ -97,6 +115,13 @@ jobs:
           mkdir zkeys
           mv *.zkey zkeys/
 
+      - name: Sort circuits (cherrypick)
+        if: ${{ inputs.tag != 'latest' }}
+        run: |
+          # unzip artifact.zip -d ./circuits/
+          chmod +x sort_circuits.cherrypick.sh
+          ./sort_circuits.cherrypick.sh
+
       - name: Reformat zkeys
         if: ${{ inputs.tag == 'latest' }}
         run: |
@@ -108,23 +133,16 @@ jobs:
           ./sort_zkeys.sh
 
       - name: Check circuits
-        if: ${{ inputs.tag == 'latest' }}
         run: |
           chmod +x check_circuits.sh
           ./check_circuits.sh
-      
-      - name: Cherrypick circuits
-        if: ${{ inputs.tag != 'latest' }}
-        run: |
-          chmod +x sort_circuits.cherrypick.sh
-          ./sort_circuits.cherrypick.sh
 
       - name: Init submodules
         run: |
           git submodule update --init
           cd rapidsnark && git submodule update --init && cd ..
 
-      - name: Build docker images
+      - name: Build docker images (latest)
         if: ${{ inputs.tag == 'latest' }}
         run: |
           echo "TAG='${{ inputs.tag }}'"
