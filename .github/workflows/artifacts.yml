@@ -10,6 +10,9 @@ on:
         description: The tag
         required: true
         type: string
+  push:
+    branches:
+      - jcortejoso/test-runner
 
 jobs:
   prod:
@@ -17,7 +20,9 @@ jobs:
       contents: read
       id-token: write
     runs-on:
-      - 'sumsub-runner'
+      - 'self-hosted'
+      - 'selfxyz-org'
+      - 'ubuntu-24-04'
 
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -158,54 +163,55 @@ jobs:
       - name: Cleanup zkeys
         run: rm -rf zkeys*
 
-      - name: Push images
-        if: ${{ inputs.tag == 'latest' }}
-        run: |
-          chmod +x push_docker.sh
-          ./push_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }}
+      # - name: Push images
+      #   if: ${{ inputs.tag == 'latest' }}
+      #   run: |
+      #     chmod +x push_docker.sh
+      #     ./push_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }}
 
-      - name: Push cherrypick image
-        if: ${{ inputs.tag != 'latest' }}
-        run: |
-          chmod +x push_docker.sh
-          ./push_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }} --cherrypick
+      # - name: Push cherrypick image
+      #   if: ${{ inputs.tag != 'latest' }}
+      #   run: |
+      #     chmod +x push_docker.sh
+      #     ./push_docker.sh ${{ env.ARTIFACT_URL }} ${{ inputs.tag }} --cherrypick
 
-      - name: Trigger Cloud Function (notify image publish)
-        if: success()
-        env:
-          CF_URL: ${{ secrets.GCP_CF_URL }}
-          SA_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
-          TAG: ${{ inputs.tag }}
-          ENVIRONMENT: ${{ inputs.environment }}
-        run: |
-          set -euo pipefail
+      # - name: Trigger Cloud Function (notify image publish)
+      #   if: false
+      #   # if: success()
+      #   env:
+      #     CF_URL: ${{ secrets.GCP_CF_URL }}
+      #     SA_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+      #     TAG: ${{ inputs.tag }}
+      #     ENVIRONMENT: ${{ inputs.environment }}
+      #   run: |
+      #     set -euo pipefail
 
-          if ! command -v jq >/dev/null 2>&1; then
-            (sudo yum -y install jq || (sudo apt-get update && sudo apt-get install -y jq)) || {
-              echo "jq not found and failed to install" >&2; exit 1;
-            }
-          fi
+      #     if ! command -v jq >/dev/null 2>&1; then
+      #       (sudo yum -y install jq || (sudo apt-get update && sudo apt-get install -y jq)) || {
+      #         echo "jq not found and failed to install" >&2; exit 1;
+      #       }
+      #     fi
 
-          if [ ! -f pushed-image-digests.txt ]; then
-            echo "pushed-image-digests.txt not found. Did push_docker.sh write it?" >&2
-            exit 1
-          fi
+      #     if [ ! -f pushed-image-digests.txt ]; then
+      #       echo "pushed-image-digests.txt not found. Did push_docker.sh write it?" >&2
+      #       exit 1
+      #     fi
 
-          jq -R -s 'split("\n") | map(select(length>0))' pushed-image-digests.txt > digests.json
+      #     jq -R -s 'split("\n") | map(select(length>0))' pushed-image-digests.txt > digests.json
 
-          PAYLOAD=$(jq -n \
-            --arg tag "$TAG" \
-            --arg env "$ENVIRONMENT" \
-            --arg repo "${{ github.repository }}" \
-            --arg sha "${{ github.sha }}" \
-            --arg actor "${{ github.actor }}" \
-            --slurpfile digests digests.json \
-            '{tag:$tag, environment:$env, repository:$repo, sha:$sha, actor:$actor, image_digests:$digests[0]}')
+      #     PAYLOAD=$(jq -n \
+      #       --arg tag "$TAG" \
+      #       --arg env "$ENVIRONMENT" \
+      #       --arg repo "${{ github.repository }}" \
+      #       --arg sha "${{ github.sha }}" \
+      #       --arg actor "${{ github.actor }}" \
+      #       --slurpfile digests digests.json \
+      #       '{tag:$tag, environment:$env, repository:$repo, sha:$sha, actor:$actor, image_digests:$digests[0]}')
 
-          IDTOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$SA_EMAIL" --audiences="$CF_URL")
+      #     IDTOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$SA_EMAIL" --audiences="$CF_URL")
 
-          curl -fsSL -X POST \
-            -H "Authorization: Bearer $IDTOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD" \
-            "$CF_URL"
+      #     curl -fsSL -X POST \
+      #       -H "Authorization: Bearer $IDTOKEN" \
+      #       -H "Content-Type: application/json" \
+      #       -d "$PAYLOAD" \
+      #       "$CF_URL"
