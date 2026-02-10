@@ -17,7 +17,9 @@ jobs:
       contents: read
       id-token: write
     runs-on:
-      - 'sumsub-runner'
+      - 'self-hosted'
+      - 'selfxyz-org'
+      - 'ubuntu-24-04'
 
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
