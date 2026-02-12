@@ -1,7 +1,7 @@
 #!/bin/bash
 
 circuits=(
-  "register_aadhaar:self-trusted-setup-aadhaar-rsa-ph2-ceremony:aws"
+  "register_aadhaar:self-trusted-setup-new-aadhaar-ph2-ceremony:aws"
   "register_kyc:trusted-setup-kyc:gcp"
   "register_sha256_sha256_sha256_rsa_65537_4096:self-trusted-setup-sha-256-bytes-ph2-ceremony:aws"
   "register_sha256_sha256_sha256_ecdsa_brainpoolP256r1:self-trusted-setup-sha-256-bytes-ph2-ceremony:aws"
