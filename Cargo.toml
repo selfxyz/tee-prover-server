@@ -25,8 +25,17 @@ rand_core = "0.6.4"
 serde_plain = "1.0.2"
 lru = "0.13.0"
 
+# PQXDH dependencies
+x25519-dalek = "2.0"
+ml-kem = "0.3.0-pre.1"  # ML-KEM standard (compatible with @noble/post-quantum)
+hkdf = "0.12"
+sha2 = "0.10"
+rand = "0.9.0-beta.2"  # For ml-kem's rand_core 0.9 dependency
+
 [features]
 register = []
 dsc = []
 disclose = []
 cherrypick = []
+# Test mode: mocks attestation service for local testing
+test_mode = []

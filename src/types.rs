@@ -3,15 +3,39 @@ use serde::{Deserialize, Serialize};
 
 use crate::generator::Circuit;
 
+/// Response to the initial handshake containing attestation and cryptographic suite information.
+/// For PQXDH handshakes, includes X25519 and Kyber public keys for post-quantum security.
+/// For legacy P-256 handshakes, the PQXDH fields are omitted.
 #[derive(Serialize, Clone)]
 pub struct HelloResponse {
     uuid: uuid::Uuid,
     attestation: Vec<u8>,
+    /// Selected cryptographic suite: "Self-PQXDH-1" or "legacy-p256"
+    selected_suite: String,
+    /// Server's X25519 public key (32 bytes) for PQXDH handshakes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x25519_pubkey: Option<Vec<u8>>,
+    /// Server's Kyber ML-KEM-768 encapsulation key (1184 bytes) for PQXDH handshakes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kyber_pubkey: Option<Vec<u8>>,
 }
 
 impl HelloResponse {
-    pub fn new(uuid: uuid::Uuid, attestation: Vec<u8>) -> Self {
-        HelloResponse { uuid, attestation }
+    /// Creates a new HelloResponse with the specified cryptographic suite and optional PQXDH keys.
+    pub fn new(
+        uuid: uuid::Uuid,
+        attestation: Vec<u8>,
+        selected_suite: String,
+        x25519_pubkey: Option<Vec<u8>>,
+        kyber_pubkey: Option<Vec<u8>>,
+    ) -> Self {
+        HelloResponse {
+            uuid,
+            attestation,
+            selected_suite,
+            x25519_pubkey,
+            kyber_pubkey,
+        }
     }
 }
 
