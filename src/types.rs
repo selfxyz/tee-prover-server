@@ -135,6 +135,22 @@ pub enum ProofRequest {
         #[serde(default = "default_version")]
         version: u32,
     },
+    #[serde(rename_all = "camelCase")]
+    RegisterKyc {
+        circuit: Circuit,
+        endpoint_type: Option<EndpointType>,
+        endpoint: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    DiscloseKyc {
+        circuit: Circuit,
+        endpoint_type: EndpointType,
+        endpoint: String,
+        #[serde(default = "default_user_defined_data")]
+        user_defined_data: String,
+        #[serde(default = "default_version")]
+        version: u32,
+    },
 }
 
 impl ProofRequest {

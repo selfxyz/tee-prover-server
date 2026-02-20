@@ -361,6 +361,23 @@ impl RpcServer for RpcServerImpl {
                     self_defined_data.as_str(), 
                     *version as i32,
                 ),
+                ProofRequest::RegisterKyc {
+                    endpoint_type,
+                    endpoint,
+                    ..
+                } => (endpoint_type.as_ref(), endpoint.as_ref(), "", 1),
+                ProofRequest::DiscloseKyc {
+                    endpoint_type,
+                    endpoint,
+                    user_defined_data,
+                    version,
+                    ..
+                } => (
+                    Some(endpoint_type),
+                    Some(endpoint),
+                    user_defined_data.as_str(),
+                    *version as i32,
+                ),
             };
 
         if let Err(e) = create_proof_status(
