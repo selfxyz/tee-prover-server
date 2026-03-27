@@ -1,143 +1,165 @@
-# Prover server
+# Self TEE Prover Server
 
-The prover server allows a seamless interface to request proofs from a server. It also allows you to encrypt your requests to the server by making use of the NSM attestation API.
+A zero-knowledge proof generation server that runs inside a Trusted Execution Environment (TEE). It generates Groth16 proofs for passport and identity verification as part of the [Self](https://self.xyz) protocol, using Google Cloud Confidential Space to provide cryptographic attestation that all computation happens in a secure, tamper-proof enclave.
+
+## Architecture
+
+The server implements a 3-stage async pipeline connected by Tokio mpsc channels:
+
+```
+Client
+  │
+  │  JSON-RPC 2.0 (TCP :8888)
+  │
+[Confidential Space VM]
+  │
+  ├── hello()           → ECDH handshake + TEE attestation token
+  ├── submit_request()  → AES-GCM decrypt → pipeline ↓
+  │
+  ├── FileGenerator     → writes input.json to tmp directory
+  ├── WitnessGenerator  → runs circom C++ witness binary
+  └── ProofGenerator    → runs rapidsnark Groth16 prover
+                              │
+                         PostgreSQL (proof + public inputs stored)
+```
+
+### Encryption & Attestation Flow
+
+1. Client sends their P-256 public key via `hello`
+2. Server generates an ephemeral P-256 key pair and computes a shared secret (ECDH)
+3. Server requests an attestation token from the Confidential Space TEE, binding both public keys to the enclave identity
+4. Client verifies the attestation, confirming the server is a genuine enclave
+5. Client encrypts proof inputs with AES-256-GCM using the shared secret and submits via `submit_request`
+6. Server decrypts, generates the ZK proof, and stores results in PostgreSQL
+
+This ensures proof inputs are **never transmitted in plaintext** and the server can cryptographically prove it runs inside a legitimate TEE.
+
+## Proof Types
+
+| Type | Description |
+|---|---|
+| `register` | Registers a passport in the on-chain merkle tree (proves passport validity + cryptographic chain) |
+| `dsc` | Proves the Document Signing Certificate chain from the Country Signing CA |
+| `disclose` | Selectively discloses passport attributes (age, nationality, etc.) without revealing the full document |
+
+Each type also supports ID-card and Aadhaar variants (`register_id`, `dsc_id`, `disclose_id`, `register_aadhaar`, `disclose_aadhaar`).
 
 ## Build
 
-1. To build the Dockerfile first run:
+### Prerequisites
+
+- Docker
+- Git submodules (circom circuits, rapidsnark)
+
+### Setup
 
 ```sh
-git submodule update --init
-git submodule update --init
-cd ../rapidsnark
-git submodule update --init
-cd ..
+git submodule update --init --recursive
+cd self/circuits && yarn && cd ../..
 ```
 
-2. Assuming you have yarn installed, install node_modules in the `self/circuits` directory:
+### Building Docker Images
 
 ```sh
-cd self/circuits
-yarn
-cd ../../
+docker build \
+  --build-arg PROOFTYPE=<register|dsc|disclose> \
+  --build-arg SIZE_FILTER=<small|medium|large> \
+  -f Dockerfile.tee \
+  -t <IMAGE_NAME> .
 ```
 
-3. Building the docker image:
+A `Dockerfile.cherrypick` variant bundles all circuit types into a single image (compiled with `--features cherrypick`).
 
-```sh
-docker build --build-arg PROOFTYPE=<PROOFTYPE> -f Dockerfile.tee -t <IMAGE_NAME> .
+## Running
+
+### CLI Options
+
 ```
-
-Where the `<PROOFTYPE>` can be one of: {register, dsc, disclose}.
-
-## Running the server
-
-The following options can be used to run the server:
-
-```sh
 Options:
-  -s, --server-address <SERVER_ADDRESS>
-          Web server bind address (e.g., 0.0.0.0:3001) [default: 0.0.0.0:3001]
-  -d, --database-url <DATABASE_URL>
-          PostgreSQL database connection URL [default: postgres://postgres:mysecretpassword@localhost:5433/db]
-  -c, --circuit-folder <CIRCUIT_FOLDER>
-          Circuit folder path [default: ../circuits]
-  -k, --zkey-folder <ZKEY_FOLDER>
-          ZKey folder path [default: ./zkeys]
-  -z, --circuit-zkey-map <CIRCUIT_ZKEY_MAP>
-          Witness calc circuit to zkey mapper
-  -r, --rapidsnark-path <RAPIDSNARK_PATH>
-          Rapidsnark path [default: ./rapidsnark]
-  -h, --help
-          Print help
+  -s, --server-address <SERVER_ADDRESS>    Web server bind address [default: 0.0.0.0:3001]
+  -d, --project-id <PROJECT_ID>           GCP project ID (for Secret Manager)
+      --secret-id <SECRET_ID>             Secret Manager secret name for DB URL
+  -c, --circuit-folder <CIRCUIT_FOLDER>   Circuit folder path [default: /circuits]
+  -k, --zkey-folder <ZKEY_FOLDER>         ZKey folder path [default: /zkeys]
+  -r, --rapidsnark-path <RAPIDSNARK_PATH> Rapidsnark binary path [default: /rapidsnark]
+  -h, --help                              Print help
 ```
 
-When running the server in a nitro enclave please make sure you have two proxies running on the ec2 instance. One would be for the RPC server and the other for the DB.
+### Environment Variables
 
-```sh
-# Install socat
-sudo dnf install socat -y
-socat tcp-listen:8888,fork,reuseaddr vsock-connect:<ENCLAVE_ID>:8888 # for the rpc server
-socat vsock-listen:8889,fork,reuseaddr TCP4:<DB_HOST>:<DB_PORT> # for the db
-```
+| Variable | Description |
+|---|---|
+| `PROJECT_ID` | GCP project ID |
+| `SECRET_ID` | Secret Manager secret name (contains the PostgreSQL connection URL) |
+| `PROJECT_NUMBER` | GCP project number (for Workload Identity Federation) |
+| `POOL_NAME` | GCP Workload Identity Pool name |
 
-# API
+The database URL is fetched at runtime from GCP Secret Manager using TEE attestation credentials — it is never passed as an environment variable or CLI argument.
 
-This API follows the JSON-RPC 2.0 protocol and operates under the `openpassport` namespace.
+### Container Startup
 
-### 1. `hello`
+Inside the TEE, `start.sh` handles initialization:
 
-**Description:**
-The first part of an ECDH handshake. The user sends their public key along with a UUID that is linked to their session ID when scanning the QR code.
+1. Generates GCP Workload Identity Federation credentials via attestation
+2. Sets `ulimit -s 500000` (required for ZK witness generation)
+3. Launches the server on port 8888
 
-**Method Name:** `openpassport_hello`
+## API
 
-**Request Parameters:**
+The API follows **JSON-RPC 2.0** under the `openpassport` namespace.
 
-- `user_pubkey` (Vec<u8>): The public key of the user.
-- `uuid` (String): A unique identifier for the request.
+### `openpassport_health`
 
-**Response:**
-Returns a `ResponsePayload` containing `HelloResponse` which is the request UUID and the attestation response. Please verify the response before making the second request.
+Liveness check.
 
----
+### `openpassport_hello`
 
-### 2. `submit_request`
+Initiates an ECDH handshake with TEE attestation.
 
-**Description:**
-Submits an encrypted request along with authentication data. The encryption scheme used is AES-GCM.
+**Parameters:**
+- `user_pubkey` (`Vec<u8>`): Client's compressed P-256 public key (33 bytes, SEC1)
+- `uuid` (`String`): Unique session identifier
 
-**Method Name:** `openpassport_submit_request`
+**Returns:** `HelloResponse` containing the UUID and attestation token (verify before proceeding).
 
-**Request Parameters:**
+### `openpassport_submit_request`
 
-- `uuid` (String): A unique identifier for the request.
-- `nonce` (Vec<u8>): A cryptographic nonce.
-- `cipher_text` (Vec<u8>): The encrypted request payload.
-- `auth_tag` (Vec<u8>): The authentication tag for integrity verification.
+Submits an encrypted proof request.
 
-**Response:**
-Returns a `ResponsePayload` containing the UUID.
+**Parameters:**
+- `uuid` (`String`): Session identifier from `hello`
+- `nonce` (`Vec<u8>`): AES-GCM nonce
+- `cipher_text` (`Vec<u8>`): Encrypted `SubmitRequest` payload
+- `auth_tag` (`Vec<u8>`): AES-GCM authentication tag
 
----
+**Returns:** The UUID. Poll the database for proof status updates.
 
-### 3. `attestation`
+### `openpassport_attestation`
 
-**Description:**
-Requests attestation for user data and cryptographic parameters.
+Requests a raw attestation token.
 
-**Method Name:** `openpassport_attestation`
+**Parameters:**
+- `user_data` (`Option<Vec<u8>>`): Optional user data
+- `nonce` (`Option<Vec<u8>>`): Optional nonce
+- `public_key` (`Option<Vec<u8>>`): Optional public key
 
-**Request Parameters:**
+**Returns:** Attestation data as bytes.
 
-- `user_data` (Option<Vec<u8>>): Optional user-related data.
-- `nonce` (Option<Vec<u8>>): Optional cryptographic nonce.
-- `public_key` (Option<Vec<u8>>): Optional public key.
-
-**Response:**
-Returns a `ResponsePayload` containing attestation data as a vector of bytes.
-
-## Usage
-
-Clients can send JSON-RPC requests to the OpenPassport API endpoint, following the standard JSON-RPC 2.0 format:
-
-**Example Request:**
+### Example
 
 ```json
+// Request
 {
   "jsonrpc": "2.0",
   "method": "openpassport_hello",
   "params": {
-    "user_pubkey": "...",
+    "user_pubkey": [3, 12, 45, ...],
     "uuid": "550e8400-e29b-41d4-a716-446655440000"
   },
   "id": 1
 }
-```
 
-**Example Response:**
-
-```json
+// Response
 {
   "jsonrpc": "2.0",
   "id": 1,
@@ -147,3 +169,39 @@ Clients can send JSON-RPC requests to the OpenPassport API endpoint, following t
   }
 }
 ```
+
+## Database
+
+The `proofs` table tracks proof lifecycle with PostgreSQL LISTEN/NOTIFY for real-time status updates:
+
+| Status | Value | Description |
+|---|---|---|
+| Pending | 0 | Request received, queued |
+| WitnessGenerated | 1 | Circom witness computed |
+| ProofGenerated | 2 | Groth16 proof complete |
+| Failed | 3 | Error (reason stored) |
+
+Schema is defined in [`setup.sql`](./setup.sql).
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Language | Rust (2021 edition) |
+| Async runtime | Tokio |
+| RPC | jsonrpsee (JSON-RPC 2.0) |
+| Database | PostgreSQL (sqlx) |
+| Encryption | AES-256-GCM, P-256 ECDH |
+| TEE | Google Cloud Confidential Space |
+| Secrets | GCP Secret Manager |
+| ZK proofs | Groth16 (circom + rapidsnark) |
+| CI/CD | GitHub Actions → GCP Artifact Registry |
+
+## CI/CD
+
+Pushes to `main` deploy to production (tag `latest`), pushes to `staging` deploy with tag `stg`. The pipeline:
+
+1. Downloads pre-compiled circuit artifacts and `.zkey` files from S3 / GCP Buckets
+2. Builds Docker images per proof type and size tier
+3. Pushes to Google Artifact Registry
+4. Notifies a GCP Cloud Function with build metadata
