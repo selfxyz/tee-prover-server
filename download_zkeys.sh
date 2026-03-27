@@ -2,7 +2,7 @@
 
 circuits=(
   "register_aadhaar:self-trusted-setup-aadhaar-rsa-ph2-ceremony:aws"
-  "register_kyc:trusted-setup-kyc:gcp"
+  "register_kyc:register-kyc-fix-nullifier:gcp"
   "register_sha1_sha1_sha1_rsa_64321_4096:self-trusted-setup-aadhaar-rsa-ph2-ceremony:aws"
   "register_sha1_sha1_sha1_ecdsa_brainpoolP224r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony:aws"
   "register_sha1_sha1_sha1_ecdsa_secp256r1:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony:aws"
