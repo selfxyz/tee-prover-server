@@ -20,6 +20,7 @@ jobs:
       - 'self-hosted'
       - 'selfxyz-org'
       - 'ubuntu-24-04'
+      - '32ram'
 
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
