@@ -19,9 +19,7 @@ jobs:
     runs-on:
       - 'self-hosted'
       - 'selfxyz-org'
-      - 'ubuntu-24-04'
-      - '32ram'
-
+      - 'c4d-highmem-8'
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GAR_REGISTRY: us-docker.pkg.dev
