@@ -20,6 +20,7 @@ jobs:
       - 'self-hosted'
       - 'selfxyz-org'
       - 'c4d-highmem-8'
+
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GAR_REGISTRY: us-docker.pkg.dev
