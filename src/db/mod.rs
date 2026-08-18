@@ -163,9 +163,9 @@ pub async fn fail_proof(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Proof {
-    pi_a: Vec<String>,
-    pi_b: Vec<Vec<String>>,
-    pi_c: Vec<String>,
-    protocol: String,
+pub struct Proof {
+    pub pi_a: Vec<String>,
+    pub pi_b: Vec<Vec<String>>,
+    pub pi_c: Vec<String>,
+    pub protocol: String,
 }
