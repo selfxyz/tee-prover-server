@@ -32,6 +32,9 @@ alloy-sol-types = "0.8"
 rand = "0.8"
 hex = "0.4"
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 register = []
 dsc = []

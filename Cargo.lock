@@ -3635,6 +3635,7 @@ dependencies = [
  "serde_json",
  "serde_plain",
  "sqlx",
+ "tempfile",
  "tokio",
  "uuid",
 ]
