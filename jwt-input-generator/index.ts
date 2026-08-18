@@ -221,9 +221,15 @@ const SCOPE_NONCE = 'self_protocol';
  * back verbatim in `eat_nonce`, so this is also precisely what `eat_nonce` must
  * contain — see `assertNonceBindsEnclaveKey`. Single source of truth so the request
  * and the check can never drift apart.
+ *
+ * The address goes in bare (40 hex chars, no `0x`): the on-chain decoder
+ * (`GCPJWTHelper.unpackAndDecodeAddress`) is a pure hex decode over two
+ * `PackBytes` chunks and asserts exactly 40 characters recovered. Stripping the
+ * prefix here keeps that string-format knowledge out of Solidity. `enclaveAddress`
+ * itself stays `0x`-prefixed everywhere else (CLI contract, logs).
  */
 function requestedNonces(enclaveAddress: string): string[] {
-  return [enclaveAddress, SCOPE_NONCE];
+  return [enclaveAddress.slice(2), SCOPE_NONCE];
 }
 
 /**

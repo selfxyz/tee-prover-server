@@ -32,10 +32,10 @@ for (const k of ['message', 'messageLength', 'leaf_cert', 'intermediate_cert',
 // image_digest_length is emitted as a decimal string, matching the didit-tee
 // generator's output format verbatim (output parity, not a type we get to pick).
 assert.strictEqual(Number(inputs.image_digest_length), 71, 'image_digest_length must be 71');
-// The nonce the circuit is handed must be the 42-character address, not something else
-// of a plausible length.
-assert.strictEqual(Number(inputs.eat_nonce_0_b64_length), ADDR.length,
-  'eat_nonce_0_b64_length must be the enclave address length');
+// The nonce the circuit is handed must be the bare 40-character hex address (no
+// `0x`), not the 42-character argv form or something else of a plausible length.
+assert.strictEqual(Number(inputs.eat_nonce_0_b64_length), ADDR.length - 2,
+  'eat_nonce_0_b64_length must be the bare (0x-stripped) enclave address length');
 console.log('OK');
 
 // --- Rejection cases: the generator must exit non-zero on any failure, since

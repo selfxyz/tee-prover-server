@@ -110,7 +110,9 @@ const payload = {
   iss: 'https://confidentialcomputing.googleapis.com',
   nbf: iat,
   sub: 'https://www.googleapis.com/compute/v1/projects/synthetic/zones/us-west1-b/instances/fixture',
-  eat_nonce: [ENCLAVE_ADDRESS, SCOPE_NONCE],
+  // Bare hex, no `0x`: matches what index.ts's requestedNonces() now sends Google
+  // (the on-chain decoder is a pure hex decode expecting exactly 40 characters).
+  eat_nonce: [ENCLAVE_ADDRESS.slice(2), SCOPE_NONCE],
   secboot: true,
   hwmodel: 'GCP_AMD_SEV',
   swname: 'CONFIDENTIAL_SPACE',
