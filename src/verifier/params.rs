@@ -78,6 +78,48 @@ const RSA_LIMBS: &[(&str, u32, u32)] = &[
     ("register_id_sha512_sha512_sha512_rsa_65537_4096", 120, 35),
 ];
 
+/// `(signatureAlgorithm ID, hash_bits, exponent)`, transcribed from
+/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom`: its
+/// top-of-file "ID to Signature Algorithm" comment table (which names the
+/// hash and exponent directly, e.g. `1: rsa_sha256_65537_2048`) and its
+/// `getHashLength(signatureAlgorithm)` function agree on every entry below —
+/// both were read and cross-checked before transcribing, not guessed from
+/// one source alone. Limited to the RSA PKCS#1 v1.5 IDs that actually appear
+/// as the `signatureAlgorithm` (3rd) argument across the 14 `REGISTER`/
+/// `REGISTER_ID` instance files this crate's `RSA_LIMBS` table covers, plus
+/// the handful of neighbouring RSA IDs from the same table that read
+/// cleanly. RSAPSS and ECDSA IDs are omitted entirely — out of scope for
+/// this plan, and `lookup` already returns `None` for those circuit names,
+/// so the drift test below never needs an entry for them.
+const SIGNATURE_ALGORITHM_TABLE: &[(u32, u32, u64)] = &[
+    // (id, hash_bits, exponent)
+    (1, 256, 65537),   // rsa_sha256_65537_2048
+    (3, 160, 65537),   // rsa_sha1_65537_2048
+    (10, 256, 65537),  // rsa_sha256_65537_4096
+    (11, 160, 65537),  // rsa_sha1_65537_4096
+    (13, 256, 3),      // rsa_sha256_3_2048
+    (14, 256, 65537),  // rsa_sha256_65537_3072
+    (15, 512, 65537),  // rsa_sha512_65537_4096
+    (31, 512, 65537),  // rsa_sha512_65537_2048
+    (32, 256, 3),      // rsa_sha256_3_4096
+    (33, 160, 3),      // rsa_sha1_3_4096
+    (34, 384, 65537),  // rsa_sha384_65537_4096
+    (47, 160, 64321),  // rsa_sha1_64321_4096
+    (48, 256, 130689), // rsa_sha256_130689_4096
+    (49, 256, 122125), // rsa_sha256_122125_4096
+    (50, 256, 107903), // rsa_sha256_107903_4096
+    (51, 256, 56611),  // rsa_sha256_56611_4096
+];
+
+/// Looks up `(hash_bits, exponent)` for a `signatureAlgorithm` ID from the
+/// table above.
+fn signature_algorithm_hash_and_exponent(id: u32) -> Option<(u32, u64)> {
+    SIGNATURE_ALGORITHM_TABLE
+        .iter()
+        .find(|(entry_id, _, _)| *entry_id == id)
+        .map(|(_, hash_bits, exponent)| (*hash_bits, *exponent))
+}
+
 pub fn lookup(name: &str) -> Option<CircuitParams> {
     // register_aadhaar.circom instantiates REGISTER_AADHAAR(121, 17, 512 * 3) — a
     // different template with a different argument order (n, k, maxDataLength).
@@ -189,6 +231,33 @@ pub(crate) fn parse_instance_n_k(src: &str) -> Option<(u32, u32)> {
     Some((n, k))
 }
 
+/// Finds a `REGISTER(...)` or `REGISTER_ID(...)` call and returns its first
+/// three arguments — `(DG_HASH_ALGO, ECONTENT_HASH_ALGO, signatureAlgorithm)`
+/// — as `(u32, u32, u32)`. Deliberately does *not* handle
+/// `REGISTER_AADHAAR(...)`: that template's argument list is `(n, k,
+/// maxDataLength)` and carries none of these three, since Aadhaar's hash
+/// widths and signature scheme are fixed by the circuit body rather than
+/// passed in as template parameters (see `lookup`'s `register_aadhaar` arm).
+/// Returns `None` for anything else, including `REGISTER_AADHAAR(...)` and
+/// `REGISTER_KYC()`.
+pub(crate) fn parse_instance_hash_and_sig_algo(src: &str) -> Option<(u32, u32, u32)> {
+    if extract_args(src, "REGISTER_AADHAAR(").is_some() {
+        return None;
+    }
+    let args = if let Some(args) = extract_args(src, "REGISTER_ID(") {
+        args
+    } else {
+        extract_args(src, "REGISTER(")?
+    };
+    if args.len() < 3 {
+        return None;
+    }
+    let dg_hash: u32 = args[0].parse().ok()?;
+    let econtent_hash: u32 = args[1].parse().ok()?;
+    let sig_algo: u32 = args[2].parse().ok()?;
+    Some((dg_hash, econtent_hash, sig_algo))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +334,65 @@ mod tests {
                     (ours.n, ours.k),
                     (n, k)
                 );
+
+                // Beyond (n, k): dg_hash, econtent_hash, and sig_hash are
+                // derived from the circuit NAME by convention, and they
+                // select every digest and both offset bounds
+                // (passportVerifier.circom). A name<->instance divergence
+                // there is a false-reject generator of exactly the class the
+                // (n, k) guard above exists to prevent, so it gets the same
+                // drift protection. register_aadhaar's REGISTER_AADHAAR(n, k,
+                // maxDataLength) carries none of these three template
+                // arguments (its hash widths and RSA-65537 scheme are fixed
+                // in the circuit body, not passed in) — parse_instance_
+                // hash_and_sig_algo returns None for it by design, so it is
+                // excluded from this half of the check while staying in the
+                // (n, k) check above.
+                if let Some((dg_hash_arg, econtent_hash_arg, sig_algo_id)) =
+                    parse_instance_hash_and_sig_algo(&src)
+                {
+                    assert_eq!(
+                        ours.dg_hash, dg_hash_arg,
+                        "dg_hash drift for {stem}: table says {}, instance file's 1st REGISTER \
+                         arg says {}",
+                        ours.dg_hash, dg_hash_arg
+                    );
+                    assert_eq!(
+                        ours.econtent_hash, econtent_hash_arg,
+                        "econtent_hash drift for {stem}: table says {}, instance file's 2nd \
+                         REGISTER arg says {}",
+                        ours.econtent_hash, econtent_hash_arg
+                    );
+
+                    let (expected_sig_hash, expected_exponent) =
+                        signature_algorithm_hash_and_exponent(sig_algo_id).unwrap_or_else(|| {
+                            panic!(
+                                "{stem}: no entry in SIGNATURE_ALGORITHM_TABLE for \
+                                 signatureAlgorithm id {sig_algo_id} (instance file's 3rd \
+                                 REGISTER arg) — add it by reading signatureAlgorithm.circom, \
+                                 do not guess"
+                            )
+                        });
+                    assert_eq!(
+                        ours.sig_hash, expected_sig_hash,
+                        "sig_hash drift for {stem}: table says {}, but signatureAlgorithm id \
+                         {sig_algo_id} (from the instance file) implies {}",
+                        ours.sig_hash, expected_sig_hash
+                    );
+                    let Scheme::Rsa { e: ours_e, .. } = ours.scheme else {
+                        panic!(
+                            "{stem}: table's scheme is not Rsa, but the instance file's \
+                             signatureAlgorithm id {sig_algo_id} is an RSA PKCS#1v15 id"
+                        );
+                    };
+                    assert_eq!(
+                        ours_e, expected_exponent,
+                        "RSA exponent drift for {stem}: table says e={ours_e}, but \
+                         signatureAlgorithm id {sig_algo_id} (from the instance file) implies \
+                         e={expected_exponent}"
+                    );
+                }
+
                 checked += 1;
             }
         }
