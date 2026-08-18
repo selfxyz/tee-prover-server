@@ -16,6 +16,8 @@ pub mod kyc;
 pub mod params;
 pub mod passport;
 pub mod primitives;
+#[cfg(test)]
+mod real_fixtures;
 pub mod sha_padding;
 #[cfg(test)]
 pub mod testkit;
