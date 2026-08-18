@@ -265,4 +265,32 @@ mod tests {
             other => panic!("an off-curve pubkey must be Invalid, got {other:?}"),
         }
     }
+
+    /// Pins the actual production wire encoding, not just the testkit's own
+    /// self-consistent form. `common/src/utils/kyc/generateInputs.ts`'s
+    /// `generateKycRegisterInput`/`generateMockKycRegisterInput` build
+    /// `data_padded` as a plain `number[]` (`Array.from(raw, b =>
+    /// Number(b))`), never run through `formatInput`'s stringification the
+    /// way every passport/EU-ID field is. A verifier that only accepted
+    /// `Value::String` array elements would skip on every real KYC request
+    /// while still passing every other test in this file, which is exactly
+    /// the gap that shipped. This test must fail if `field_as_strings`
+    /// regresses to string-only.
+    #[test]
+    fn production_encoding_data_padded_as_json_number_array_is_valid() {
+        let mut inputs = kyc_inputs();
+        let bytes: Vec<u64> = inputs["data_padded"]
+            .as_array()
+            .expect("testkit encodes this as an array")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("testkit encodes each byte as a decimal string")
+                    .parse()
+                    .expect("decimal string")
+            })
+            .collect();
+        inputs["data_padded"] = serde_json::json!(bytes);
+        assert_eq!(verify(&inputs, &params()), Verdict::Valid);
+    }
 }

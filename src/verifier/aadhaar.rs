@@ -133,4 +133,25 @@ mod tests {
         let v = verify(&inputs, &params());
         assert!(matches!(v, Verdict::Skipped(_)), "malformed padding must skip, got {v:?}");
     }
+
+    /// Pins the actual production wire encoding, not just the testkit's own
+    /// self-consistent form. `new-common/src/circuits/inputs/register-
+    /// aadhaar.ts` sets `qrDataPaddedLength: processed.qrDataPaddedLen` — a
+    /// bare JSON number, never wrapped in a one-element string array the way
+    /// the hand-built fixture (and every other scalar field) encodes it. A
+    /// verifier that only accepted `Value::String` would skip on every real
+    /// Aadhaar request while still passing every other test in this file,
+    /// which is exactly the gap that shipped. This test must fail if
+    /// `field_as_strings` regresses to string-only.
+    #[test]
+    fn production_encoding_qr_data_padded_length_as_bare_json_number_is_valid() {
+        let mut inputs = fixture();
+        let len: u64 = inputs["qrDataPaddedLength"][0]
+            .as_str()
+            .expect("testkit encodes this as a one-element string array")
+            .parse()
+            .expect("decimal string");
+        inputs["qrDataPaddedLength"] = serde_json::json!(len);
+        assert_eq!(verify(&inputs, &params()), Verdict::Valid);
+    }
 }
