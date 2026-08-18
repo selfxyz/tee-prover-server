@@ -466,7 +466,7 @@ async function main() {
       eat_nonce_0_value_offset: eatNonce0ValueOffset.toString(),
 
       // Container image digest (circuit will extract value directly from payload)
-      image_digest_length: imageDigest.length,
+      image_digest_length: imageDigest.length.toString(),
       image_digest_key_offset: imageDigestKeyOffset.toString(),
       image_digest_value_offset: imageDigestValueOffset.toString(),
     };
