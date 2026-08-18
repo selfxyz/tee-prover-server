@@ -704,6 +704,7 @@ checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
 dependencies = [
  "futures-channel",
  "futures-core",
+ "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",
@@ -2816,6 +2817,7 @@ dependencies = [
  "aes-gcm",
  "base64 0.21.7",
  "clap",
+ "futures",
  "google-cloud-secretmanager-v1",
  "hyper 0.14.32",
  "hyperlocal",

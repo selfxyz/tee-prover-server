@@ -5,6 +5,7 @@ mod server;
 mod store;
 mod types;
 mod utils;
+mod verifier;
 
 use std::collections::HashMap;
 use std::path;
@@ -128,6 +129,19 @@ async fn main() {
                         return;
                     }
                 };
+
+                match crate::verifier::verify_inputs(uuid, &circuit_name).await {
+                    crate::verifier::Verdict::Valid => {}
+                    crate::verifier::Verdict::Skipped(reason) => {
+                        println!("precheck skipped for {circuit_name}: {reason}");
+                    }
+                    crate::verifier::Verdict::Invalid(reason) => {
+                        println!("precheck rejected {circuit_name}: {reason}");
+                        cleanup(uuid, &pool_clone, format!("signature precheck failed: {reason}")).await;
+                        return;
+                    }
+                }
+
                 if let Err(e) = witness_generator_clone.send(WitnessGenerator::new(
                     uuid.clone(),
                     circuit_name
