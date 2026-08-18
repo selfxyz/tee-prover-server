@@ -56,32 +56,65 @@ pub async fn bootstrap(
     let tmp = get_tmp_folder_path(&uuid.to_string());
     tokio::fs::create_dir_all(&tmp).await.map_err(|e| e.to_string())?;
 
-    let input_file = path::Path::new(&tmp).join("input.json");
-    run_input_generator(&key.address(), input_file.to_str().unwrap(), None).await?;
+    // Everything fallible lives in this inner block so `tmp` is always cleaned up
+    // afterward, on both the success and the failure path. Bootstrap failure is
+    // fatal by design, which means the error paths here are precisely the ones
+    // that fire in practice — leaving the JWT input and any partial witness/proof
+    // artifacts behind in the enclave's filesystem is not an acceptable default.
+    let result: Result<AttestationProof, String> = async {
+        let input_file = path::Path::new(&tmp).join("input.json");
+        run_input_generator(&key.address(), input_file.to_str().unwrap(), None).await?;
 
-    WitnessGenerator::new(uuid, ATTESTATION_CIRCUIT.to_string())
-        .run(circuit_folder)
-        .await?;
-    ProofGenerator::new(uuid, zkey_path.to_string())
-        .run(&rapidsnark_path.to_string())
-        .await?;
+        WitnessGenerator::new(uuid, ATTESTATION_CIRCUIT.to_string())
+            .run(circuit_folder)
+            .await?;
+        ProofGenerator::new(uuid, zkey_path.to_string())
+            .run(&rapidsnark_path.to_string())
+            .await?;
 
-    let proof_str = std::fs::read_to_string(path::Path::new(&tmp).join("proof.json"))
-        .map_err(|e| e.to_string())?;
-    let inputs_str = std::fs::read_to_string(path::Path::new(&tmp).join("public_inputs.json"))
-        .map_err(|e| e.to_string())?;
-
-    let proof = Proof::deserialize(&mut serde_json::de::Deserializer::from_str(&proof_str))
-        .map_err(|e| e.to_string())?;
-    let public_inputs =
-        Vec::<String>::deserialize(&mut serde_json::de::Deserializer::from_str(&inputs_str))
+        let proof_str = std::fs::read_to_string(path::Path::new(&tmp).join("proof.json"))
+            .map_err(|e| e.to_string())?;
+        let inputs_str = std::fs::read_to_string(path::Path::new(&tmp).join("public_inputs.json"))
             .map_err(|e| e.to_string())?;
 
-    // Fail fast if the digest encoding cannot handle our own proof shape.
-    proof_digest(&proof, &public_inputs)?;
+        let proof = Proof::deserialize(&mut serde_json::de::Deserializer::from_str(&proof_str))
+            .map_err(|e| e.to_string())?;
+        let public_inputs =
+            Vec::<String>::deserialize(&mut serde_json::de::Deserializer::from_str(&inputs_str))
+                .map_err(|e| e.to_string())?;
 
-    let _ = tokio::fs::remove_dir_all(&tmp).await;
-    Ok((key, AttestationProof { proof, public_inputs }))
+        // Fail fast if the digest encoding cannot handle our own proof shape.
+        proof_digest(&proof, &public_inputs)?;
+
+        Ok(AttestationProof { proof, public_inputs })
+    }
+    .await;
+
+    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&tmp).await {
+        match &result {
+            // The body succeeded: the attestation is valid and there's nothing
+            // secret to lose (the key never touched disk, and the proof/public
+            // inputs left behind are published on-chain anyway), so a failed rm
+            // is a hygiene issue, not a reason to refuse to serve proofs. Log
+            // and move on rather than turning a valid attestation into a fatal
+            // boot error.
+            Ok(_) => {
+                eprintln!(
+                    "bootstrap: succeeded but failed to clean up {tmp}: {cleanup_err}"
+                );
+            }
+            // The body already failed: that error is the one that explains why
+            // the enclave cannot attest and must reach the caller unmasked.
+            // Surface the cleanup failure too, just not as the returned error.
+            Err(body_err) => {
+                eprintln!(
+                    "bootstrap: cleanup of {tmp} failed ({cleanup_err}) after bootstrap error: {body_err}"
+                );
+            }
+        }
+    }
+
+    result.map(|attestation| (key, attestation))
 }
 
 #[cfg(test)]
@@ -118,5 +151,49 @@ mod tests {
         // wiring it in here.
         assert!(run_input_generator(&key.address(), out.to_str().unwrap(),
                                     Some("fixtures/example_jwt_short_chain.txt")).await.is_err());
+    }
+
+    /// `bootstrap` mints its own uuid internally (by design — its signature can't
+    /// take one), so this test can't predict the exact `tmp_<uuid>` path up front.
+    /// Instead it snapshots the set of `tmp_*` entries in the crate root before and
+    /// after a failing call: since nothing else in this suite creates `tmp_*`
+    /// directories (see `get_tmp_folder_path` in `src/utils.rs` for the shape),
+    /// any directory bootstrap created for this call must be gone afterward, or
+    /// the sets won't match.
+    #[tokio::test]
+    async fn cleanup_runs_after_a_failed_bootstrap() {
+        fn tmp_dirs() -> std::collections::HashSet<String> {
+            std::fs::read_dir(".")
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .filter(|name| name.starts_with("tmp_"))
+                .collect()
+        }
+
+        let before = tmp_dirs();
+
+        // No Confidential Space socket exists on this machine, so
+        // `run_input_generator` (the first fallible step in the body) fails
+        // immediately — a bad circuit_folder never even gets reached. Either
+        // way this exercises the failure path the cleanup fix targets: some
+        // step in the body errors out after the tmp dir was created.
+        let result = bootstrap(
+            "not-a-real-circuit-folder",
+            "not-a-real-zkey",
+            "not-a-real-rapidsnark",
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "expected bootstrap to fail without a Confidential Space socket"
+        );
+
+        let after = tmp_dirs();
+        assert_eq!(
+            before, after,
+            "bootstrap must not leave its tmp_<uuid> directory behind on failure"
+        );
     }
 }
