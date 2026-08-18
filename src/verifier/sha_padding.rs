@@ -29,6 +29,32 @@
 /// crafted, non-aligned `padded_len` could otherwise pass every other check
 /// by coincidence and produce a wrong-but-plausible message. The block-size
 /// check closes that off before any of the rest run.
+///
+/// **This function is written for SHA-256's shape — 64-byte blocks, an
+/// 8-byte big-endian length field — but four deployed circuits
+/// (`register_sha512_*`, `register_id_sha512_*`) use `sha384_512Pad`
+/// instead: 128-byte blocks with a 16-byte length field.** It handles that
+/// shape too, but only because of two facts that both happen to hold, not
+/// because it was written for it:
+///
+/// 1. 128 is a multiple of 64, so `padded_len % 64 != 0` never rejects a
+///    genuinely 128-byte-block-aligned buffer.
+/// 2. The 128-bit length field is big-endian, so its trailing 8 bytes are
+///    the *low* 64 bits of the true bit-length, and its leading 8 bytes are
+///    the *high* 64 bits — which are all zero for any message under
+///    2^64 bits (i.e. every real document). This function reads only the
+///    trailing 8 bytes as `bit_len`, which is therefore the correct value,
+///    and it treats the 8 leading (high-order, zero) bytes of the 16-byte
+///    length field as ordinary zero *padding* — indistinguishable from the
+///    zeros between the `0x80` marker and the length field, and covered by
+///    the same "any byte between the marker and the length field must be
+///    zero" check.
+///
+/// If a future change tightened the block-alignment check to `% 128` for a
+/// 512-bit hash, or shortened the zero-padding tolerance, it would break
+/// this coincidence and falsely reject every SHA-384/512 circuit. See
+/// `recovers_a_message_from_sha384_512_style_padding` below, which pins the
+/// 128/16 shape directly rather than relying on this reasoning alone.
 pub fn recover_message(padded: &[u8], padded_len: usize) -> Option<&[u8]> {
     if padded_len > padded.len() {
         return None;
@@ -63,6 +89,34 @@ pub fn recover_message(padded: &[u8], padded_len: usize) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovers_a_message_from_sha384_512_style_padding() {
+        // sha384_512Pad's shape: 128-byte blocks, a 16-byte big-endian
+        // length field (vs. SHA-256's 64-byte blocks / 8-byte field). Builds
+        // the length field as 8 zero bytes (the high 64 bits, zero for any
+        // real message) followed by the true bit-length's 8 bytes -- exactly
+        // what four deployed circuits (register_sha512_*, register_id_
+        // sha512_*) produce. This is the test the doc comment on
+        // recover_message points to: it must keep passing even if someone
+        // "cleans up" the 64/8 logic, because that logic is what recovers
+        // this shape too.
+        let msg = b"a message long enough to span more than one 128-byte block boundary, \
+                    to make sure the block-alignment and bounds checks both see real data";
+        let mut padded = msg.to_vec();
+        padded.push(0x80);
+        // Pad to a whole number of 128-byte blocks, leaving room for the
+        // 16-byte length field.
+        while (padded.len() + 16) % 128 != 0 {
+            padded.push(0);
+        }
+        let bit_len = (msg.len() as u64) * 8;
+        padded.extend_from_slice(&[0u8; 8]); // high 64 bits: zero for any real-sized message
+        padded.extend_from_slice(&bit_len.to_be_bytes()); // low 64 bits: the true bit length
+        let len = padded.len();
+        assert_eq!(len % 128, 0, "test construction should be 128-byte-block aligned");
+        assert_eq!(recover_message(&padded, len), Some(&msg[..]));
+    }
 
     #[test]
     fn recovers_a_message_from_sha256_padding() {
