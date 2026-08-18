@@ -206,15 +206,32 @@ is a required change to the copied code, not an optional test affordance.
 
 ## Out of scope (deferred, in order)
 
-1. `registerProverKey` on `IdentityRegistryKycImplV1`: a new
-   `mapping(address => bool) _isRegisteredProverKey` and `_proofTee` address appended after
-   `_prevNameAndYobOfacRoot`; an `onlyProofTEE` modifier mirroring `onlyTEE`; the shared
-   verification body extracted to `_verifyGcpJwtAttestation`; an `isRegisteredProverKey`
-   view; plus a revoke path per the note above. The prover address is read from the
-   `eat_nonce` public signals rather than unpacked as a Poseidon commitment.
-   `RegisterProofVerifierLib` is deliberately left untouched so a prover key can never
-   satisfy the KYC attestor check at `RegisterProofVerifierLib.sol:101-108`.
-2. Deploy the registry upgrade.
+1. `registerProverKey` on the **hub** (`IdentityVerificationHubImplV2`), not on
+   `IdentityRegistryKycImplV1`: a `mapping(address => bool) _isRegisteredProverKey`, an
+   authorized submitter, and an `isRegisteredProverKey` view. The prover address is read
+   from the `eat_nonce` public signals rather than unpacked as a Poseidon commitment.
+
+   **Why the hub.** An earlier draft of this spec targeted the KYC registry, because that
+   is the only contract that currently holds the GCP JWT verification plumbing
+   (`_gcpJwtVerifier`, `_gcpRootCAPubkeyHash`, `_PCR0Manager`, `_tee`) — the hub has none
+   of it. That was expedience, not design. A prover key is orthogonal to attestation type:
+   this server produces passport, EU ID, Aadhaar and KYC proofs alike. Registering it in a
+   KYC-specific contract also places it one mapping away from `checkPubkeyCommitment`,
+   which `RegisterProofVerifierLib.sol:101-108` treats as KYC-attestor authority — the
+   tension that forced the earlier draft to invent a separate mapping and a separate
+   `_proofTee` purely to keep the two apart. On the hub that tension does not exist.
+
+   **Open decision, not settled here:** whether the hub gets its own
+   `_gcpJwtVerifier`/`_gcpRootCAPubkeyHash`/`_PCR0Manager` storage, or reads them through
+   the registry it already holds. Note the verification body (verifier + root-CA + PCR0 +
+   timestamp window) is *already* duplicated twice inside
+   `IdentityRegistryKycImplV1` (`:503-510` and `:556-563`), so extracting it is preferable
+   to adding a third copy wherever it lands.
+
+   Also add a revoke path per the note above; the KYC pattern sets its flag to `true` and
+   never unsets it.
+
+2. Deploy the hub upgrade.
 3. Register the prover's image digest in `PCR0Manager`; set `_proofTee`.
 4. Turn the `chain` flag on.
 

@@ -7,9 +7,24 @@ use alloy::{
 
 use crate::attestation::{bootstrap::AttestationProof, EnclaveKey};
 
+// Registration targets the HUB, not IdentityRegistryKycImplV1.
+//
+// The GCP JWT verification plumbing (verifier address, root-CA hash, PCR0Manager,
+// authorized TEE) currently lives only on the KYC registry, which is why an earlier
+// draft aimed here. But a prover key is orthogonal to attestation type — this server
+// produces passport, EU ID, Aadhaar and KYC proofs alike — and registering it in a
+// KYC-specific contract puts it one mapping away from checkPubkeyCommitment, which
+// RegisterProofVerifierLib treats as KYC-attestor authority. The hub is the
+// attestation-agnostic entry point and has nothing a prover key can be confused with.
+//
+// registerProverKey does not exist yet; this is written against the agreed signature
+// so the feature can be enabled by flipping the `chain` flag. Regenerate this
+// interface from the deployed ABI at switch-on rather than trusting the hand-written
+// selector, and note the `20` is the gcp_jwt_verifier circuit's public-signal count
+// (1 root-CA hash + 4 eat_nonce chunks + 3 image-hash chunks + 12 current_date).
 sol! {
     #[sol(rpc)]
-    interface IdentityRegistryKycImplV1 {
+    interface IIdentityVerificationHubV2 {
         function registerProverKey(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[20] pubSignals) external;
     }
 }
@@ -27,7 +42,7 @@ fn to_u256_array<const N: usize>(values: &[String], what: &str) -> Result<[alloy
 }
 
 /// Registers the enclave's attested signing key on-chain by submitting the
-/// attestation proof to `IdentityRegistryKycImplV1.registerProverKey`.
+/// attestation proof to `IIdentityVerificationHubV2.registerProverKey`.
 ///
 /// `key` identifies the attested signing key (its address is what gets
 /// registered) but its private material never leaves enclave memory and is
@@ -60,8 +75,8 @@ pub async fn register_prover_key(
     let submitter_pk = std::env::var("PROOF_TEE_PRIVATE_KEY")
         .map_err(|_| "PROOF_TEE_PRIVATE_KEY is not set".to_string())?;
     let rpc_url = std::env::var("RPC_URL").map_err(|_| "RPC_URL is not set".to_string())?;
-    let contract_address = std::env::var("KYC_REGISTRY_ADDRESS")
-        .map_err(|_| "KYC_REGISTRY_ADDRESS is not set".to_string())?;
+    let contract_address = std::env::var("HUB_ADDRESS")
+        .map_err(|_| "HUB_ADDRESS is not set".to_string())?;
 
     let signer = PrivateKeySigner::from_str(&submitter_pk)
         .map_err(|e| format!("invalid PROOF_TEE_PRIVATE_KEY: {e}"))?;
@@ -72,8 +87,8 @@ pub async fn register_prover_key(
         .map_err(|e| format!("failed to connect to RPC_URL: {e}"))?;
 
     let addr = Address::from_str(&contract_address)
-        .map_err(|e| format!("invalid KYC_REGISTRY_ADDRESS: {e}"))?;
-    let contract = IdentityRegistryKycImplV1::new(addr, provider);
+        .map_err(|e| format!("invalid HUB_ADDRESS: {e}"))?;
+    let contract = IIdentityVerificationHubV2::new(addr, provider);
 
     contract
         .registerProverKey(a, b, c, pub_signals)
