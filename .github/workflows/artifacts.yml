@@ -148,10 +148,23 @@ jobs:
           chmod +x sort_zkeys.sh
           ./sort_zkeys.sh
 
+      # Two invocations because the ALWAYS_CIRCUITS layout differs per image family:
+      # Dockerfile.tee COPYs circuits/common + zkeys/common (its per-variant COPY is
+      # filtered by PROOFTYPE/SIZE_FILTER), while Dockerfile.cherrypick COPYs ./circuits
+      # and ./zkeys wholesale after sort_circuits.cherrypick.sh flattens them. Each build
+      # asserts the layout it will actually COPY from, so a missing attestation circuit
+      # fails here instead of partway through the image builds.
       - name: Check circuits
+        if: ${{ inputs.tag == 'latest' }}
         run: |
           chmod +x check_circuits.sh
           ./check_circuits.sh
+
+      - name: Check circuits (cherrypick)
+        if: ${{ inputs.tag != 'latest' }}
+        run: |
+          chmod +x check_circuits.sh
+          ./check_circuits.sh --flat
 
       - name: Init submodules
         run: |
