@@ -10,6 +10,7 @@ use std::panic::AssertUnwindSafe;
 
 use futures::FutureExt;
 
+pub mod aadhaar;
 pub mod chunks;
 pub mod params;
 pub mod passport;
@@ -60,14 +61,19 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
         return Verdict::Skipped(format!("no circuit parameters known for circuit {circuit_name}"));
     };
 
-    // Aadhaar and KYC are exact-name circuit families with their own verifiers
-    // (Tasks 5 and 6), but both also start with "register" — the same prefix
-    // as the RSA passport / EU-ID circuits handled below. They MUST be
-    // excluded here, before the prefix match, or a future Aadhaar/KYC arm
-    // would be unreachable, shadowed by the broader "register" prefix (the
-    // same class of bug the Task 2 reviewer caught in the parameter lookup's
-    // register_id_-before-register_ ordering).
-    if circuit_name == "register_aadhaar" || circuit_name == "register_kyc" {
+    // Aadhaar and KYC are exact-name circuit families with their own verifiers,
+    // but both also start with "register" — the same prefix as the RSA
+    // passport / EU-ID circuits handled below. They MUST be matched here,
+    // before the prefix match, or their arms would be unreachable, shadowed by
+    // the broader "register" prefix (the same class of bug the Task 2
+    // reviewer caught in the parameter lookup's register_id_-before-register_
+    // ordering).
+    if circuit_name == "register_aadhaar" {
+        return run_guarded(|| aadhaar::verify(&inputs, &p)).await;
+    }
+    if circuit_name == "register_kyc" {
+        // Task 6 owns this verifier; until it lands, register_kyc must still
+        // be excluded here rather than falling through to the prefix match.
         return Verdict::Skipped(format!("no verifier wired yet for circuit {circuit_name}"));
     }
 
@@ -144,10 +150,18 @@ mod tests {
     /// RSA passport-shaped input built under register_aadhaar's own (n, k) =
     /// (121, 17) and all-SHA-256 hash widths — i.e. one passport::verify
     /// would call `Valid` on if the "register" prefix arm ever reached it
-    /// before the exact-name exclusion. If a future edit reorders the
-    /// dispatch so the prefix match runs first, this test observes `Valid`,
-    /// not `Skipped`, and fails loudly rather than passing for the wrong
-    /// reason.
+    /// before the exact-name exclusion.
+    ///
+    /// Now that the Aadhaar arm is wired (Task 5), the correctly-routed
+    /// outcome is no longer "no verifier wired" — it is `Skipped` for
+    /// Aadhaar's own missing fields, because this fixture uses passport field
+    /// names (`dg1`, `pubKey_dsc`, `signature_passport`, ...), none of which
+    /// is `qrDataPadded`. So the property under test is unchanged (this
+    /// payload must not be verified by the passport chain), only the
+    /// expected reason moves from a routing placeholder to Aadhaar's own
+    /// field-parsing message. If a future edit reorders the dispatch so the
+    /// prefix match runs first, this test observes `Valid`, not `Skipped`,
+    /// and fails loudly rather than passing for the wrong reason.
     #[tokio::test]
     async fn register_aadhaar_is_never_routed_into_the_passport_verifier() {
         let key = testkit::TestRsaKey::generate(65537);
@@ -165,11 +179,15 @@ mod tests {
 
         match v {
             Verdict::Skipped(reason) => assert!(
-                reason.contains("no verifier wired"),
-                "register_aadhaar must skip with a 'no verifier wired' reason (Task 5's                  arm doesn't exist yet), not a passport-chain reason: {reason}"
+                reason.contains("qrDataPadded"),
+                "register_aadhaar must be checked by the Aadhaar verifier against its own \
+                 fields (this passport-shaped fixture has no qrDataPadded field, so the \
+                 Aadhaar verifier must skip for that reason), not a passport-chain reason: \
+                 {reason}"
             ),
             other => panic!(
-                "register_aadhaar must never reach the passport verifier (it would have                  accepted this self-consistent fixture as Valid): got {other:?}"
+                "register_aadhaar must never reach the passport verifier (it would have \
+                 accepted this self-consistent fixture as Valid): got {other:?}"
             ),
         }
     }

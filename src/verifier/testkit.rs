@@ -122,6 +122,21 @@ pub fn passport_inputs(key: &TestRsaKey, n: u32, k: usize) -> Value {
     })
 }
 
+/// Self-consistent Aadhaar input: one sha256 over padded QR data, one RSA-65537 signature.
+pub fn aadhaar_inputs(key: &TestRsaKey, n: u32, k: usize) -> Value {
+    let qr: Vec<u8> = (0u8..200).cycle().take(512).collect();
+    let padded = sha_pad(&qr);
+    let digest = Sha256::digest(&qr);
+    let sig = key.sign_digest_pkcs1v15(&digest, 256);
+
+    json!({
+        "qrDataPadded": bytes_to_decimal(&padded),
+        "qrDataPaddedLength": [padded.len().to_string()],
+        "pubKey": to_limbs(&key.n, n, k),
+        "signature": to_limbs(&sig, n, k),
+    })
+}
+
 /// Flips one byte of a decimal-string byte array field, in place.
 pub fn flip_byte(v: &mut Value, key: &str, index: usize) {
     let arr = v[key].as_array_mut().expect("array field");
