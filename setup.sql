@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS proofs (
     endpoint_type VARCHAR(128),
     endpoint VARCHAR(128),
     public_inputs TEXT[],
-    reason TEXT, 
+    reason TEXT,
     identifier VARCHAR(255)
+    ,version INTEGER
+    ,user_defined_data TEXT
+    ,self_defined_data TEXT
+    ,signature VARCHAR(132)
 );
 
 CREATE OR REPLACE FUNCTION status_update_notify() RETURNS trigger AS $$
@@ -35,6 +39,7 @@ BEGIN
       'public_inputs', NEW.public_inputs,
       'reason', NEW.reason,
       'identifier', NEW.identifier
+      ,'signature', NEW.signature
     );
 
     PERFORM pg_notify('status_update', notification_payload::text);
@@ -55,3 +60,8 @@ CREATE TRIGGER status_insert_notify
 AFTER INSERT ON proofs
 FOR EACH ROW
 EXECUTE PROCEDURE status_update_notify();
+
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS version INTEGER;
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS user_defined_data TEXT;
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS self_defined_data TEXT;
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS signature VARCHAR(132);

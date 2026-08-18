@@ -73,7 +73,11 @@ pub async fn set_witness_generated(
     }
 }
 
-pub async fn update_proof(uuid: uuid::Uuid, db: &sqlx::Pool<sqlx::Postgres>) -> Result<(), String> {
+pub async fn update_proof(
+    uuid: uuid::Uuid,
+    db: &sqlx::Pool<sqlx::Postgres>,
+    signature: &str,
+) -> Result<(), String> {
     let proof_file_path =
         std::path::Path::new(&get_tmp_folder_path(&uuid.to_string())).join("proof.json");
     let public_inputs_file_path =
@@ -124,12 +128,13 @@ pub async fn update_proof(uuid: uuid::Uuid, db: &sqlx::Pool<sqlx::Postgres>) -> 
 
     let now = Utc::now();
     match sqlx::query(
-        "UPDATE proofs SET proof = $1, status = $2, proof_generated_at = $3, public_inputs = $4  WHERE request_id = $5",
+        "UPDATE proofs SET proof = $1, status = $2, proof_generated_at = $3, public_inputs = $4, signature = $5 WHERE request_id = $6",
     )
     .bind(sqlx::types::Json(proof))
     .bind(status)
     .bind(now)
     .bind(public_inputs)
+    .bind(signature)
     .bind(sqlx::types::uuid::Uuid::from(uuid))
     .execute(db)
     .await
