@@ -12,7 +12,7 @@ use std::path;
 use std::sync::Arc;
 
 use clap::Parser;
-use db::{set_witness_generated, update_proof};
+use db::{read_proof_output, set_witness_generated, update_proof};
 use generator::{proof_generator::ProofGenerator, witness_generator::WitnessGenerator};
 use google_cloud_secretmanager_v1::client::SecretManagerService;
 use jsonrpsee::server::Server;
@@ -226,7 +226,22 @@ async fn main() {
                 continue;
             }
 
-            let signature = match attestation::sign_proof_output(&enclave_key, &uuid) {
+            // Read proof.json/public_inputs.json exactly once: the uuid is
+            // client-supplied, so a second in-flight request can share this
+            // tmp folder, and a second independent read (one for signing, one
+            // for storage) could observe different bytes. Sign and persist
+            // these same parsed values so the signed object and the stored
+            // object are identical.
+            let (proof, public_inputs) = match read_proof_output(uuid).await {
+                Ok(result) => result,
+                Err(e) => {
+                    dbg!(&e);
+                    cleanup(uuid.clone(), &pool, e).await;
+                    continue;
+                }
+            };
+
+            let signature = match attestation::sign_proof(&enclave_key, &proof, &public_inputs) {
                 Ok(sig) => sig,
                 Err(e) => {
                     dbg!(&e);
@@ -235,7 +250,9 @@ async fn main() {
                 }
             };
 
-            if let Err(e) = update_proof(uuid.clone(), &pool, &signature).await {
+            if let Err(e) =
+                update_proof(uuid.clone(), &pool, &proof, &public_inputs, &signature).await
+            {
                 dbg!(&e);
                 cleanup(uuid.clone(), &pool, e.to_string()).await;
                 continue;

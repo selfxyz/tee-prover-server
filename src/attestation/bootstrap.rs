@@ -3,10 +3,9 @@ use std::path;
 
 use crate::attestation::digest::proof_digest;
 use crate::attestation::EnclaveKey;
-use crate::db::Proof;
+use crate::db::{read_proof_output, Proof};
 use crate::generator::{proof_generator::ProofGenerator, witness_generator::WitnessGenerator};
 use crate::utils::get_tmp_folder_path;
-use serde::Deserialize;
 
 pub const ATTESTATION_CIRCUIT: &str = "gcp_jwt_verifier";
 const GENERATOR_DIR: &str = "/jwt/jwt-input-generator";
@@ -72,16 +71,11 @@ pub async fn bootstrap(
             .run(&rapidsnark_path.to_string())
             .await?;
 
-        let proof_str = std::fs::read_to_string(path::Path::new(&tmp).join("proof.json"))
-            .map_err(|e| e.to_string())?;
-        let inputs_str = std::fs::read_to_string(path::Path::new(&tmp).join("public_inputs.json"))
-            .map_err(|e| e.to_string())?;
-
-        let proof = Proof::deserialize(&mut serde_json::de::Deserializer::from_str(&proof_str))
-            .map_err(|e| e.to_string())?;
-        let public_inputs =
-            Vec::<String>::deserialize(&mut serde_json::de::Deserializer::from_str(&inputs_str))
-                .map_err(|e| e.to_string())?;
+        // Single reader shared with the request pipeline (see
+        // `crate::db::read_proof_output`), so bootstrap's own self-check reads
+        // proof.json/public_inputs.json exactly the same way every other
+        // caller does.
+        let (proof, public_inputs) = read_proof_output(uuid).await?;
 
         // Fail fast if the digest encoding cannot handle our own proof shape.
         proof_digest(&proof, &public_inputs)?;
@@ -162,6 +156,12 @@ mod tests {
     /// the sets won't match.
     #[tokio::test]
     async fn cleanup_runs_after_a_failed_bootstrap() {
+        // Shared with `attestation::tests`: see `crate::attestation::TMP_ROOT_LOCK`
+        // for why this global crate-root directory scan must not interleave
+        // with any other test that creates its own `tmp_*` directory.
+        let _guard =
+            crate::attestation::TMP_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         fn tmp_dirs() -> std::collections::HashSet<String> {
             std::fs::read_dir(".")
                 .unwrap()
