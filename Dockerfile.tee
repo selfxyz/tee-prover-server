@@ -25,6 +25,15 @@ FROM debian:trixie
 RUN apt-get update
 RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
 
+# Node + the vendored JWT attestation sidecar (src/attestation/bootstrap.rs
+# spawns it via `npx tsx index.ts` with cwd /jwt/jwt-input-generator).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
+
+WORKDIR /jwt/jwt-input-generator
+COPY jwt-input-generator/package*.json ./
+RUN npm ci --omit=dev
+COPY jwt-input-generator/ ./
+
 WORKDIR /rapidsnark
 COPY ./rapidsnark .
 RUN ./build_gmp.sh host && \
@@ -37,6 +46,13 @@ ARG PROOFTYPE=${PROOFTYPE}
 
 COPY ./circuits/$PROOFTYPE/$SIZE_FILTER /circuits
 COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
+
+# The attestation circuit is needed by every image variant (register/dsc/disclose,
+# all sizes), so it's shipped unconditionally from a "common" category that
+# sort_circuits.sh/sort_zkeys.sh never touch, instead of the filtered copies above.
+COPY ./circuits/common/gcp_jwt_verifier_cpp /circuits/gcp_jwt_verifier_cpp
+COPY ./zkeys/common/gcp_jwt_verifier.zkey /zkeys/gcp_jwt_verifier.zkey
+RUN chmod +x /circuits/gcp_jwt_verifier_cpp/gcp_jwt_verifier
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 RUN chmod +x /usr/local/bin/tee-server

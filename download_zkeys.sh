@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source "$(dirname "${BASH_SOURCE[0]}")/constants.sh"
+
 circuits=(
   "register_aadhaar:self-trusted-setup-new-aadhaar-ph2-ceremony:aws"
   "register_kyc:register-kyc-fix-nullifier:gcp"
@@ -89,6 +91,22 @@ circuits=(
   "dsc_sha512_rsa_65537_4096:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony:aws"
   "dsc_sha512_rsapss_65537_64_4096:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony:aws"
 )
+
+# Circuits present in every image variant (see ALWAYS_CIRCUITS in
+# constants.sh) get their bucket looked up here and are fed through the same
+# download_zkey logic as everything else above.
+for always_circuit in "${ALWAYS_CIRCUITS[@]}"; do
+  case "$always_circuit" in
+    gcp_jwt_verifier)
+      circuits+=("gcp_jwt_verifier:ecdsa-fix-plus-jwt:gcp")
+      ;;
+    *)
+      echo "No bucket mapping for always-present circuit: $always_circuit" >&2
+      exit 1
+      ;;
+  esac
+done
+
 download_zkey() {
   circuit_with_path="$1"
   
