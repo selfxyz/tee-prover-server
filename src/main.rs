@@ -50,8 +50,6 @@ async fn main() {
 
     let server_addr = server.local_addr().unwrap();
 
-    println!("Server running on: http://{}", server_addr);
-
     let pool = match PgPoolOptions::new()
         .max_connections(20)
         .connect(&database_url)
@@ -89,16 +87,6 @@ async fn main() {
 
     let circuit_zkey_map_arc = Arc::new(circuit_zkey_map);
 
-    let handle = server.start(
-        server::RpcServerImpl::new(
-            store::LruStore::new(1000),
-            file_generator_sender,
-            Arc::clone(&circuit_zkey_map_arc),
-            pool.clone(),
-        )
-        .into_rpc(),
-    );
-
     let rapid_snark_path_exe = path::Path::new(&config.rapidsnark_path)
         .join("package")
         .join("bin")
@@ -115,7 +103,10 @@ async fn main() {
         panic!("attestation zkey {} does not exist!", attestation_zkey.display());
     }
 
-    // Fatal by design: the server must never serve proofs it cannot sign.
+    // Fatal by design: the server must never serve proofs it cannot sign. This
+    // runs — and either succeeds or panics — before `server.start(...)` below,
+    // so no request (not even `hello()`/`submit_request()`) is ever accepted
+    // by a server whose enclave attestation hasn't been proven yet.
     let (enclave_key, attestation_proof) = match attestation::bootstrap::bootstrap(
         &circuit_folder,
         attestation_zkey.to_str().unwrap(),
@@ -134,6 +125,20 @@ async fn main() {
     }
     #[cfg(not(feature = "chain"))]
     let _ = &attestation_proof;
+
+    let handle = server.start(
+        server::RpcServerImpl::new(
+            store::LruStore::new(1000),
+            file_generator_sender,
+            Arc::clone(&circuit_zkey_map_arc),
+            pool.clone(),
+        )
+        .into_rpc(),
+    );
+
+    // Printed only once the server is actually accepting connections — i.e.
+    // after attestation bootstrap has succeeded and `start()` has been called.
+    println!("Server running on: http://{}", server_addr);
 
     tokio::select! {
         _ = handle.stopped() => {
