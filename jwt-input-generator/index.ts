@@ -214,6 +214,49 @@ interface TokenRequest {
   nonces: string[];
 }
 
+const SCOPE_NONCE = 'self_protocol';
+
+/**
+ * The exact nonce list we ask Google to attest. Google echoes the requested nonces
+ * back verbatim in `eat_nonce`, so this is also precisely what `eat_nonce` must
+ * contain — see `assertNonceBindsEnclaveKey`. Single source of truth so the request
+ * and the check can never drift apart.
+ */
+function requestedNonces(enclaveAddress: string): string[] {
+  return [enclaveAddress, SCOPE_NONCE];
+}
+
+/**
+ * The load-bearing check of this whole sidecar: the attestation must bind THIS
+ * enclave's signing key, and nothing downstream re-checks it. Rust's `bootstrap()`
+ * only runs the proof pipeline and a digest shape check; the circuit constrains the
+ * nonce it is *given*, not that the given nonce is our address. So if this comparison
+ * is absent (or exempted) and Google ever returns `eat_nonce` in a different form or
+ * order — or the token comes from somewhere other than this enclave's own request —
+ * bootstrap "succeeds" and the enclave signs every proof with a key nothing attested.
+ *
+ * Deliberately applies to fixture mode too. An exemption keyed on an env var would be
+ * a security-relevant behaviour difference selectable from the environment, and it
+ * would leave the spec's central claim untested.
+ */
+function assertNonceBindsEnclaveKey(eatNonce: unknown, enclaveAddress: string): string[] {
+  const expected = requestedNonces(enclaveAddress);
+
+  if (!Array.isArray(eatNonce) || eatNonce.length === 0) {
+    throw new Error('[ERROR] No eat_nonce found in JWT payload');
+  }
+  if (
+    eatNonce.length !== expected.length ||
+    eatNonce.some((n, i) => typeof n !== 'string' || n !== expected[i])
+  ) {
+    throw new Error(
+      `[ERROR] eat_nonce does not bind this enclave key: expected ${JSON.stringify(expected)}, ` +
+        `got ${JSON.stringify(eatNonce)}`
+    );
+  }
+  return eatNonce as string[];
+}
+
 export function getCustomTokenBytes(enclaveAddress: string): Promise<Buffer> {
   const fixture = process.env.JWT_FIXTURE;
   if (fixture) {
@@ -223,7 +266,7 @@ export function getCustomTokenBytes(enclaveAddress: string): Promise<Buffer> {
     const requestBody: TokenRequest = {
       audience: "USER",
       token_type: "PKI",
-      nonces: [enclaveAddress, "self_protocol"],
+      nonces: requestedNonces(enclaveAddress),
     };
     const bodyStr = JSON.stringify(requestBody);
     const options: http.RequestOptions = {
@@ -301,12 +344,12 @@ async function main() {
 
     console.log('[INFO] JWT signature verified');
 
-    // Extract eat_nonce[0] from payload
-    if (!payload.eat_nonce || !Array.isArray(payload.eat_nonce) || payload.eat_nonce.length === 0) {
-      throw new Error('[ERROR] No eat_nonce found in JWT payload');
-    }
+    // Extract eat_nonce from payload and require that it is exactly the nonce list we
+    // asked Google to attest — i.e. that this token attests THIS enclave's key.
+    const eatNonce = assertNonceBindsEnclaveKey(payload.eat_nonce, enclaveAddress);
+    console.log(`[INFO] eat_nonce binds the enclave address ${enclaveAddress}`);
 
-    const eatNonce0Base64url = payload.eat_nonce[0];
+    const eatNonce0Base64url = eatNonce[0];
     console.log(`\n[INFO] eat_nonce[0] (base64url): ${eatNonce0Base64url}`);
     console.log(`[INFO] eat_nonce[0] string length: ${eatNonce0Base64url.length} characters`);
 
@@ -346,7 +389,7 @@ async function main() {
       eatNonce0CharCodes[i] = eatNonce0Base64url.charCodeAt(i);
     }
 
-    const eatNonce1Base64url = payload.eat_nonce[1];
+    const eatNonce1Base64url = eatNonce[1];
     console.log(`[INFO] eat_nonce[1] (base64url): ${eatNonce1Base64url}`);
     console.log(`[INFO] eat_nonce[1] string length: ${eatNonce1Base64url.length} characters`);
 

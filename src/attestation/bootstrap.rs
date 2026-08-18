@@ -128,19 +128,62 @@ pub async fn bootstrap(
 mod tests {
     use super::*;
 
+    /// The address the synthetic fixture's `eat_nonce` attests. The sidecar now
+    /// requires `eat_nonce` to be exactly the nonce list it asked Google to attest,
+    /// so a happy-path test cannot use a freshly minted key: no key minted here can
+    /// appear inside an already-signed token. `fixtures/make_synthetic_jwt.mjs`
+    /// generates a self-signed chain and token for this address and writes it here;
+    /// read it rather than hardcoding it so regenerating the fixture can't desync.
+    fn synthetic_fixture_address() -> String {
+        std::fs::read_to_string("jwt-input-generator/fixtures/synthetic_jwt.address.txt")
+            .expect("missing synthetic fixture; regenerate with fixtures/make_synthetic_jwt.mjs")
+            .trim()
+            .to_string()
+    }
+
     #[tokio::test]
     async fn sidecar_receives_the_enclave_address() {
-        let key = EnclaveKey::generate();
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("inputs.json");
 
-        run_input_generator(&key.address(), out.to_str().unwrap(), Some("fixtures/example_jwt.txt"))
-            .await
-            .expect("sidecar failed");
+        run_input_generator(
+            &synthetic_fixture_address(),
+            out.to_str().unwrap(),
+            Some("fixtures/synthetic_jwt.txt"),
+        )
+        .await
+        .expect("sidecar failed");
 
         let inputs: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         assert!(inputs.get("message").is_some());
+    }
+
+    /// The spec's central claim, enforced at the seam that can actually break it: a
+    /// real, validly-signed GCP attestation token that attests some *other* key must
+    /// make the sidecar fail, so bootstrap cannot "succeed" and leave the enclave
+    /// signing proofs with a key nothing attested. `fixtures/example_jwt.txt` is
+    /// exactly that token (its nonce is a didit-tee EdDSA pubkey), so the failure
+    /// happens only after its real 3-certificate chain and RSA signature verify.
+    #[tokio::test]
+    async fn sidecar_rejects_a_token_that_attests_another_key() {
+        let key = EnclaveKey::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("inputs.json");
+
+        let err = run_input_generator(
+            &key.address(),
+            out.to_str().unwrap(),
+            Some("fixtures/example_jwt.txt"),
+        )
+        .await
+        .expect_err("a token attesting a different key must be rejected");
+
+        assert!(
+            err.contains("eat_nonce does not bind this enclave key"),
+            "expected a nonce-binding rejection, got: {err}"
+        );
+        assert!(!out.exists(), "no circuit inputs may be written for an unbound token");
     }
 
     #[tokio::test]
@@ -148,14 +191,13 @@ mod tests {
         let key = EnclaveKey::generate();
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("inputs.json");
-        // NOTE: the brief specified `example_jwt_fail.txt` here, but that fixture is a
-        // validly-signed real attestation JWT built for circuit-level nonce-binding
-        // rejection tests, not generator-level parsing failures — the sidecar accepts
-        // it and exits 0 (verified manually; this is the same known issue documented in
-        // Task 1's report/commit 4abe9a4). `example_jwt_short_chain.txt` is a fixture
-        // with only 2 of the required 3 x5c certificates, which the sidecar's own
-        // parsing genuinely rejects with a non-zero exit — confirmed manually before
-        // wiring it in here.
+        // A *parsing* failure, deliberately distinct from the nonce-binding failure
+        // covered by `sidecar_rejects_a_token_that_attests_another_key`:
+        // `example_jwt_short_chain.txt` carries only 2 of the required 3 x5c
+        // certificates, so it is rejected before the nonce is ever looked at. Keeping
+        // both means a regression in either check is attributable to one of them.
+        // (`example_jwt_fail.txt` is now also rejected — but for nonce binding, which
+        // is why the other test uses it and this one does not.)
         assert!(run_input_generator(&key.address(), out.to_str().unwrap(),
                                     Some("fixtures/example_jwt_short_chain.txt")).await.is_err());
     }
