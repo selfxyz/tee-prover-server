@@ -24,9 +24,22 @@ pub async fn run_input_generator(
 ) -> Result<(), String> {
     // Tests run with CWD = crate root; in the enclave the sidecar lives at /jwt.
     let dir = if fixture.is_some() { "jwt-input-generator" } else { GENERATOR_DIR };
-    let mut cmd = tokio::process::Command::new("npx");
+
+    // Run the tsx that `npm ci` installed into the image, by absolute path, instead of
+    // `npx tsx`: with `npx`, a missing `node_modules/.bin/tsx` is not an error — it
+    // downloads the package from the registry and executes it. That would run
+    // unmeasured code inside an enclave whose image digest is the entire security
+    // anchor. Resolving the path ourselves means a missing runtime is a loud boot
+    // failure (fatal by design) and never a network fetch. Canonicalized because a
+    // relative program path is resolved against an unspecified working directory once
+    // `current_dir` is also set.
+    let tsx = std::fs::canonicalize(path::Path::new(dir).join("node_modules/.bin/tsx"))
+        .map_err(|e| {
+            format!("jwt-input-generator runtime not found at {dir}/node_modules/.bin/tsx: {e}")
+        })?;
+
+    let mut cmd = tokio::process::Command::new(tsx);
     cmd.current_dir(dir)
-        .arg("tsx")
         .arg("index.ts")
         .arg(enclave_address)
         .arg(output_file);
