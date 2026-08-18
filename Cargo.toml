@@ -25,6 +25,13 @@ rand_core = "0.6.4"
 serde_plain = "1.0.2"
 lru = "0.13.0"
 
+# secp256k1 enclave signing key (attestation)
+k256 = { version = "0.13", features = ["ecdsa"] }
+alloy-primitives = "0.8"
+alloy-sol-types = "0.8"
+rand = "0.8"
+hex = "0.4"
+
 [features]
 register = []
 dsc = []

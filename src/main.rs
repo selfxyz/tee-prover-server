@@ -1,4 +1,5 @@
 mod args;
+mod attestation;
 mod db;
 mod generator;
 mod server;
