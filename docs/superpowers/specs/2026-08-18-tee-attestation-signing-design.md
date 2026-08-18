@@ -53,11 +53,11 @@ freshly minted public key, so the JWT itself binds "this key" to "this measured 
 ```
 start.sh
  ├─ update_creds.sh                      (existing) WIF attestation credentials
- ├─ jwt-input-generator (Node sidecar)   NEW
- │     mint EdDSA key -> PKI token (nonces = [pubkey, "self_protocol"])
- │     -> /zk/key.txt (tmpfs) + /zk/inputs.json
  └─ exec tee-server
-       ├─ bootstrap        NEW  attestation proof via existing generators; load key; unlink
+       (bootstrap spawns the Node sidecar as a subprocess, passing the enclave address)
+       jwt-input-generator: PKI token (nonces = [enclaveAddress, "self_protocol"])
+                            -> /zk/inputs.json   (no key file)
+       ├─ bootstrap        NEW  mint k256 key; spawn sidecar; attestation proof via existing generators
        ├─ chain            NEW  registerPubkeyCommitmentForProofs()  [feature-flagged OFF]
        └─ pipeline         MOD  ... -> ProofGenerator -> sign() -> Postgres
 ```
@@ -89,12 +89,14 @@ fatal — the server must not serve proofs it cannot sign.
 
 ## Key lifecycle
 
-The signing key is minted in-enclave at boot, written to `/zk/key.txt` on **tmpfs**, read
-once by the Rust process, and then unlinked. It is never persisted and never leaves the
-enclave.
+The signing key is a **secp256k1 (k256) ECDSA** key minted in-enclave at boot by the Rust
+process and held only in memory. It is never written to disk and never leaves the enclave.
+`bootstrap.rs` derives the Ethereum address, spawns the Node sidecar with that address as
+an argument, and the sidecar places it in the attestation token's nonce. There is no
+`key.txt`; the earlier tmpfs design is superseded because Rust owns the key directly.
 
-Persisting it — including to GCP Secret Manager — was considered and rejected. Anyone able
-to read the secret could sign proof outputs indistinguishably from a genuine enclave,
+Persisting the key — including to GCP Secret Manager — was considered and rejected. Anyone
+able to read the secret could sign proof outputs indistinguishably from a genuine enclave,
 which defeats the attestation entirely. Note that this repo's Secret Manager access is
 already attestation-gated via Workload Identity Federation (`update_creds.sh` builds an
 `external_account` credential sourced from
@@ -103,23 +105,42 @@ as strong as the attribute condition configured on the `attestation-verifier` pr
 that condition does not pin the image digest, any workload in the pool can read the
 secret. A signing key's security should not rest on IAM configuration outside this repo.
 
+The Ethereum key used to *submit* the registration transaction is separate from the
+attested signing key, mirroring `didit-tee` (which uses `only_tee_pk` for submission). The
+submitter only pays gas and satisfies `onlyProofTEE`; compromising it cannot forge
+signatures.
+
 Consequences, accepted deliberately:
 
 1. **Every restart mints a new key and needs a new registration transaction.** Acceptable
    at current scale. Each horizontally scaled instance registers its own key.
-2. **There is no revocation path.** The deferred `_isRegisteredProofPubkeyCommitment`
-   mapping follows the existing KYC pattern, where the flag is set to `true` and never
-   unset. Every key an enclave has ever minted would stay valid forever, and a compromised
-   key could not be retired. A revoke method should be added in the deferred contract work
-   rather than inheriting this property by default.
+2. **There is no revocation path.** The deferred registry mapping follows the existing KYC
+   pattern, where the flag is set to `true` and never unset. Every key an enclave has ever
+   minted would stay valid forever, and a compromised key could not be retired. A revoke
+   method should be added in the deferred contract work rather than inheriting this
+   property by default.
 
 ## Signature scheme
 
-EdDSA-BabyJubJub with Poseidon, mirroring `didit-tee`. This is dictated by the
-registration path: the commitment is `poseidon2([pk[0], pk[1]])`, and
-`GCPJWTHelper.unpackAndDecodeHexPubkey` reads the pubkey out of the attestation's
-`eat_nonce` public signals. Choosing secp256k1 would ease Solidity verification but
-requires a different commitment format and helper.
+secp256k1 ECDSA, producing a 65-byte recoverable `(r, s, v)` signature. Chosen so proof
+signatures can be verified **on-chain** with `ecrecover`, which is a single opcode;
+verifying EdDSA-BabyJubJub in Solidity is substantially more expensive and complex.
+
+This diverges from `didit-tee`, which uses EdDSA-BabyJubJub because its signatures are
+verified inside a circuit rather than on-chain. The consequence here is that no Poseidon
+commitment is needed: the attestation nonce carries the enclave's Ethereum address
+directly (42 characters, well inside the 99-character `eat_nonce` limit), and the deferred
+registry is a `mapping(address => bool)` rather than a commitment mapping. No
+`unpackAndDecodeHexPubkey`-style helper is required.
+
+**Signed digest — pinned.** Changing this later invalidates every stored signature:
+
+```
+digest = keccak256(abi.encode(uint256[2] a, uint256[2][2] b, uint256[2] c, uint256[] publicInputs))
+```
+
+This is reconstructible in Solidity from the proof a verifier already receives, so an
+on-chain verifier needs no additional input beyond the signature itself.
 
 ## Data flow for a signed proof
 
@@ -146,7 +167,7 @@ reviewable before the contract method exists.
 - `src/main.rs` — invoke bootstrap before serving
 - `src/generator/mod.rs` — signing hook after `ProofGenerator`
 - `src/db/` — persist the signature
-- `Cargo.toml` — eddsa/poseidon; `alloy` behind `chain`
+- `Cargo.toml` — `k256` (signing, always on); `alloy` behind `chain`
 - `setup.sql` — `signature` column + include it in the notify payload
 - `Dockerfile.tee` — Node + `npm install`; tmpfs mount for `/zk`
 - `start.sh` — run the sidecar before `tee-server`
@@ -176,18 +197,21 @@ is a required change to the copied code, not an optional test affordance.
 2. **Negative fixture** — `example_jwt_fail.txt` must be rejected.
 3. **Handoff contract** — Rust-side tests asserting the expected file paths and JSON
    schema from the sidecar, so a generator change cannot silently break the consumer.
-4. **Signature round-trip** — sign and verify with a known key; assert the commitment
-   matches `poseidon2([pk[0], pk[1]])`.
+4. **Signature round-trip** — sign a known digest with a known key, recover the signer,
+   and assert it equals the derived enclave address. Includes a fixed-vector test against
+   a known `(digest, key) -> signature` pair so the encoding cannot drift from what an
+   on-chain `ecrecover` verifier would compute.
 5. **Migration** — `setup.sql` applies cleanly to an existing `proofs` table and the
    notify payload contains the new field.
 
 ## Out of scope (deferred, in order)
 
-1. `registerPubkeyCommitmentForProofs` on `IdentityRegistryKycImplV1`: a new
-   `_isRegisteredProofPubkeyCommitment` mapping and `_proofTee` address appended after
+1. `registerProverKey` on `IdentityRegistryKycImplV1`: a new
+   `mapping(address => bool) _isRegisteredProverKey` and `_proofTee` address appended after
    `_prevNameAndYobOfacRoot`; an `onlyProofTEE` modifier mirroring `onlyTEE`; the shared
-   verification body extracted to `_verifyGcpJwtAttestation`; an
-   `isRegisteredProofPubkeyCommitment` view; plus a revoke path per the note above.
+   verification body extracted to `_verifyGcpJwtAttestation`; an `isRegisteredProverKey`
+   view; plus a revoke path per the note above. The prover address is read from the
+   `eat_nonce` public signals rather than unpacked as a Poseidon commitment.
    `RegisterProofVerifierLib` is deliberately left untouched so a prover key can never
    satisfy the KYC attestor check at `RegisterProofVerifierLib.sol:101-108`.
 2. Deploy the registry upgrade.
