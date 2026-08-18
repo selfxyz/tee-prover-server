@@ -96,9 +96,10 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
         });
     }
     // register_kyc.circom instantiates REGISTER_KYC() — no template arguments at
-    // all, so there is no (n, k) to transcribe. EdDSA-BabyJubJub does not use an
-    // RSA-style limb decomposition, so 0/0 is an explicit "not applicable"
-    // placeholder rather than an invented value.
+    // all, so there is no (n, k) to transcribe. This is a category difference, not
+    // an unhandled case: KYC signs with EdDSA over BabyJubJub field elements, which
+    // has no RSA-style big-integer limb decomposition to describe. 0/0 is an
+    // explicit "not applicable" placeholder rather than an invented value.
     if name == "register_kyc" {
         return Some(CircuitParams {
             dg_hash: 0,
@@ -152,21 +153,34 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
     })
 }
 
-/// Finds a `REGISTER(...)` or `REGISTER_ID(...)` call and returns its 4th and 5th
-/// comma-separated arguments (`n`, `k`). Tolerant of whitespace and newlines
-/// between the arguments. Returns `None` for anything else (including
-/// `REGISTER_AADHAAR(...)` and `REGISTER_KYC()`, which use different template
-/// argument layouts entirely).
-pub(crate) fn parse_instance_n_k(src: &str) -> Option<(u32, u32)> {
-    let start = if let Some(idx) = src.find("REGISTER_ID(") {
-        idx + "REGISTER_ID(".len()
-    } else if let Some(idx) = src.find("REGISTER(") {
-        idx + "REGISTER(".len()
-    } else {
-        return None;
-    };
+/// Extracts the comma-separated argument list following `marker` in `src`, up to
+/// the matching close-paren. Tolerant of whitespace and newlines between args.
+fn extract_args<'a>(src: &'a str, marker: &str) -> Option<Vec<&'a str>> {
+    let idx = src.find(marker)?;
+    let start = idx + marker.len();
     let end = start + src[start..].find(')')?;
-    let args: Vec<&str> = src[start..end].split(',').map(|s| s.trim()).collect();
+    Some(src[start..end].split(',').map(|s| s.trim()).collect())
+}
+
+/// Finds a `REGISTER(...)`, `REGISTER_ID(...)`, or `REGISTER_AADHAAR(...)` call and
+/// returns its `(n, k)` arguments. `REGISTER`/`REGISTER_ID` carry `n, k` as their
+/// 4th and 5th arguments; `REGISTER_AADHAAR(n, k, maxDataLength)` carries them as
+/// its 1st and 2nd. Returns `None` for anything else (including `REGISTER_KYC()`,
+/// which takes no template arguments at all).
+pub(crate) fn parse_instance_n_k(src: &str) -> Option<(u32, u32)> {
+    if let Some(args) = extract_args(src, "REGISTER_AADHAAR(") {
+        if args.len() < 2 {
+            return None;
+        }
+        let n: u32 = args[0].parse().ok()?;
+        let k: u32 = args[1].parse().ok()?;
+        return Some((n, k));
+    }
+    let args = if let Some(args) = extract_args(src, "REGISTER_ID(") {
+        args
+    } else {
+        extract_args(src, "REGISTER(")?
+    };
     if args.len() < 5 {
         return None;
     }
@@ -227,14 +241,16 @@ mod tests {
                 let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                // register_aadhaar and register_kyc live alongside the
-                // REGISTER(...)/REGISTER_ID(...) instances in register/instances/ but
-                // instantiate different templates (REGISTER_AADHAAR / REGISTER_KYC)
-                // with a different argument layout that parse_instance_n_k does not
-                // (and should not) parse. They are single fixed instances, not part
-                // of the hash/scheme naming family this check drifts-guards; their
-                // values are transcribed by hand in `lookup` (see its comments).
-                if stem == "register_aadhaar" || stem == "register_kyc" {
+                // register_kyc.circom lives alongside the REGISTER(...)/REGISTER_ID(...)
+                // instances in register/instances/ but instantiates REGISTER_KYC(),
+                // which takes no template arguments at all. That's a category
+                // difference, not an unhandled case: KYC signs with EdDSA over
+                // BabyJubJub field elements, which has no limb layout to drift-check
+                // in the first place. register_aadhaar, by contrast, DOES have a real
+                // (n, k) = (121, 17) used for actual big-integer reassembly (Task 5),
+                // so it stays in this loop — parse_instance_n_k handles its
+                // REGISTER_AADHAAR(n, k, maxDataLength) layout above.
+                if stem == "register_kyc" {
                     continue;
                 }
                 let Some(ours) = lookup(stem) else { continue }; // unsupported: fine
@@ -252,9 +268,12 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(
-            checked > 0,
-            "monorepo present but no supported instances matched — table is stale"
+        // Exact count, not just > 0: a future parser change that silently matched
+        // only one file should fail loudly here, not slip through a bare non-zero check.
+        assert_eq!(
+            checked, 15,
+            "expected to check 15 circuits (14 REGISTER/REGISTER_ID RSA instances + \
+             register_aadhaar) but checked {checked} — table or instance coverage drifted"
         );
     }
 }
