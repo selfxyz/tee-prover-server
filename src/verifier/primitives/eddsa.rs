@@ -45,6 +45,10 @@ pub fn fr_from_biguint(v: &BigUint) -> Option<babyjubjub_rs::Fr> {
 /// Inverse of `fr_from_biguint`, for building self-consistent test fixtures
 /// that need to serialize a signed `Fr` back into the decimal-string form the
 /// circuit input JSON uses.
+///
+/// Used only by `verifier::testkit` (`#[cfg(test)]`), so a non-test build
+/// has no caller for it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn fr_to_decimal(fr: &babyjubjub_rs::Fr) -> String {
     let hex = ff_ce::to_hex(fr);
     BigUint::parse_bytes(hex.as_bytes(), 16)

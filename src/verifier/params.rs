@@ -28,7 +28,16 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scheme {
     Rsa { e: u64, bits: u32 },
+    // RsaPss and Ecdsa are not constructed yet: `lookup` never returns them
+    // because Plan 1 (this plan) only populates the table for RSA PKCS#1
+    // v1.5 circuits, by design (see this file's module doc). They exist now
+    // so Plan 2 (RSAPSS) and Plan 3/4 (ECDSA NIST/brainpool) — both already
+    // scoped in the design's coverage ramp — add a verifier without first
+    // reshaping this enum. Remove this attribute once either plan lands and
+    // starts constructing its variant.
+    #[allow(dead_code)]
     RsaPss { e: u64, salt_len: usize, bits: u32 },
+    #[allow(dead_code)]
     Ecdsa { curve: String },
     EdDsaBabyJubJub,
 }
@@ -91,6 +100,12 @@ const RSA_LIMBS: &[(&str, u32, u32)] = &[
 /// cleanly. RSAPSS and ECDSA IDs are omitted entirely — out of scope for
 /// this plan, and `lookup` already returns `None` for those circuit names,
 /// so the drift test below never needs an entry for them.
+///
+/// Used only by the `#[cfg(test)]` drift guard below, hence `cfg_attr`
+/// rather than a bare `#[allow(dead_code)]`: a non-test build genuinely has
+/// no caller for this, and the warning should come back the moment that
+/// stops being true.
+#[cfg_attr(not(test), allow(dead_code))]
 const SIGNATURE_ALGORITHM_TABLE: &[(u32, u32, u64)] = &[
     // (id, hash_bits, exponent)
     (1, 256, 65537),   // rsa_sha256_65537_2048
@@ -112,7 +127,8 @@ const SIGNATURE_ALGORITHM_TABLE: &[(u32, u32, u64)] = &[
 ];
 
 /// Looks up `(hash_bits, exponent)` for a `signatureAlgorithm` ID from the
-/// table above.
+/// table above. Used only by the `#[cfg(test)]` drift guard below.
+#[cfg_attr(not(test), allow(dead_code))]
 fn signature_algorithm_hash_and_exponent(id: u32) -> Option<(u32, u64)> {
     SIGNATURE_ALGORITHM_TABLE
         .iter()
@@ -126,6 +142,15 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
     // (n, k) = (121, 17) is transcribed directly from that file's first two args.
     if name == "register_aadhaar" {
         return Some(CircuitParams {
+            // N/A: Aadhaar (register_aadhaar.circom:29-33) is one hash, one
+            // RSA verify, with no dg1<->eContent<->signed_attr chain at all
+            // (see verifier::aadhaar's module doc) -- it has no dg1 link and
+            // no eContent link for these to describe. 256 is `sig_hash`'s
+            // real value (the width the RSA signature is actually taken
+            // over); these two are unused placeholders that happen to share
+            // that same number, which makes them look load-bearing when
+            // they are not. aadhaar::verify never reads dg_hash or
+            // econtent_hash.
             dg_hash: 256,
             econtent_hash: 256,
             sig_hash: 256,
@@ -144,6 +169,12 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
     // explicit "not applicable" placeholder rather than an invented value.
     if name == "register_kyc" {
         return Some(CircuitParams {
+            // N/A, all three: KYC's message hash is PackBytesAndPoseidon
+            // over data_padded (see verifier::kyc's module doc), not a SHA
+            // variant selected by a bit width at all, so none of dg_hash/
+            // econtent_hash/sig_hash describes anything real here. 0 reads
+            // less plausibly than Aadhaar's copied-256s above, but is
+            // exactly as unused: kyc::verify never reads any of the three.
             dg_hash: 0,
             econtent_hash: 0,
             sig_hash: 0,
@@ -197,6 +228,9 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
 
 /// Extracts the comma-separated argument list following `marker` in `src`, up to
 /// the matching close-paren. Tolerant of whitespace and newlines between args.
+/// Used only by the `#[cfg(test)]` drift guard below (via the two `parse_*`
+/// functions that follow), so it has no caller in a non-test build.
+#[cfg_attr(not(test), allow(dead_code))]
 fn extract_args<'a>(src: &'a str, marker: &str) -> Option<Vec<&'a str>> {
     let idx = src.find(marker)?;
     let start = idx + marker.len();
@@ -209,6 +243,11 @@ fn extract_args<'a>(src: &'a str, marker: &str) -> Option<Vec<&'a str>> {
 /// 4th and 5th arguments; `REGISTER_AADHAAR(n, k, maxDataLength)` carries them as
 /// its 1st and 2nd. Returns `None` for anything else (including `REGISTER_KYC()`,
 /// which takes no template arguments at all).
+///
+/// Used only by the `#[cfg(test)]` drift guard below: production dispatch
+/// never re-derives `(n, k)` from an instance file, it reads the checked-in
+/// `RSA_LIMBS`/`lookup` table.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_instance_n_k(src: &str) -> Option<(u32, u32)> {
     if let Some(args) = extract_args(src, "REGISTER_AADHAAR(") {
         if args.len() < 2 {
@@ -240,6 +279,9 @@ pub(crate) fn parse_instance_n_k(src: &str) -> Option<(u32, u32)> {
 /// passed in as template parameters (see `lookup`'s `register_aadhaar` arm).
 /// Returns `None` for anything else, including `REGISTER_AADHAAR(...)` and
 /// `REGISTER_KYC()`.
+///
+/// Used only by the `#[cfg(test)]` drift guard below.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_instance_hash_and_sig_algo(src: &str) -> Option<(u32, u32, u32)> {
     if extract_args(src, "REGISTER_AADHAAR(").is_some() {
         return None;

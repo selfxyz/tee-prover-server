@@ -254,6 +254,23 @@ mod tests {
     }
 
     #[test]
+    fn an_offset_that_fits_in_12_bits_but_still_exceeds_the_padded_length_is_invalid() {
+        // Distinct branch from the test above: offset=100000 there trips
+        // check_offset_range's 12-bit range check and never reaches the
+        // `offset + hash_len > padded_length` (LessEqThan) check -- the one
+        // the design's prose emphasises and the branch most likely to be
+        // mistakenly "tightened" later, since 100000 alone never exercises
+        // it. offset=500 fits comfortably under 4096 (12 bits), but
+        // 500 + 32 (sha256's hash_len) exceeds a claimed 512-byte padded
+        // length.
+        let mut inputs = fixture();
+        inputs["dg1_hash_offset"] = serde_json::json!(["500"]);
+        inputs["eContent_padded_length"] = serde_json::json!(["512"]);
+        let v = verify(&inputs, &params());
+        assert!(matches!(v, Verdict::Invalid(_)), "got {v:?}");
+    }
+
+    #[test]
     fn a_missing_field_is_skipped_not_invalid() {
         let mut inputs = fixture();
         inputs.as_object_mut().unwrap().remove("pubKey_dsc");
