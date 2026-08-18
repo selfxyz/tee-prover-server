@@ -12,7 +12,10 @@ use futures::FutureExt;
 
 pub mod chunks;
 pub mod params;
+pub mod primitives;
 pub mod sha_padding;
+#[cfg(test)]
+pub mod testkit;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
