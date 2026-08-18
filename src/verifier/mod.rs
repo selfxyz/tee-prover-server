@@ -10,7 +10,9 @@ use std::panic::AssertUnwindSafe;
 
 use futures::FutureExt;
 
+pub mod chunks;
 pub mod params;
+pub mod sha_padding;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {

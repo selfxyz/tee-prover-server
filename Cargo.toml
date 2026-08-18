@@ -25,6 +25,7 @@ rand_core = "0.6.4"
 serde_plain = "1.0.2"
 lru = "0.13.0"
 futures = "0.3"
+num-bigint = "0.4"
 
 [features]
 register = []
