@@ -6,7 +6,18 @@ use crate::db::Proof;
 fn parse(values: &[String]) -> Result<Vec<U256>, String> {
     values
         .iter()
-        .map(|v| U256::from_str_radix(v, 10).map_err(|e| format!("bad field element {v}: {e}")))
+        .map(|v| {
+            // `U256::from_str_radix` delegates to ruint's `from_base_be`, which folds
+            // over the input's digits and therefore returns ZERO for an empty digit
+            // iterator. An empty (or whitespace-only) field element would otherwise
+            // parse to 0 and produce a wrong-but-plausible digest instead of an error
+            // — the one outcome this encoder must never have, since the digest is
+            // pinned and a bad one yields a signature nothing can verify.
+            if v.trim().is_empty() {
+                return Err(format!("bad field element {v:?}: empty"));
+            }
+            U256::from_str_radix(v, 10).map_err(|e| format!("bad field element {v}: {e}"))
+        })
         .collect()
 }
 
@@ -74,6 +85,52 @@ mod tests {
         let mut other = pi.clone();
         other[0] = "11".into();
         assert_ne!(proof_digest(&p, &pi).unwrap(), proof_digest(&p, &other).unwrap());
+    }
+
+    /// An empty field element must be an error, not a silent 0. Without the
+    /// explicit guard in `parse`, ruint's `from_base_be` returns ZERO over an
+    /// empty digit iterator, so `""` would encode as 0 and yield a digest that
+    /// looks valid but signs the wrong object.
+    #[test]
+    fn rejects_empty_field_elements() {
+        for blank in ["", " ", "\t", "\n"] {
+            let (mut p, pi) = sample();
+            p.pi_a = vec![blank.into(), "2".into()];
+            assert!(
+                proof_digest(&p, &pi).is_err(),
+                "empty pi_a element {blank:?} must be rejected, not parsed as 0"
+            );
+
+            let (mut p, pi) = sample();
+            p.pi_b[1] = vec!["5".into(), blank.into()];
+            assert!(
+                proof_digest(&p, &pi).is_err(),
+                "empty pi_b element {blank:?} must be rejected, not parsed as 0"
+            );
+
+            let (p, mut pi) = sample();
+            pi[0] = blank.into();
+            assert!(
+                proof_digest(&p, &pi).is_err(),
+                "empty public input {blank:?} must be rejected, not parsed as 0"
+            );
+        }
+    }
+
+    /// Pins the reason the guard exists: an empty element must NOT hash to the
+    /// same digest as an explicit "0", which is what the unguarded parse did.
+    #[test]
+    fn empty_field_element_does_not_alias_zero() {
+        let (mut p, pi) = sample();
+        p.pi_a = vec!["0".into(), "2".into()];
+        let zero_digest = proof_digest(&p, &pi).expect("explicit 0 is a valid field element");
+
+        let (mut q, pi2) = sample();
+        q.pi_a = vec!["".into(), "2".into()];
+        match proof_digest(&q, &pi2) {
+            Ok(d) => panic!("empty element produced digest {d:?} (aliasing {zero_digest:?})"),
+            Err(e) => assert!(e.contains("empty"), "unexpected error: {e}"),
+        }
     }
 
     #[test]
