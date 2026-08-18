@@ -131,6 +131,17 @@ jobs:
           # unzip artifact.zip -d ./circuits/
           chmod +x sort_circuits.cherrypick.sh
           ./sort_circuits.cherrypick.sh
+          # Dockerfile.cherrypick COPYs ./circuits wholesale, so this layout is FLAT --
+          # the mirror image of the "Sort circuits" step above, which nests
+          # gcp_jwt_verifier_cpp under circuits/common for Dockerfile.tee's filtered
+          # copies. Anything left in a subdirectory would both miss the
+          # /circuits/<name>_cpp path the server looks in and make it treat the leftover
+          # directory as a circuit and panic at boot, so common/ is emptied, not left.
+          # No-op if gs://zk_circuits/output already delivers it flat.
+          if [ -d circuits/common ]; then
+            mv circuits/common/* circuits/ 2>/dev/null || true
+            rmdir circuits/common
+          fi
 
       - name: Reformat zkeys
         if: ${{ inputs.tag == 'latest' }}
