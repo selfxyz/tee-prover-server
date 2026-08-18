@@ -45,6 +45,25 @@ fn read_fixture(name: &str) -> Option<serde_json::Value> {
     )
 }
 
+/// Absence is a SKIP per-test, so deleting or moving the fixtures would leave
+/// every test in this module passing while checking nothing — the same silent
+/// no-coverage shape that let Aadhaar and KYC ship skipping all real traffic.
+/// This is the one place absence is loud instead.
+#[test]
+fn all_real_fixtures_are_present() {
+    for name in [
+        "register_passport.json",
+        "register_id.json",
+        "register_aadhaar.json",
+        "register_kyc.json",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        assert!(path.exists(), "checked-in fixture missing: {}", path.display());
+    }
+}
+
 #[test]
 fn real_passport_fixture_is_valid() {
     // Captured via genAndInitMockPassportData(sha256, sha256, rsa_3_4096, ...)
