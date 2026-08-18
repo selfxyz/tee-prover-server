@@ -15,6 +15,7 @@ pub mod chunks;
 pub mod kyc;
 pub mod params;
 pub mod passport;
+pub mod metrics;
 pub mod primitives;
 #[cfg(test)]
 mod real_fixtures;

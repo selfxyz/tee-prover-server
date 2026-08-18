@@ -130,8 +130,12 @@ async fn main() {
                     }
                 };
 
-                match crate::verifier::verify_inputs(uuid, &circuit_name).await {
-                    crate::verifier::Verdict::Valid => {}
+                let verdict = crate::verifier::verify_inputs(uuid, &circuit_name).await;
+                crate::verifier::metrics::record(&verdict);
+                match verdict {
+                    crate::verifier::Verdict::Valid => {
+                        println!("precheck valid for {circuit_name}");
+                    }
                     crate::verifier::Verdict::Skipped(reason) => {
                         println!("precheck skipped for {circuit_name}: {reason}");
                     }
