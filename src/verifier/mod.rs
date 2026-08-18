@@ -12,6 +12,7 @@ use futures::FutureExt;
 
 pub mod chunks;
 pub mod params;
+pub mod passport;
 pub mod primitives;
 pub mod sha_padding;
 #[cfg(test)]
@@ -54,7 +55,18 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
         Ok(v) => v,
         Err(e) => return Verdict::Skipped(format!("input.json is not valid JSON: {e}")),
     };
-    let _ = &inputs; // consumed by the dispatch added in Task 4
+
+    let Some(p) = params::lookup(circuit_name) else {
+        return Verdict::Skipped(format!("no circuit parameters known for circuit {circuit_name}"));
+    };
+
+    // register_* and register_id_* both carry the RSA passport / EU-ID
+    // three-link chain (this also reaches register_aadhaar and register_kyc,
+    // which passport::verify itself declines via their non-RSA-passport shape
+    // or scheme, skipping rather than misapplying the chain).
+    if circuit_name.starts_with("register") {
+        return run_guarded(|| passport::verify(&inputs, &p)).await;
+    }
 
     Verdict::Skipped(format!("no verifier wired for circuit {circuit_name}"))
 }
