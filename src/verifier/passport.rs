@@ -19,7 +19,6 @@
 //! match; a signature that fails; or an offset that violates the circuit's own
 //! range checks (`passportVerifier.circom:53-66`) — is `Invalid`.
 
-use num_bigint::BigUint;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 

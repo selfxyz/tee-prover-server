@@ -60,10 +60,20 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
         return Verdict::Skipped(format!("no circuit parameters known for circuit {circuit_name}"));
     };
 
-    // register_* and register_id_* both carry the RSA passport / EU-ID
-    // three-link chain (this also reaches register_aadhaar and register_kyc,
-    // which passport::verify itself declines via their non-RSA-passport shape
-    // or scheme, skipping rather than misapplying the chain).
+    // Aadhaar and KYC are exact-name circuit families with their own verifiers
+    // (Tasks 5 and 6), but both also start with "register" — the same prefix
+    // as the RSA passport / EU-ID circuits handled below. They MUST be
+    // excluded here, before the prefix match, or a future Aadhaar/KYC arm
+    // would be unreachable, shadowed by the broader "register" prefix (the
+    // same class of bug the Task 2 reviewer caught in the parameter lookup's
+    // register_id_-before-register_ ordering).
+    if circuit_name == "register_aadhaar" || circuit_name == "register_kyc" {
+        return Verdict::Skipped(format!("no verifier wired yet for circuit {circuit_name}"));
+    }
+
+    // Only genuine RSA passport / EU-ID circuits reach here: register_* and
+    // register_id_* (register_id_* is itself a subset of the "register"
+    // prefix, so a single prefix check covers both).
     if circuit_name.starts_with("register") {
         return run_guarded(|| passport::verify(&inputs, &p)).await;
     }
@@ -126,6 +136,75 @@ mod tests {
         match v {
             Verdict::Skipped(reason) => assert!(reason.contains("panic")),
             other => panic!("a panic must become Skipped, got {other:?}"),
+        }
+    }
+
+    /// Pins the dispatch routing itself, independent of *why* Aadhaar
+    /// currently skips. The fixture below is deliberately a self-consistent
+    /// RSA passport-shaped input built under register_aadhaar's own (n, k) =
+    /// (121, 17) and all-SHA-256 hash widths — i.e. one passport::verify
+    /// would call `Valid` on if the "register" prefix arm ever reached it
+    /// before the exact-name exclusion. If a future edit reorders the
+    /// dispatch so the prefix match runs first, this test observes `Valid`,
+    /// not `Skipped`, and fails loudly rather than passing for the wrong
+    /// reason.
+    #[tokio::test]
+    async fn register_aadhaar_is_never_routed_into_the_passport_verifier() {
+        let key = testkit::TestRsaKey::generate(65537);
+        let inputs = testkit::passport_inputs(&key, 121, 17);
+
+        let uuid = uuid::Uuid::new_v4();
+        let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(std::path::Path::new(&dir).join("input.json"), inputs.to_string())
+            .await
+            .unwrap();
+
+        let v = verify_inputs(uuid, "register_aadhaar").await;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+
+        match v {
+            Verdict::Skipped(reason) => assert!(
+                reason.contains("no verifier wired"),
+                "register_aadhaar must skip with a 'no verifier wired' reason (Task 5's                  arm doesn't exist yet), not a passport-chain reason: {reason}"
+            ),
+            other => panic!(
+                "register_aadhaar must never reach the passport verifier (it would have                  accepted this self-consistent fixture as Valid): got {other:?}"
+            ),
+        }
+    }
+
+    /// Same pin for KYC. Its scheme (EdDsaBabyJubJub, n = k = 0) has no
+    /// RSA-style limb layout, so there is no way to build a fixture the
+    /// passport chain would call `Valid` on the way the Aadhaar test above
+    /// does. Instead this asserts on the reason string directly: if the
+    /// "register" prefix arm were ever reached first, passport::verify's own
+    /// scheme guard would produce a reason mentioning the RSA scheme mismatch
+    /// rather than "no verifier wired".
+    #[tokio::test]
+    async fn register_kyc_is_never_routed_into_the_passport_verifier() {
+        let uuid = uuid::Uuid::new_v4();
+        let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(std::path::Path::new(&dir).join("input.json"), b"{}")
+            .await
+            .unwrap();
+
+        let v = verify_inputs(uuid, "register_kyc").await;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+
+        match v {
+            Verdict::Skipped(reason) => {
+                assert!(
+                    reason.contains("no verifier wired"),
+                    "register_kyc must skip with a 'no verifier wired' reason (Task 6's                      arm doesn't exist yet), got: {reason}"
+                );
+                assert!(
+                    !reason.to_lowercase().contains("scheme"),
+                    "reason must not be the passport chain's scheme-mismatch message, which                      would mean routing fell through to the passport verifier: {reason}"
+                );
+            }
+            other => panic!("register_kyc must never reach the passport verifier, got {other:?}"),
         }
     }
 }
