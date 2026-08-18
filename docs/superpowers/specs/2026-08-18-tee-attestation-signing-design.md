@@ -169,8 +169,8 @@ reviewable before the contract method exists.
 - `src/db/` — persist the signature
 - `Cargo.toml` — `k256` (signing, always on); `alloy` behind `chain`
 - `setup.sql` — `signature` column + include it in the notify payload
-- `Dockerfile.tee` — Node + `npm install`; tmpfs mount for `/zk`
-- `start.sh` — run the sidecar before `tee-server`
+- `Dockerfile.tee` — Node + `npm install`; vendored sidecar at `/jwt`
+- `start.sh` — unchanged; `bootstrap.rs` spawns the sidecar as a subprocess
 - `download_zkeys.sh`, `check_circuits.sh`, `constants.sh` — carry `gcp_jwt_verifier`
 
 ## Error handling
