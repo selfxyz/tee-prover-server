@@ -98,6 +98,14 @@ jobs:
         if: ${{ inputs.tag == 'latest' }}
         run: |
           # unzip artifact.zip -d ./circuits/
+          # gcp_jwt_verifier_cpp ships in every image variant from circuits/common
+          # (see constants.sh's ALWAYS_CIRCUITS). No-op if gs://zk_circuits/output
+          # already nests it under common/; moves it into place if it lands flat
+          # at the circuits/ root instead.
+          mkdir -p circuits/common
+          if [ -d circuits/gcp_jwt_verifier_cpp ]; then
+            mv circuits/gcp_jwt_verifier_cpp circuits/common/
+          fi
           chmod +x sort_circuits.sh
           ./sort_circuits.sh
 
@@ -127,10 +135,16 @@ jobs:
       - name: Reformat zkeys
         if: ${{ inputs.tag == 'latest' }}
         run: |
-          mkdir -p zkeys/register zkeys/disclose zkeys/dsc
+          mkdir -p zkeys/register zkeys/disclose zkeys/dsc zkeys/common
           mv zkeys/register_* zkeys/register/
           mv zkeys/vc_and_disclose*.zkey zkeys/disclose/
           mv zkeys/dsc_* zkeys/dsc/
+          # gcp_jwt_verifier.zkey (see constants.sh's ALWAYS_CIRCUITS) matches
+          # none of the prefixes above. No-op if it's already in zkeys/common;
+          # moves it into place if it's still flat from the download step.
+          if [ -f zkeys/gcp_jwt_verifier.zkey ]; then
+            mv zkeys/gcp_jwt_verifier.zkey zkeys/common/
+          fi
           chmod +x sort_zkeys.sh
           ./sort_zkeys.sh
 
