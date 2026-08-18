@@ -109,6 +109,32 @@ async fn main() {
     }
     let rapid_snark_path = rapid_snark_path_exe.into_os_string().into_string().unwrap();
 
+    let attestation_zkey = path::Path::new(&zkey_folder)
+        .join(format!("{}.zkey", attestation::bootstrap::ATTESTATION_CIRCUIT));
+    if !attestation_zkey.exists() {
+        panic!("attestation zkey {} does not exist!", attestation_zkey.display());
+    }
+
+    // Fatal by design: the server must never serve proofs it cannot sign.
+    let (enclave_key, attestation_proof) = match attestation::bootstrap::bootstrap(
+        &circuit_folder,
+        attestation_zkey.to_str().unwrap(),
+        &rapid_snark_path,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => panic!("TEE attestation bootstrap failed: {e}"),
+    };
+    println!("Enclave attested. Signing address: {}", enclave_key.address());
+
+    #[cfg(feature = "chain")]
+    if let Err(e) = attestation::chain::register_prover_key(&enclave_key, &attestation_proof).await {
+        panic!("prover key registration failed: {e}");
+    }
+    #[cfg(not(feature = "chain"))]
+    let _ = &attestation_proof;
+
     tokio::select! {
         _ = handle.stopped() => {
             println!("Server stopped");
@@ -194,7 +220,17 @@ async fn main() {
                 cleanup(uuid.clone(), &pool, e.to_string()).await;
                 continue;
             }
-            if let Err(e) = update_proof(uuid.clone(), &pool).await {
+
+            let signature = match attestation::sign_proof_output(&enclave_key, &uuid) {
+                Ok(sig) => sig,
+                Err(e) => {
+                    dbg!(&e);
+                    cleanup(uuid.clone(), &pool, e).await;
+                    continue;
+                }
+            };
+
+            if let Err(e) = update_proof(uuid.clone(), &pool, &signature).await {
                 dbg!(&e);
                 cleanup(uuid.clone(), &pool, e.to_string()).await;
                 continue;
