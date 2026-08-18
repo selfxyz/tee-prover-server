@@ -46,7 +46,15 @@ fn address_from_verifying_key(vk: &VerifyingKey) -> String {
 
 pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<String, String> {
     let signature = Signature::from_slice(&sig[..64]).map_err(|e| e.to_string())?;
-    let recid = RecoveryId::from_byte(sig[64].saturating_sub(27))
+    // Solidity's ecrecover convention: v must be exactly 27 or 28. Reject
+    // anything else rather than coercing it (e.g. saturating_sub would map
+    // every byte in 0..=26 to a "valid" recid 0, masking malformed input).
+    let recid_byte = match sig[64] {
+        27 => 0,
+        28 => 1,
+        v => return Err(format!("invalid recovery id byte: {v}, expected 27 or 28")),
+    };
+    let recid = RecoveryId::from_byte(recid_byte)
         .ok_or_else(|| "invalid recovery id".to_string())?;
     let vk = VerifyingKey::recover_from_prehash(digest, &signature, recid)
         .map_err(|e| e.to_string())?;
@@ -73,5 +81,41 @@ mod tests {
         let sig = key.sign_digest(&digest).expect("signing failed");
         assert_eq!(sig.len(), 65);
         assert_eq!(recover_address(&digest, &sig).unwrap(), key.address());
+    }
+
+    #[test]
+    fn recover_address_rejects_raw_unoffset_recovery_id() {
+        let key = EnclaveKey::generate();
+        let digest = [7u8; 32];
+        let mut sig = key.sign_digest(&digest).expect("signing failed");
+
+        // A raw, un-offset recovery id (0 or 1) must NOT be silently treated
+        // as v=27/28 via wraparound arithmetic. saturating_sub(27) would map
+        // both of these to recid 0, masking malformed input instead of
+        // rejecting it.
+        sig[64] = 0;
+        assert!(
+            recover_address(&digest, &sig).is_err(),
+            "byte 0 must be rejected, not coerced to recid 0"
+        );
+
+        sig[64] = 1;
+        assert!(
+            recover_address(&digest, &sig).is_err(),
+            "byte 1 must be rejected, not coerced to recid 0 via wraparound"
+        );
+    }
+
+    #[test]
+    fn recover_address_rejects_out_of_range_high_recovery_byte() {
+        let key = EnclaveKey::generate();
+        let digest = [7u8; 32];
+        let mut sig = key.sign_digest(&digest).expect("signing failed");
+
+        sig[64] = 29;
+        assert!(
+            recover_address(&digest, &sig).is_err(),
+            "byte 29 is out of the accepted {{27, 28}} set and must be rejected"
+        );
     }
 }
