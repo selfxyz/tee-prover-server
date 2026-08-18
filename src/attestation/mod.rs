@@ -1,4 +1,6 @@
 pub mod bootstrap;
+#[cfg(feature = "chain")]
+pub mod chain;
 pub mod digest;
 pub mod key;
 

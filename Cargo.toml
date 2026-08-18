@@ -32,6 +32,9 @@ alloy-sol-types = "0.8"
 rand = "0.8"
 hex = "0.4"
 
+# on-chain prover key registration (feature = "chain")
+alloy = { version = "1.5.2", features = ["essentials", "sol-types"], optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -40,3 +43,4 @@ register = []
 dsc = []
 disclose = []
 cherrypick = []
+chain = ["dep:alloy"]
