@@ -30,6 +30,22 @@ num-integer = "0.1"
 sha1 = "0.10"
 sha2 = "0.10"
 
+# KYC (EdDSA over BabyJubJub)
+light-poseidon = "0.4.0"
+ark-bn254 = "0.5.0"
+ark-ff = "0.5.0"
+num-traits = "0.2"
+# babyjubjub-rs's default "blake-hash" backend hits an unimplemented SIMD
+# dispatch path in ppv-lite86 on this toolchain; its "aarch64" feature swaps
+# in the portable FFI "blake" crate instead (a C implementation, not actually
+# arch-restricted despite the feature's name), which has no such issue.
+babyjubjub-rs = { version = "0.0.11", default-features = false, features = ["aarch64"] }
+# babyjubjub-rs's `Fr` (poseidon_rs::Fr) Display renders as "Fr(0x...)", not
+# plain decimal, so converting to/from the decimal strings the circuit input
+# JSON uses goes through this crate's own to_hex/from_hex, its canonical
+# serialization pair (the same one babyjubjub-rs uses internally).
+ff_ce = "0.11.0"
+
 [features]
 register = []
 dsc = []

@@ -12,6 +12,7 @@ use futures::FutureExt;
 
 pub mod aadhaar;
 pub mod chunks;
+pub mod kyc;
 pub mod params;
 pub mod passport;
 pub mod primitives;
@@ -72,9 +73,7 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
         return run_guarded(|| aadhaar::verify(&inputs, &p)).await;
     }
     if circuit_name == "register_kyc" {
-        // Task 6 owns this verifier; until it lands, register_kyc must still
-        // be excluded here rather than falling through to the prefix match.
-        return Verdict::Skipped(format!("no verifier wired yet for circuit {circuit_name}"));
+        return run_guarded(|| kyc::verify(&inputs, &p)).await;
     }
 
     // Only genuine RSA passport / EU-ID circuits reach here: register_* and
@@ -197,8 +196,18 @@ mod tests {
     /// passport chain would call `Valid` on the way the Aadhaar test above
     /// does. Instead this asserts on the reason string directly: if the
     /// "register" prefix arm were ever reached first, passport::verify's own
-    /// scheme guard would produce a reason mentioning the RSA scheme mismatch
-    /// rather than "no verifier wired".
+    /// scheme guard would produce a reason mentioning the RSA scheme mismatch.
+    ///
+    /// Now that the KYC arm is wired (Task 6), the correctly-routed outcome
+    /// is no longer the "no verifier wired" placeholder — it is `Skipped` for
+    /// KYC's own missing fields, because this fixture (`{}`) has none of
+    /// `data_padded`/`s`/`R`/`pubKey`. So the property under test is
+    /// unchanged (this payload must not be verified by the passport chain),
+    /// only the expected reason moves from a routing placeholder to KYC's own
+    /// field-parsing message. If a future edit reorders the dispatch so the
+    /// prefix match runs first, this test observes a scheme-mismatch reason
+    /// (or `Valid`), not this one, and fails loudly rather than passing for
+    /// the wrong reason.
     #[tokio::test]
     async fn register_kyc_is_never_routed_into_the_passport_verifier() {
         let uuid = uuid::Uuid::new_v4();
@@ -214,15 +223,20 @@ mod tests {
         match v {
             Verdict::Skipped(reason) => {
                 assert!(
-                    reason.contains("no verifier wired"),
-                    "register_kyc must skip with a 'no verifier wired' reason (Task 6's                      arm doesn't exist yet), got: {reason}"
+                    reason.contains("data_padded"),
+                    "register_kyc must be checked by the KYC verifier against its own fields \
+                     (this empty fixture has no data_padded field, so the KYC verifier must \
+                     skip for that reason), not a passport-chain reason: {reason}"
                 );
                 assert!(
                     !reason.to_lowercase().contains("scheme"),
-                    "reason must not be the passport chain's scheme-mismatch message, which                      would mean routing fell through to the passport verifier: {reason}"
+                    "reason must not be the passport chain's scheme-mismatch message, which \
+                     would mean routing fell through to the passport verifier: {reason}"
                 );
             }
-            other => panic!("register_kyc must never reach the passport verifier, got {other:?}"),
+            other => panic!(
+                "register_kyc must never reach the passport verifier, got {other:?}"
+            ),
         }
     }
 }
