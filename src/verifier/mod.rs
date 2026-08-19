@@ -94,7 +94,19 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
     // as_skipped`), which is this crate's pin on that panic-containment
     // behaviour.
     let circuit_name = circuit_name.to_string();
-    match tokio::task::spawn_blocking(move || dispatch(&circuit_name, &inputs, &p)).await {
+    verdict_from_join(tokio::task::spawn_blocking(move || dispatch(&circuit_name, &inputs, &p)).await)
+}
+
+/// Maps a `spawn_blocking` result to a `Verdict`, converting a panic into
+/// `Skipped`.
+///
+/// Split out so the production panic path is testable. `run_guarded`'s own test
+/// pins `catch_unwind`, but `verify_inputs` no longer goes through
+/// `run_guarded` -- so without this seam the spec's panic-containment
+/// requirement would be asserted only about a function production does not
+/// call, which is assurance pointing at the wrong code.
+fn verdict_from_join(res: Result<Verdict, tokio::task::JoinError>) -> Verdict {
+    match res {
         Ok(verdict) => verdict,
         Err(_join_error) => Verdict::Skipped("verifier panicked".to_string()),
     }
@@ -203,6 +215,30 @@ mod tests {
             Verdict::Skipped(reason) => assert!(reason.contains("panic")),
             other => panic!("a panic must become Skipped, got {other:?}"),
         }
+    }
+
+    /// The production panic path, as opposed to `run_guarded`'s.
+    ///
+    /// `verify_inputs` maps `spawn_blocking`'s `JoinError` rather than using
+    /// `catch_unwind`, so this is the assertion that actually covers spec
+    /// Testing item 5 for the code that runs in production. The `JoinError` is
+    /// obtained from a real panicking blocking task, not constructed.
+    #[tokio::test]
+    async fn a_panic_inside_spawn_blocking_surfaces_as_skipped() {
+        let join_err = tokio::task::spawn_blocking(|| -> Verdict { panic!("boom") })
+            .await
+            .expect_err("the task panicked, so this must be Err");
+        assert!(join_err.is_panic(), "the JoinError must report a panic");
+        match verdict_from_join(Err(join_err)) {
+            Verdict::Skipped(reason) => assert!(reason.contains("panicked"), "{reason}"),
+            other => panic!("a panic must be Skipped, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_completed_blocking_task_passes_its_verdict_through() {
+        let ok = tokio::task::spawn_blocking(|| Verdict::Valid).await;
+        assert_eq!(verdict_from_join(ok), Verdict::Valid);
     }
 
     /// Pins the dispatch routing itself, independent of *why* Aadhaar
