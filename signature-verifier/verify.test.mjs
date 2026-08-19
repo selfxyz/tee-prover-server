@@ -715,6 +715,35 @@ describe('verify -- every non-KYC fixture is valid', () => {
   }
 });
 
+describe('verify -- the certificate\'s RSA public exponent must match the one the circuit name declares', () => {
+  // keyMatchesCert only ever compares the modulus (RSA) or point (ECDSA),
+  // never the exponent -- so without a dedicated check, a certificate whose
+  // real exponent disagrees with the circuit name's declared `e` verifies as
+  // Valid anyway. Reusing real fixtures (rather than a hand-built cert) for
+  // this: register_passport.json's DSC certificate genuinely has e=3
+  // (register_sha256_sha256_sha256_rsa_3_4096), and
+  // dsc_sha256_rsa_65537_4096.json's CSCA certificate genuinely has
+  // e=65537. Feeding either fixture's own inputs to the OTHER exponent's
+  // circuit name changes nothing else reachable before this check (same
+  // hash tags, same modulus, same signature bytes -- `bits` in the circuit
+  // name is otherwise unused) -- so a regression that dropped this check
+  // would make either of these Valid again, not just Invalid-for-some-other-
+  // reason.
+  test('register_passport.json (real e=3) claimed as e=65537 is invalid, naming the exponent mismatch', () => {
+    const fixture = loadFixture('register_passport.json');
+    const result = verify('register_sha256_sha256_sha256_rsa_65537_4096', fixture);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /RSA public exponent/, `got ${result.reason}`);
+  });
+
+  test('dsc_sha256_rsa_65537_4096.json (real e=65537) claimed as e=3 is invalid, naming the exponent mismatch', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const result = verify('dsc_sha256_rsa_3_4096', fixture);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /RSA public exponent/, `got ${result.reason}`);
+  });
+});
+
 describe('verify -- register_kyc is a deliberate, documented exception, not silently skipped coverage', () => {
   test('register_kyc is skipped, not valid', () => {
     const fixture = loadFixture('register_kyc.json');

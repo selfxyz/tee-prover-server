@@ -999,17 +999,27 @@ const CURVE_PARAMS = {
  * scheme grammar itself does not differ between the two, only how many hash
  * components precede it.
  *
- * `e` and `bits` are validated (must parse as plain decimal integers) but
- * their *values* are intentionally unused: this module verifies with the
- * certificate's own key (see this file's report), so the circuit name's
- * claimed exponent/key-length never feeds into any cryptographic
- * calculation -- only `salt_len` (RSA-PSS) and the curve (ECDSA) do, since
- * those select real behaviour (the fixed salt length the circuit's own
- * padding assumes, and the limb width for reassembly) that the certificate
- * cannot supply by itself.
+ * `e` and `bits` are validated (must parse as plain decimal integers). `bits`
+ * is otherwise unused: this module verifies with the certificate's own key
+ * (see this file's report), so the circuit name's claimed key-length never
+ * feeds into any cryptographic calculation -- only `salt_len` (RSA-PSS) and
+ * the curve (ECDSA) do, since those select real behaviour (the fixed salt
+ * length the circuit's own padding assumes, and the limb width for
+ * reassembly) that the certificate cannot supply by itself.
  *
- * @returns {{scheme:'rsa', n:number, k:number} |
- *   {scheme:'rsapss', n:number, k:number, saltLen:number} |
+ * `e`, unlike `bits`, IS used: it is returned as a `BigInt` so the caller can
+ * check it against the certificate's actual `publicExponent`
+ * (`keyMatchesCert` only ever compares the modulus/point, never the
+ * exponent). Before this check existed, a certificate whose real exponent
+ * disagreed with the one the circuit name declared -- the extreme case
+ * being `e = 1`, under which `s^1 mod n = s` and any PKCS#1-encoded digest
+ * is trivially a "valid signature" -- verified as `Valid`. Harmless in
+ * practice only because the circuit itself is compiled per-exponent and
+ * still constrains `e`, so no proof results either way; this module should
+ * not rely on that.
+ *
+ * @returns {{scheme:'rsa', n:number, k:number, e:bigint} |
+ *   {scheme:'rsapss', n:number, k:number, e:bigint, saltLen:number} |
  *   {scheme:'ecdsa', curve:string, n:number, k:number} | null}
  */
 function parseSchemeSuffix(parts, at) {
@@ -1019,13 +1029,13 @@ function parseSchemeSuffix(parts, at) {
     if (parts.length !== at + 3 || !isDecimal(parts[at + 1]) || !isDecimal(parts[at + 2])) {
       return null;
     }
-    return { scheme: 'rsa', n: RSA_N, k: RSA_K };
+    return { scheme: 'rsa', n: RSA_N, k: RSA_K, e: BigInt(parts[at + 1]) };
   }
   if (token === 'rsapss') {
     if (parts.length !== at + 4 || !isDecimal(parts[at + 1]) || !isDecimal(parts[at + 2]) || !isDecimal(parts[at + 3])) {
       return null;
     }
-    return { scheme: 'rsapss', n: RSA_N, k: RSA_K, saltLen: Number(parts[at + 2]) };
+    return { scheme: 'rsapss', n: RSA_N, k: RSA_K, e: BigInt(parts[at + 1]), saltLen: Number(parts[at + 2]) };
   }
   if (token === 'ecdsa') {
     if (parts.length !== at + 2) {
@@ -1317,6 +1327,16 @@ function verifyRegisterFamily(inputs, p) {
   if (!keyMatchesCert(pubkeyLimbs, p.n, p.k, dscCert, keyScheme)) {
     return invalid('pubKey_dsc does not match the certificate embedded in raw_dsc at dsc_pubKey_offset');
   }
+  // keyMatchesCert only compares the modulus (RSA) or point (ECDSA); for RSA
+  // and RSA-PSS the exponent the circuit name declares (`p.e`, parsed in
+  // parseSchemeSuffix) must independently match what the certificate itself
+  // carries -- see parseSchemeSuffix's doc comment for why this matters (the
+  // `e = 1` forgeability case in particular).
+  if (keyScheme === 'rsa' && dscCert.details.publicExponent !== p.e) {
+    return invalid(
+      `raw_dsc's certificate has RSA public exponent ${dscCert.details.publicExponent} but the circuit name declares e=${p.e}`,
+    );
+  }
 
   // --- link 4: signature_passport verifies over sha(recoverMessage(signed_attr)) under the certificate's key ---
   const signedAttrMsg = recoverMessage(signedAttr, signedAttrPaddedLength);
@@ -1442,6 +1462,13 @@ function verifyDscFamily(inputs, p) {
   // comment on why both are needed.
   if (!keyMatchesCert(pubkeyLimbs, p.n, p.k, cscaCert, keyScheme)) {
     return invalid('csca_pubKey does not match the certificate embedded in raw_csca at csca_pubKey_offset');
+  }
+  // See verifyRegisterFamily's identical exponent check for why this is
+  // needed alongside keyMatchesCert (which never compares the exponent).
+  if (keyScheme === 'rsa' && cscaCert.details.publicExponent !== p.e) {
+    return invalid(
+      `raw_csca's certificate has RSA public exponent ${cscaCert.details.publicExponent} but the circuit name declares e=${p.e}`,
+    );
   }
 
   // --- link 2: signature verifies over sig_hash(recoverMessage(raw_dsc)) under the certificate's key ---
