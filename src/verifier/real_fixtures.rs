@@ -57,6 +57,9 @@ fn all_real_fixtures_are_present() {
         "register_aadhaar.json",
         "register_kyc.json",
         "register_pss.json",
+        "register_pss_sha384.json",
+        "register_pss_sha512.json",
+        "register_pss_sha256_salt64.json",
     ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
@@ -149,6 +152,63 @@ fn real_pss_fixture_with_a_corrupted_signature_limb_is_invalid_for_the_pss_check
         reason.contains("PSS"),
         "the reason must name the PSS signature check, not a chain link, got: {reason}"
     );
+}
+
+#[test]
+fn real_pss_sha384_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha384', 'sha384',
+    // 'rsapss_sha384_65537_2048', 'FRA', '000101', '300101') ->
+    // generator.generateRegisterInputs(..., { useTestPadding: true }), the
+    // same test_cases.ts row circuits/tests/register/register.test.ts's
+    // SHA-384 RSAPSS case exercises (no explicit salt suffix in the
+    // SignatureAlgorithm string: the switch in getMockDSC.ts has no
+    // '..._2048_48' case, only the bare 'rsapss_sha384_65537_2048' one, and
+    // that's what test_cases.ts's sha384 row itself produces since it has no
+    // saltLength field). Circuit name confirmed via
+    // doc.getRegisterCircuitName() as
+    // register_sha384_sha384_sha384_rsapss_65537_48_2048 -- id 45, the sole
+    // untested-until-now SHA-384 row.
+    let Some(inputs) = read_fixture("register_pss_sha384.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha384_sha384_sha384_rsapss_65537_48_2048")
+        .expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_pss_sha512_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha512', 'sha512',
+    // 'rsapss_sha512_65537_2048', 'FRA', '000101', '300101') -> the same
+    // path, mirroring test_cases.ts's SHA-512 RSAPSS row (also no explicit
+    // salt suffix, for the same reason as the SHA-384 fixture above).
+    // Circuit name confirmed as
+    // register_sha512_sha512_sha512_rsapss_65537_64_2048 -- id 42, the sole
+    // untested-until-now SHA-512 row.
+    let Some(inputs) = read_fixture("register_pss_sha512.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha512_sha512_sha512_rsapss_65537_64_2048")
+        .expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_pss_sha256_salt64_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha256',
+    // 'rsapss_sha256_65537_2048_64', 'FRA', '000101', '300101') -- the
+    // explicit-salt SignatureAlgorithm string, matching test_cases.ts's
+    // "Denmark" SHA-256/salt-64 row and getMockDSC.ts's exact
+    // 'rsapss_sha256_65537_2048_64' case. Circuit name confirmed as
+    // register_sha256_sha256_sha256_rsapss_65537_64_2048 -- id 46, the
+    // single exception to the salt = hash/8 rule and, until this fixture,
+    // the one row nothing exercised end to end at all.
+    let Some(inputs) = read_fixture("register_pss_sha256_salt64.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha256_sha256_sha256_rsapss_65537_64_2048")
+        .expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
 }
 
 #[test]
