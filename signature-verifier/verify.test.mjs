@@ -1055,3 +1055,187 @@ describe('CLI contract: stdin {circuit, inputPath} JSON -> one stdout verdict JS
     assert.equal(JSON.parse(result.stdout.trim()).verdict, 'skipped');
   });
 });
+
+// =======================================================================
+// Drift guard -- ports params.rs's (pre-Plan-A) `table_matches_the_
+// monorepo_instance_files` test, which parsed the sibling monorepo's own
+// circuit instance files and asserted the checked-in table agreed with
+// them on (n, k), hash widths, and exponents. That guard caught a real
+// instance-count error and was proven load-bearing by mutation four
+// separate times; deleting params.rs's tables (Plan A, Task 4) deleted the
+// guard along with them. verify.mjs derives the same values from the
+// circuit NAME instead of a transcribed table, so what needs re-proving
+// here is narrower -- just that the name-derived (dg_hash, econtent_hash,
+// sig_hash, n, k) for every register/register_id/DSC instance file still
+// agrees with what that file's own REGISTER(...)/REGISTER_ID(...)/DSC(...)
+// template arguments (and signatureAlgorithm.circom's own getHashLength
+// table) say -- but the failure shape is the same bad one: a changed limb
+// width upstream produces a wrong reassembly -> Invalid -> the request is
+// rejected in production (main.rs's cleanup path).
+//
+// Self-skips, exactly as the Rust version did, when the sibling monorepo
+// is not checked out at ../self -- printing an unmistakable SKIP line so a
+// skipped guard is never mistaken for a passing one (a bare TAP "ok #
+// SKIP" line is easy to miss scrolling past 200+ other "ok" lines).
+// =======================================================================
+
+const SIBLING_CIRCUITS_ROOT = path.join(__dirname, '..', '..', 'self', 'circuits', 'circuits');
+const SIBLING_AVAILABLE = fs.existsSync(SIBLING_CIRCUITS_ROOT);
+
+/**
+ * Extracts the comma-separated argument list following `marker` (e.g.
+ * `'REGISTER('`) in `src`, up to the matching close-paren. Mirrors the old
+ * params.rs `extract_args` helper. Returns `null` if `marker` is absent.
+ */
+function extractTemplateArgs(src, marker) {
+  const idx = src.indexOf(marker);
+  if (idx === -1) {
+    return null;
+  }
+  const start = idx + marker.length;
+  const end = src.indexOf(')', start);
+  if (end === -1) {
+    return null;
+  }
+  return src
+    .slice(start, end)
+    .split(',')
+    .map((s) => s.trim());
+}
+
+/**
+ * Parses `getHashLength(signatureAlgorithm)`'s own `if (signatureAlgorithm
+ * == N) { return H; }` branches directly out of signatureAlgorithm.circom's
+ * source, building the id -> hash-bit-width map this guard checks
+ * `sig_hash` against. Read from the file's own function body, not
+ * transcribed by hand into a second table that could itself drift.
+ * Returns `null` if the function cannot be located at all (a signal to fail
+ * loudly, not to guess).
+ */
+function parseHashLengthTable(src) {
+  const fnMatch = src.match(/function getHashLength\(signatureAlgorithm\)\s*\{([\s\S]*?)\n\}/);
+  if (!fnMatch) {
+    return null;
+  }
+  const body = fnMatch[1];
+  const table = new Map();
+  const re = /signatureAlgorithm\s*==\s*(\d+)\s*\)\s*\{\s*return\s+(\d+)\s*;/g;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    table.set(Number(m[1]), Number(m[2]));
+  }
+  return table.size > 0 ? table : null;
+}
+
+describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) match the sibling monorepo's instance files", () => {
+  if (!SIBLING_AVAILABLE) {
+    const msg = `SKIP: sibling monorepo not present at ${SIBLING_CIRCUITS_ROOT} -- drift guard did NOT run`;
+    console.log(msg);
+    test('sibling monorepo not present -- this whole guard is SKIPPED, not passing', { skip: msg }, () => {});
+    return;
+  }
+
+  const hashLengthPath = path.join(SIBLING_CIRCUITS_ROOT, 'utils', 'passport', 'signatureAlgorithm.circom');
+  const HASH_LENGTH_TABLE = parseHashLengthTable(fs.readFileSync(hashLengthPath, 'utf8'));
+
+  test('getHashLength(...) parses out of signatureAlgorithm.circom', () => {
+    assert.ok(HASH_LENGTH_TABLE, `could not parse getHashLength(...) out of ${hashLengthPath}`);
+  });
+
+  /**
+   * Register/register_id instance files: `<TEMPLATE>(dg_hash, econtent_hash,
+   * sig_algo_id, n, k, ...)`, except `register_aadhaar.circom`
+   * (`REGISTER_AADHAAR(n, k, maxDataLength)` -- a different argument order
+   * entirely) and `register_kyc.circom` (`REGISTER_KYC()`, no template
+   * arguments at all -- EdDSA-BabyJubJub has no limb layout to drift-check).
+   */
+  function checkRegisterFamily(familyDir, templateName) {
+    const dir = path.join(SIBLING_CIRCUITS_ROOT, familyDir, 'instances');
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.circom')).sort();
+    for (const file of files) {
+      const stem = file.slice(0, -'.circom'.length);
+      if (stem === 'register_kyc') {
+        continue;
+      }
+      test(`${familyDir}/instances/${file}`, () => {
+        const src = fs.readFileSync(path.join(dir, file), 'utf8');
+        const parsed = parseCircuitName(stem);
+        assert.ok(parsed, `${stem}: parseCircuitName does not recognize this on-disk instance name at all`);
+
+        if (stem === 'register_aadhaar') {
+          const args = extractTemplateArgs(src, 'REGISTER_AADHAAR(');
+          assert.ok(args, `${file}: could not find REGISTER_AADHAAR(...) in ${file}`);
+          assert.equal(parsed.n, Number(args[0]), `${stem}: n drift (verify.mjs says ${parsed.n}, instance file says ${args[0]})`);
+          assert.equal(parsed.k, Number(args[1]), `${stem}: k drift (verify.mjs says ${parsed.k}, instance file says ${args[1]})`);
+          return;
+        }
+
+        const args = extractTemplateArgs(src, `${templateName}(`);
+        assert.ok(args, `${file}: could not find ${templateName}(...) in ${file}`);
+        const [dgHashArg, econtentHashArg, sigAlgoId, nArg, kArg] = args.map(Number);
+
+        assert.equal(
+          parsed.dgHash,
+          dgHashArg,
+          `${stem}: dg_hash drift (verify.mjs says ${parsed.dgHash}, instance file's 1st ${templateName} arg says ${dgHashArg})`,
+        );
+        assert.equal(
+          parsed.econtentHash,
+          econtentHashArg,
+          `${stem}: econtent_hash drift (verify.mjs says ${parsed.econtentHash}, instance file's 2nd ${templateName} arg says ${econtentHashArg})`,
+        );
+
+        const expectedSigHash = HASH_LENGTH_TABLE.get(sigAlgoId);
+        assert.ok(
+          expectedSigHash !== undefined,
+          `${stem}: signatureAlgorithm id ${sigAlgoId} (instance file's 3rd ${templateName} arg) has no entry in ` +
+            `getHashLength -- add it by reading signatureAlgorithm.circom, do not guess`,
+        );
+        assert.equal(
+          parsed.sigHash,
+          expectedSigHash,
+          `${stem}: sig_hash drift (verify.mjs says ${parsed.sigHash}, but signatureAlgorithm id ${sigAlgoId} implies ${expectedSigHash} via getHashLength)`,
+        );
+
+        assert.equal(parsed.n, nArg, `${stem}: n drift (verify.mjs says ${parsed.n}, instance file says ${nArg})`);
+        assert.equal(parsed.k, kArg, `${stem}: k drift (verify.mjs says ${parsed.k}, instance file says ${kArg})`);
+      });
+    }
+  }
+
+  checkRegisterFamily('register', 'REGISTER');
+  checkRegisterFamily('register_id', 'REGISTER_ID');
+
+  // DSC instance files: `DSC(sig_algo_id, n, k)` -- a different template
+  // from REGISTER(...)/REGISTER_ID(...) in both shape and argument order
+  // (no dg_hash/econtent_hash pair at all; `sig_algo_id` is 1st here, not
+  // 3rd).
+  const dscDir = path.join(SIBLING_CIRCUITS_ROOT, 'dsc', 'instances');
+  const dscFiles = fs.readdirSync(dscDir).filter((f) => f.endsWith('.circom')).sort();
+  for (const file of dscFiles) {
+    const stem = file.slice(0, -'.circom'.length);
+    test(`dsc/instances/${file}`, () => {
+      const src = fs.readFileSync(path.join(dscDir, file), 'utf8');
+      const parsed = parseCircuitName(stem);
+      assert.ok(parsed, `${stem}: parseCircuitName does not recognize this on-disk instance name at all`);
+
+      const args = extractTemplateArgs(src, 'DSC(');
+      assert.ok(args, `${file}: could not find DSC(...) in ${file}`);
+      const [sigAlgoId, nArg, kArg] = args.map(Number);
+
+      const expectedSigHash = HASH_LENGTH_TABLE.get(sigAlgoId);
+      assert.ok(
+        expectedSigHash !== undefined,
+        `${stem}: signatureAlgorithm id ${sigAlgoId} (instance file's 1st DSC arg) has no entry in getHashLength -- ` +
+          `add it by reading signatureAlgorithm.circom, do not guess`,
+      );
+      assert.equal(
+        parsed.sigHash,
+        expectedSigHash,
+        `${stem}: sig_hash drift (verify.mjs says ${parsed.sigHash}, but signatureAlgorithm id ${sigAlgoId} implies ${expectedSigHash} via getHashLength)`,
+      );
+      assert.equal(parsed.n, nArg, `${stem}: n drift (verify.mjs says ${parsed.n}, instance file says ${nArg})`);
+      assert.equal(parsed.k, kArg, `${stem}: k drift (verify.mjs says ${parsed.k}, instance file says ${kArg})`);
+    });
+  }
+});
