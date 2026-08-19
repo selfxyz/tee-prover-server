@@ -19,11 +19,16 @@
 //! whole design exists to avoid. `table_matches_the_monorepo_instance_files` below
 //! guards against drift when the sibling monorepo is checked out.
 //!
-//! Scope for this table is deliberately narrow: RSA PKCS#1 v1.5, RSASSA-PSS, and
-//! ECDSA (NIST curves only) passport (`register_*`) and EU-ID (`register_id_*`)
+//! Scope for this table is RSA PKCS#1 v1.5, RSASSA-PSS, and ECDSA (both NIST
+//! and brainpool curves) passport (`register_*`) and EU-ID (`register_id_*`)
 //! circuits, plus the fixed `register_aadhaar` and `register_kyc` instances.
-//! Brainpool-curve ECDSA circuits are left out entirely on purpose — `lookup`
-//! returns `None` for them and callers skip. A later plan may add them.
+//! NIST-curve ECDSA (`Scheme::Ecdsa`) is verified by a native Rust primitive;
+//! brainpool-curve ECDSA (`Scheme::EcdsaBrainpool`, Plan 4) is verified via a
+//! Node/OpenSSL sidecar instead, since no usable Rust crate covers those
+//! curves (see `primitives::brainpool`'s module doc) — a deliberately
+//! separate `Scheme` variant, not a curve string on `Scheme::Ecdsa`, so
+//! dispatch cannot accidentally route a brainpool circuit into the Rust
+//! primitive or a NIST circuit into the sidecar.
 //!
 //! For RSASSA-PSS rows, `salt_len` and `bits` (the minimum RSA key length) are
 //! properties of the circuit's `signatureAlgorithm` ID, not of the circuit
@@ -46,10 +51,18 @@ pub enum Scheme {
     // Unlike RSA/PSS there is no exponent to carry — ECDSA's public key is a
     // curve point, not a modulus/exponent pair — so this variant holds only
     // the curve name, taken verbatim from the circuit name's own trailing
-    // component. Brainpool-curve circuits (also present in the same instance
-    // directories) are out of scope for this plan and still return `None`
-    // from `lookup`; a later plan may extend this table to cover them.
+    // component. Verified by `primitives::ecdsa`.
     Ecdsa { curve: String },
+    // Constructed by `lookup` for the 20 ECDSA brainpool-curve circuits
+    // (Plan 4, Task 3): 14 register/register_id + 6 DSC. Same shape as
+    // `Ecdsa` above (just a curve name — no exponent), but kept as its own
+    // variant rather than folded into `Ecdsa` so the dispatch match in
+    // passport.rs/dsc.rs cannot accidentally send a brainpool circuit into
+    // the NIST-curve Rust primitive (or vice versa) — that would be a
+    // one-character mistake with a single shared variant. Verified by
+    // `primitives::brainpool`'s Node/OpenSSL sidecar client instead of a
+    // native Rust primitive, since no usable Rust crate covers these curves.
+    EcdsaBrainpool { curve: String },
     EdDsaBabyJubJub,
 }
 
@@ -112,9 +125,8 @@ const RSA_LIMBS: &[(&str, u32, u32)] = &[
 /// `sha256_sha224_sha224` and `sha256_sha256_sha224` differ in their eContent hash,
 /// and both exist for `register` and `register_id` — deduplicating by curve or
 /// algorithm id would drop two of them. Brainpool-curve instances live alongside
-/// these in the same directories but are deliberately absent: out of scope for this
-/// plan, so `lookup` returns `None` for them (the safe default — see this file's
-/// module doc on the false-reject/false-accept asymmetry).
+/// these in the same directories — see `ECDSA_BRAINPOOL_LIMBS` below, a separate
+/// table backing `Scheme::EcdsaBrainpool` rather than this one.
 const ECDSA_LIMBS: &[(&str, &str, u32, u32)] = &[
     // register/instances/*.circom
     ("register_sha1_sha1_sha1_ecdsa_secp256r1", "secp256r1", 64, 4), // alg 7: ecdsa_sha1_secp256r1_256
@@ -132,6 +144,42 @@ const ECDSA_LIMBS: &[(&str, &str, u32, u32)] = &[
     ("register_id_sha512_sha512_sha512_ecdsa_secp521r1", "secp521r1", 66, 8), // alg 41
     ("register_id_sha256_sha224_sha224_ecdsa_secp224r1", "secp224r1", 32, 7), // alg 44 (dg sha256/econtent sha224)
     ("register_id_sha256_sha256_sha224_ecdsa_secp224r1", "secp224r1", 32, 7), // alg 44 (dg sha256/econtent sha256)
+];
+
+/// `(name, curve, n, k)` for the 14 ECDSA brainpool-curve passport and EU-ID
+/// circuits (Plan 4, Task 3), transcribed verbatim from
+/// `../self/circuits/circuits/{register,register_id}/instances/
+/// *_ecdsa_brainpool*.circom`'s `REGISTER`/`REGISTER_ID(DG_HASH,
+/// ECONTENT_HASH, signatureAlgorithm, n, k, ...)` 4th/5th arguments. Every
+/// row here has all-matching dg/econtent/sig hash tags in its circuit name
+/// (unlike alg 44's NIST secp224r1 rows above), so there are exactly 7
+/// distinct (hash, algorithm-id, curve) combinations, each present for both
+/// `register` and `register_id`. Algorithm ids 21, 22, 27, 29, 30, 37, 38 are
+/// new to this crate — their hash widths are transcribed (not inferred) from
+/// `getHashLength` in
+/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom` and
+/// cross-checked against its "ID to Signature Algorithm" comment table; see
+/// `ECDSA_ALGORITHM_TABLE` below for the transcribed values.  brainpoolP224r1
+/// (alg 30, SHA-224) is the tightest row in the codebase: `HASH_LEN_BITS`
+/// (224) exactly equals `n*k` (32*7=224) — see `table_matches_the_monorepo_
+/// instance_files`'s `HASH_LEN_BITS <= n*k` guard.
+const ECDSA_BRAINPOOL_LIMBS: &[(&str, &str, u32, u32)] = &[
+    // register/instances/*.circom
+    ("register_sha1_sha1_sha1_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7), // alg 27: ecdsa_sha1_brainpoolP224r1_224
+    ("register_sha224_sha224_sha224_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7), // alg 30: ecdsa_sha224_brainpoolP224r1_224
+    ("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4), // alg 21: ecdsa_sha256_brainpoolP256r1_256
+    ("register_sha256_sha256_sha256_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6), // alg 37: ecdsa_sha256_brainpoolP384r1_384
+    ("register_sha384_sha384_sha384_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6), // alg 22: ecdsa_sha384_brainpoolP384r1_384
+    ("register_sha384_sha384_sha384_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8), // alg 38: ecdsa_sha384_brainpoolP512r1_512
+    ("register_sha512_sha512_sha512_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8), // alg 29: ecdsa_sha512_brainpoolP512r1_512
+    // register_id/instances/*.circom
+    ("register_id_sha1_sha1_sha1_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7), // alg 27
+    ("register_id_sha224_sha224_sha224_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7), // alg 30
+    ("register_id_sha256_sha256_sha256_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4), // alg 21
+    ("register_id_sha256_sha256_sha256_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6), // alg 37
+    ("register_id_sha384_sha384_sha384_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6), // alg 22
+    ("register_id_sha384_sha384_sha384_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8), // alg 38
+    ("register_id_sha512_sha512_sha512_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8), // alg 29
 ];
 
 /// `(name, salt_len bytes, key_bits)` for the 15 RSASSA-PSS passport and EU-ID
@@ -193,10 +241,7 @@ const DSC_RSA_LIMBS: &[(&str, u32, u32)] = &[
 
 /// `(name, curve, n, k)` for the 6 ECDSA NIST-curve DSC circuits, transcribed
 /// verbatim from the same instance files' `DSC(signatureAlgorithm, n, k)`
-/// arguments. The 6 brainpool-curve DSC circuits living alongside these in
-/// the same directory are deliberately absent -- out of scope for this plan,
-/// so `lookup` returns `None` for them (the safe default; see this file's
-/// module doc on the false-reject/false-accept asymmetry).
+/// arguments.
 const DSC_ECDSA_LIMBS: &[(&str, &str, u32, u32)] = &[
     ("dsc_sha1_ecdsa_secp256r1", "secp256r1", 64, 4),    // alg 7
     ("dsc_sha256_ecdsa_secp256r1", "secp256r1", 64, 4),  // alg 8
@@ -204,6 +249,24 @@ const DSC_ECDSA_LIMBS: &[(&str, &str, u32, u32)] = &[
     ("dsc_sha256_ecdsa_secp384r1", "secp384r1", 64, 6),  // alg 23
     ("dsc_sha256_ecdsa_secp521r1", "secp521r1", 66, 8),  // alg 40
     ("dsc_sha512_ecdsa_secp521r1", "secp521r1", 66, 8),  // alg 41
+];
+
+/// `(name, curve, n, k)` for the 6 ECDSA brainpool-curve DSC circuits (Plan 4,
+/// Task 3), transcribed verbatim from the same instance files' `DSC
+/// (signatureAlgorithm, n, k)` arguments. Algorithm ids 21, 22, 29, 36, 37, 38
+/// are new to this crate -- see `ECDSA_BRAINPOOL_LIMBS`'s doc comment on
+/// where their hash widths come from. Unlike the register-family table above,
+/// there is no brainpoolP224r1 DSC circuit -- these 6 cover only P256r1,
+/// P384r1, and P512r1, one alg apiece except P384r1/P512r1 which each have
+/// two (a SHA-256/384 pair, mirroring the register-family split for those
+/// curves).
+const DSC_ECDSA_BRAINPOOL_LIMBS: &[(&str, &str, u32, u32)] = &[
+    ("dsc_sha1_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4),   // alg 36
+    ("dsc_sha256_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4), // alg 21
+    ("dsc_sha256_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6), // alg 37
+    ("dsc_sha384_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6), // alg 22
+    ("dsc_sha384_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8), // alg 38
+    ("dsc_sha512_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8), // alg 29
 ];
 
 /// `(name, salt_len bytes, key_bits)` for the 5 RSASSA-PSS DSC circuits.
@@ -328,13 +391,17 @@ fn min_key_length(id: u32) -> Option<u32> {
 }
 
 /// `(signatureAlgorithm ID, hash_bits)`, transcribed from `getHashLength` in
-/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom` for the 6
-/// ECDSA NIST-curve IDs that appear as the `signatureAlgorithm` (3rd) argument
-/// across the 14 `REGISTER`/`REGISTER_ID` instance files `ECDSA_LIMBS` covers.
-/// Kept separate from `SIGNATURE_ALGORITHM_TABLE` rather than merged into it:
-/// that table's shape is `(id, hash_bits, exponent)`, and ECDSA has no exponent
-/// to put there (see `Scheme::Ecdsa`'s doc comment) — inventing one would be
-/// meaningless, not just redundant.
+/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom` for
+/// every ECDSA ID (both NIST and brainpool curves) that appears as the
+/// `signatureAlgorithm` argument across the instance files `ECDSA_LIMBS`,
+/// `ECDSA_BRAINPOOL_LIMBS`, `DSC_ECDSA_LIMBS`, and `DSC_ECDSA_BRAINPOOL_LIMBS`
+/// cover. This table is about the algorithm id's hash width alone — it does
+/// not distinguish curve family, so the drift guard below uses it for both
+/// `Scheme::Ecdsa` and `Scheme::EcdsaBrainpool` rows. Kept separate from
+/// `SIGNATURE_ALGORITHM_TABLE` rather than merged into it: that table's shape
+/// is `(id, hash_bits, exponent)`, and ECDSA has no exponent to put there (see
+/// `Scheme::Ecdsa`'s doc comment) — inventing one would be meaningless, not
+/// just redundant.
 ///
 /// Used only by the `#[cfg(test)]` drift guard below, hence `cfg_attr` rather
 /// than a bare `#[allow(dead_code)]`.
@@ -350,6 +417,19 @@ const ECDSA_ALGORITHM_TABLE: &[(u32, u32)] = &[
     // Transcribed from signatureAlgorithm.circom's "ID to Signature Algorithm"
     // comment table and getHashLength, same standard as every row above.
     (40, 256), // ecdsa_sha256_secp521r1_256
+    // New to this crate for the brainpool-curve circuits (Plan 4, Task 3;
+    // register/register_id and DSC). Transcribed from signatureAlgorithm
+    // .circom's "ID to Signature Algorithm" comment table AND cross-checked
+    // against its getHashLength function body -- both read, not guessed from
+    // one source alone, per this task's brief.
+    (21, 256), // ecdsa_sha256_brainpoolP256r1_256
+    (22, 384), // ecdsa_sha384_brainpoolP384r1_384
+    (27, 160), // ecdsa_sha1_brainpoolP224r1_224
+    (29, 512), // ecdsa_sha512_brainpoolP512r1_512
+    (30, 224), // ecdsa_sha224_brainpoolP224r1_224
+    (36, 160), // ecdsa_sha1_brainpoolP256r1_256
+    (37, 256), // ecdsa_sha256_brainpoolP384r1_384
+    (38, 384), // ecdsa_sha384_brainpoolP512r1_512
 ];
 
 /// Looks up `getHashLength`'s result for an ECDSA `signatureAlgorithm` ID from the
@@ -464,30 +544,51 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
         });
     }
 
-    // ECDSA (NIST curves): curve comes from the circuit name's own trailing
-    // component; (n, k) is transcribed in ECDSA_LIMBS (this file's module
-    // doc explains why there is no exponent to carry). Brainpool-curve names
-    // fall through this `find` unmatched and hit the `?`, returning `None` —
-    // the safe default for the out-of-scope case.
+    // ECDSA: curve comes from the circuit name's own trailing component;
+    // (n, k) is transcribed in ECDSA_LIMBS/ECDSA_BRAINPOOL_LIMBS (this file's
+    // module doc explains why there is no exponent to carry). NIST curves are
+    // tried first, then brainpool -- the two tables are disjoint by name (a
+    // name can only ever match one), so the order between them is not
+    // load-bearing, but NIST is checked first because it is the larger,
+    // longer-established table. A name in neither table falls through to the
+    // final `None` -- the safe default for a genuinely unsupported circuit.
     if parts[3] == "ecdsa" {
         if parts.len() != 5 {
             return None;
         }
-        let (curve, n, k) = ECDSA_LIMBS
+        if let Some((curve, n, k)) = ECDSA_LIMBS
             .iter()
             .find(|(entry_name, _, _, _)| *entry_name == name)
-            .map(|(_, curve, n, k)| (*curve, *n, *k))?;
-
-        return Some(CircuitParams {
-            dg_hash,
-            econtent_hash,
-            sig_hash,
-            scheme: Scheme::Ecdsa {
-                curve: curve.to_string(),
-            },
-            n,
-            k,
-        });
+            .map(|(_, curve, n, k)| (*curve, *n, *k))
+        {
+            return Some(CircuitParams {
+                dg_hash,
+                econtent_hash,
+                sig_hash,
+                scheme: Scheme::Ecdsa {
+                    curve: curve.to_string(),
+                },
+                n,
+                k,
+            });
+        }
+        if let Some((curve, n, k)) = ECDSA_BRAINPOOL_LIMBS
+            .iter()
+            .find(|(entry_name, _, _, _)| *entry_name == name)
+            .map(|(_, curve, n, k)| (*curve, *n, *k))
+        {
+            return Some(CircuitParams {
+                dg_hash,
+                econtent_hash,
+                sig_hash,
+                scheme: Scheme::EcdsaBrainpool {
+                    curve: curve.to_string(),
+                },
+                n,
+                k,
+            });
+        }
+        return None;
     }
 
     // Only RSA PKCS#1 v1.5 is left; RSASSA-PSS and ECDSA (NIST curves) are
@@ -567,21 +668,39 @@ fn lookup_dsc(name: &str, rest: &str) -> Option<CircuitParams> {
         if parts.len() != 3 {
             return None;
         }
-        let (curve, n, k) = DSC_ECDSA_LIMBS
+        if let Some((curve, n, k)) = DSC_ECDSA_LIMBS
             .iter()
             .find(|(entry_name, _, _, _)| *entry_name == name)
-            .map(|(_, curve, n, k)| (*curve, *n, *k))?;
-
-        return Some(CircuitParams {
-            dg_hash,
-            econtent_hash,
-            sig_hash,
-            scheme: Scheme::Ecdsa {
-                curve: curve.to_string(),
-            },
-            n,
-            k,
-        });
+            .map(|(_, curve, n, k)| (*curve, *n, *k))
+        {
+            return Some(CircuitParams {
+                dg_hash,
+                econtent_hash,
+                sig_hash,
+                scheme: Scheme::Ecdsa {
+                    curve: curve.to_string(),
+                },
+                n,
+                k,
+            });
+        }
+        if let Some((curve, n, k)) = DSC_ECDSA_BRAINPOOL_LIMBS
+            .iter()
+            .find(|(entry_name, _, _, _)| *entry_name == name)
+            .map(|(_, curve, n, k)| (*curve, *n, *k))
+        {
+            return Some(CircuitParams {
+                dg_hash,
+                econtent_hash,
+                sig_hash,
+                scheme: Scheme::EcdsaBrainpool {
+                    curve: curve.to_string(),
+                },
+                n,
+                k,
+            });
+        }
+        return None;
     }
 
     // Only RSA PKCS#1 v1.5 is left; RSASSA-PSS and ECDSA (NIST curves) are
@@ -874,12 +993,101 @@ mod tests {
     }
 
     #[test]
-    fn brainpool_ecdsa_circuits_are_still_out_of_scope() {
-        // Brainpool instance files exist alongside the NIST-curve ones this plan
-        // covers, but are deliberately not in ECDSA_LIMBS. Absent row -> None ->
-        // Skipped, the safe default per this file's module doc.
-        assert!(lookup("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1").is_none());
-        assert!(lookup("register_id_sha256_sha256_sha256_ecdsa_brainpoolP256r1").is_none());
+    fn brainpool_ecdsa_rows_match_the_inventory_table() {
+        // (name, curve, n, k, sig_hash) -- see task-3-brief.md's Circuit inventory.
+        let expect = [
+            ("register_sha1_sha1_sha1_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7, 160), // alg 27
+            ("register_id_sha1_sha1_sha1_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7, 160), // alg 27
+            ("register_sha224_sha224_sha224_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7, 224), // alg 30
+            ("register_id_sha224_sha224_sha224_ecdsa_brainpoolP224r1", "brainpoolP224r1", 32, 7, 224), // alg 30
+            ("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4, 256), // alg 21
+            ("register_id_sha256_sha256_sha256_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4, 256), // alg 21
+            ("register_sha256_sha256_sha256_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6, 256), // alg 37
+            ("register_id_sha256_sha256_sha256_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6, 256), // alg 37
+            ("register_sha384_sha384_sha384_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6, 384), // alg 22
+            ("register_id_sha384_sha384_sha384_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6, 384), // alg 22
+            ("register_sha384_sha384_sha384_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8, 384), // alg 38
+            ("register_id_sha384_sha384_sha384_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8, 384), // alg 38
+            ("register_sha512_sha512_sha512_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8, 512), // alg 29
+            ("register_id_sha512_sha512_sha512_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8, 512), // alg 29
+        ];
+        assert_eq!(expect.len(), 14);
+        for (name, curve, n, k, sig_hash) in expect {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            assert_eq!(p.sig_hash, sig_hash, "sig_hash for {name}");
+            assert_eq!((p.n, p.k), (n, k), "(n, k) for {name}");
+            match &p.scheme {
+                Scheme::EcdsaBrainpool { curve: got_curve } => {
+                    assert_eq!(got_curve, curve, "curve for {name}");
+                }
+                other => panic!("{name} is not EcdsaBrainpool: {other:?}"),
+            }
+            // ecdsaVerifier.circom's truncate-vs-left-pad split (see
+            // table_matches_the_monorepo_instance_files's identical guard):
+            // the native path only implements left-pad, so every row here
+            // must satisfy HASH_LEN_BITS <= n*k. Alg 30 (SHA-224 under
+            // n*k=32*7=224) is the tightest in the codebase -- exactly equal.
+            assert!(
+                sig_hash <= n * k,
+                "{name}: HASH_LEN_BITS ({sig_hash}) > n*k ({n}*{k}={}) -- would be truncated, \
+                 not left-padded, by ecdsaVerifier.circom",
+                n * k
+            );
+        }
+    }
+
+    #[test]
+    fn every_brainpool_row_s_curve_string_is_recognized_by_the_primitive() {
+        // Same drift guard as every_ecdsa_row_s_curve_string_is_recognized_by_
+        // the_primitive above, but for BrainpoolCurve::from_name: a typo in a
+        // future row would not fail to compile, it would just make lookup
+        // build a Scheme::EcdsaBrainpool{curve} the sidecar client can't
+        // parse, silently degrading that circuit to Skipped for every
+        // document.
+        use crate::verifier::primitives::brainpool::BrainpoolCurve;
+
+        assert_eq!(
+            ECDSA_BRAINPOOL_LIMBS.len(),
+            14,
+            "update this test if ECDSA_BRAINPOOL_LIMBS gains/loses rows"
+        );
+        for (name, curve, _n, _k) in ECDSA_BRAINPOOL_LIMBS {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            match &p.scheme {
+                Scheme::EcdsaBrainpool { curve: got_curve } => {
+                    assert_eq!(
+                        got_curve, curve,
+                        "lookup({name})'s curve string diverged from ECDSA_BRAINPOOL_LIMBS"
+                    );
+                }
+                other => panic!("{name} is not EcdsaBrainpool: {other:?}"),
+            }
+            assert!(
+                BrainpoolCurve::from_name(curve).is_some(),
+                "ECDSA_BRAINPOOL_LIMBS row {name} carries curve string {curve:?}, which \
+                 BrainpoolCurve::from_name does not recognize -- this circuit would silently \
+                 degrade to Skipped for every document"
+            );
+        }
+    }
+
+    #[test]
+    fn brainpool_and_nist_ecdsa_are_distinct_schemes_for_the_same_curve_name_shape() {
+        // The governing design constraint of this task: a brainpool circuit
+        // must never come back as Scheme::Ecdsa (which would route it into
+        // the NIST-only Rust primitive), and a NIST circuit must never come
+        // back as Scheme::EcdsaBrainpool (which would route it into the
+        // sidecar). Checked against one representative pair rather than every
+        // row -- the exhaustive per-row checks above already pin the scheme
+        // variant for all 28 ECDSA rows (14 NIST + 14 brainpool); this test
+        // pins the *distinction itself*.
+        let nist = lookup("register_sha256_sha256_sha256_ecdsa_secp256r1").unwrap();
+        assert!(matches!(nist.scheme, Scheme::Ecdsa { .. }));
+        assert!(!matches!(nist.scheme, Scheme::EcdsaBrainpool { .. }));
+
+        let brainpool = lookup("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1").unwrap();
+        assert!(matches!(brainpool.scheme, Scheme::EcdsaBrainpool { .. }));
+        assert!(!matches!(brainpool.scheme, Scheme::Ecdsa { .. }));
     }
 
     #[test]
@@ -960,20 +1168,43 @@ mod tests {
     }
 
     #[test]
-    fn brainpool_dsc_circuits_are_out_of_scope() {
-        // The 6 brainpool DSC circuits get no rows -- lookup returns None and
-        // callers skip. Skipped is always safe (see this file's module doc on
-        // the false-reject/false-accept asymmetry); a wrong row would not be.
-        for name in [
-            "dsc_sha1_ecdsa_brainpoolP256r1",
-            "dsc_sha256_ecdsa_brainpoolP256r1",
-            "dsc_sha256_ecdsa_brainpoolP384r1",
-            "dsc_sha384_ecdsa_brainpoolP384r1",
-            "dsc_sha384_ecdsa_brainpoolP512r1",
-            "dsc_sha512_ecdsa_brainpoolP512r1",
-        ] {
-            assert!(lookup(name).is_none(), "{name} should be out of scope");
+    fn brainpool_dsc_rows_match_the_inventory_table() {
+        // (name, curve, n, k, sig_hash) -- see task-3-brief.md's Circuit inventory.
+        let expect = [
+            ("dsc_sha1_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4, 160),   // alg 36
+            ("dsc_sha256_ecdsa_brainpoolP256r1", "brainpoolP256r1", 64, 4, 256), // alg 21
+            ("dsc_sha256_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6, 256), // alg 37
+            ("dsc_sha384_ecdsa_brainpoolP384r1", "brainpoolP384r1", 64, 6, 384), // alg 22
+            ("dsc_sha384_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8, 384), // alg 38
+            ("dsc_sha512_ecdsa_brainpoolP512r1", "brainpoolP512r1", 64, 8, 512), // alg 29
+        ];
+        assert_eq!(expect.len(), 6);
+        for (name, curve, n, k, sig_hash) in expect {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            assert_eq!(p.sig_hash, sig_hash, "sig_hash for {name}");
+            assert_eq!((p.n, p.k), (n, k), "(n, k) for {name}");
+            match &p.scheme {
+                Scheme::EcdsaBrainpool { curve: got_curve } => assert_eq!(got_curve, curve, "curve for {name}"),
+                other => panic!("{name} is not EcdsaBrainpool: {other:?}"),
+            }
+            assert!(
+                sig_hash <= n * k,
+                "{name}: HASH_LEN_BITS ({sig_hash}) > n*k ({n}*{k}={}) -- would be truncated, \
+                 not left-padded, by ecdsaVerifier.circom",
+                n * k
+            );
         }
+    }
+
+    #[test]
+    fn dsc_rows_have_no_meaning_for_dg_or_econtent_hash_brainpool() {
+        // Same placeholder convention as dsc_rows_have_no_meaning_for_dg_or_
+        // econtent_hash above, pinned separately for a brainpool row since it
+        // goes through a different lookup_dsc branch (the ecdsa one, now with
+        // its brainpool fallback) than that test's plain RSA row.
+        let p = lookup("dsc_sha256_ecdsa_brainpoolP256r1").unwrap();
+        assert_eq!(p.dg_hash, p.sig_hash);
+        assert_eq!(p.econtent_hash, p.sig_hash);
     }
 
     #[test]
@@ -1071,12 +1302,15 @@ mod tests {
                         ours.econtent_hash, econtent_hash_arg
                     );
 
-                    // ECDSA has its own branch, checked first: it does not carry an
-                    // exponent, so it cannot go through
-                    // signature_algorithm_hash_and_exponent below (that table only
-                    // has RSA/PSS ids and would panic on an ECDSA id that's
-                    // legitimately absent from it).
-                    if let Scheme::Ecdsa { .. } = ours.scheme {
+                    // ECDSA (both NIST and brainpool curves) has its own branch,
+                    // checked first: it does not carry an exponent, so it cannot go
+                    // through signature_algorithm_hash_and_exponent below (that
+                    // table only has RSA/PSS ids and would panic on an ECDSA id
+                    // that's legitimately absent from it). ECDSA_ALGORITHM_TABLE
+                    // (and hence this branch) does not distinguish curve family --
+                    // see its own doc comment -- so Ecdsa and EcdsaBrainpool share
+                    // this arm.
+                    if let Scheme::Ecdsa { .. } | Scheme::EcdsaBrainpool { .. } = ours.scheme {
                         let expected_sig_hash =
                             ecdsa_algorithm_hash_bits(sig_algo_id).unwrap_or_else(|| {
                                 panic!(
@@ -1206,12 +1440,13 @@ mod tests {
         // is 1st here, not 3rd), and no dg_hash/econtent_hash pair at all.
         // parse_dsc_instance_alg_n_k is a dedicated parser for exactly that
         // reason (see its doc comment). Unlike the register loop above, every
-        // DSC instance file increments `checked` -- including the 6
-        // brainpool ones -- because we assert *why* each None is expected
-        // (brainpool) rather than silently `continue`-ing past it: that
-        // gives this guard directory-completeness coverage (a stray 25th
-        // DSC circuit that's neither supported nor brainpool fails loudly)
-        // that the register loop's baseline count predates.
+        // DSC instance file increments `checked` -- every DSC circuit
+        // (including all 6 brainpool ones, as of Task 3) is now supported, so
+        // the `None` arm below is not expected to ever fire; it stays as a
+        // directory-completeness guard (a stray 25th DSC circuit that's
+        // neither supported nor brainpool fails loudly here instead of
+        // silently `continue`-ing past it) rather than being deleted now that
+        // its one previously-expected case (brainpool) no longer applies.
         let dsc_dir = root.join("dsc").join("instances");
         if dsc_dir.exists() {
             for entry in std::fs::read_dir(&dsc_dir).unwrap() {
@@ -1226,11 +1461,12 @@ mod tests {
 
                 match lookup(stem) {
                     None => {
-                        assert!(
-                            stem.contains("brainpool"),
-                            "{stem}: lookup returned None but this is not a brainpool \
-                             circuit -- add a row to params.rs (or explain why it's still \
-                             out of scope) instead of leaving it silently unsupported"
+                        panic!(
+                            "{stem}: lookup returned None -- every DSC circuit (RSA, \
+                             RSASSA-PSS, NIST-curve ECDSA, and brainpool-curve ECDSA) is \
+                             expected to have a row as of Task 3; add one to params.rs (or \
+                             explain why it's still out of scope) instead of leaving it \
+                             silently unsupported"
                         );
                     }
                     Some(ours) => {
@@ -1243,7 +1479,7 @@ mod tests {
                             (n, k)
                         );
 
-                        if let Scheme::Ecdsa { .. } = ours.scheme {
+                        if let Scheme::Ecdsa { .. } | Scheme::EcdsaBrainpool { .. } = ours.scheme {
                             let expected_sig_hash =
                                 ecdsa_algorithm_hash_bits(alg).unwrap_or_else(|| {
                                     panic!(
@@ -1359,11 +1595,26 @@ mod tests {
 
         // Exact count, not just > 0: a future parser change that silently matched
         // only one file should fail loudly here, not slip through a bare non-zero check.
+        //
+        // 82, not 68 (Task 3): the register/register_id loop above only increments
+        // `checked` when `lookup(stem)` is `Some` -- unlike the DSC loop below,
+        // which (deliberately) counts every file including previously-unsupported
+        // ones. Before this task, the 14 brainpool register/register_id instance
+        // files hit that loop's `let Some(ours) = lookup(stem) else { continue };`
+        // as `None` and were skipped *before* reaching `checked += 1` -- they were
+        // never counted, not merely "supported but excluded from validation". Now
+        // that ECDSA_BRAINPOOL_LIMBS gives `lookup` a `Some` for all 14 of them,
+        // they flow through the same validation as every other supported circuit
+        // and are counted like any other: 44 (RSA/PSS/NIST-ECDSA/aadhaar, as
+        // before) + 14 (newly-supported brainpool) = 58, plus the DSC loop's 24
+        // (unchanged: it always counted all 24 DSC files, 18 previously-supported
+        // + 6 previously-asserted-brainpool-and-None, now all 24 supported) = 82.
         assert_eq!(
-            checked, 68,
-            "expected to check 68 circuits (44 REGISTER/REGISTER_ID + register_aadhaar, as \
-             before, plus all 24 DSC instances -- 18 supported + 6 verified-brainpool) but \
-             checked {checked} — table or instance coverage drifted"
+            checked, 82,
+            "expected to check 82 circuits (44 REGISTER/REGISTER_ID + register_aadhaar, as \
+             before Task 3, plus 14 newly-supported brainpool REGISTER/REGISTER_ID circuits, \
+             plus all 24 DSC instances) but checked {checked} — table or instance coverage \
+             drifted"
         );
     }
 }

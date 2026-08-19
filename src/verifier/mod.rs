@@ -37,6 +37,15 @@ pub enum Verdict {
 ///
 /// A panic here must not fail the request: the circuit remains the authority,
 /// so the worst outcome of a bug in this module is a lost optimisation.
+///
+/// No longer `verify_inputs`'s own panic guard as of Task 3 (Plan 4) --
+/// `dispatch` now runs inside `tokio::task::spawn_blocking`, whose `JoinError`
+/// already reports a panic, so `verify_inputs` maps that directly instead of
+/// wrapping this. Kept (not deleted) because its own test below,
+/// `a_panicking_verifier_surfaces_as_skipped`, is this crate's pin on the
+/// panic-containment behaviour itself; `cfg_attr` rather than a bare
+/// `#[allow(dead_code)]` since a non-test build genuinely has no caller left.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn run_guarded<F>(f: F) -> Verdict
 where
     F: FnOnce() -> Verdict,
@@ -66,7 +75,29 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
         return Verdict::Skipped(format!("no circuit parameters known for circuit {circuit_name}"));
     };
 
-    run_guarded(|| dispatch(circuit_name, &inputs, &p)).await
+    // dispatch is synchronous, but its Scheme::EcdsaBrainpool arm (passport.rs
+    // / dsc.rs) reaches the async Node/OpenSSL sidecar client via
+    // `tokio::runtime::Handle::current().block_on(...)`. `block_on` panics if
+    // the calling thread is a normal async worker thread, so `dispatch` is
+    // run inside `tokio::task::spawn_blocking` here -- a blocking-pool
+    // thread, not a worker thread, so `Handle::current()` still resolves and
+    // `block_on` does not panic there. See `brainpool_dispatch_through_
+    // verify_inputs_does_not_deadlock` below for the proof this does not
+    // hang.
+    //
+    // This also replaces `run_guarded`'s `catch_unwind` for this call site:
+    // `spawn_blocking`'s `JoinError` already reports a panic, so a panic
+    // inside `dispatch` still surfaces as `Skipped`, not a failed request --
+    // the circuit remains the authority, so the worst outcome of a bug in
+    // this module is a lost optimisation. `run_guarded` itself is unchanged
+    // and still used by its own test below (`a_panicking_verifier_surfaces_
+    // as_skipped`), which is this crate's pin on that panic-containment
+    // behaviour.
+    let circuit_name = circuit_name.to_string();
+    match tokio::task::spawn_blocking(move || dispatch(&circuit_name, &inputs, &p)).await {
+        Ok(verdict) => verdict,
+        Err(_join_error) => Verdict::Skipped("verifier panicked".to_string()),
+    }
 }
 
 /// Routes already-parsed inputs to the family verifier.
@@ -301,5 +332,60 @@ mod tests {
 
         let v = dispatch("register_sha256_sha256_sha256_rsa_65537_4096", &inputs, &p);
         assert_eq!(v, Verdict::Valid, "register_ names must still reach passport::verify, got {v:?}");
+    }
+
+    /// Proves the sync/async boundary from this task does not deadlock:
+    /// `dispatch` (sync) reaches `Scheme::EcdsaBrainpool`'s arm in
+    /// passport.rs, which calls `tokio::runtime::Handle::current().block_on
+    /// (verify_brainpool(...))` -- legitimate only because `verify_inputs`
+    /// (not `dispatch` directly) runs `dispatch` inside `tokio::task::
+    /// spawn_blocking`, a blocking-pool thread rather than a normal async
+    /// worker thread. If that boundary were ever violated (e.g. `dispatch`
+    /// called directly from an async fn's own body instead of through
+    /// `spawn_blocking`), `block_on` would panic there; a subtler violation
+    /// could instead hang. This goes through the real `verify_inputs` entry
+    /// point (not `verify_brainpool` directly, and not a stub) against the
+    /// production `brainpool::verify_brainpool` path, and wraps it in an
+    /// explicit timeout so "does not hang" is asserted, not just hoped for --
+    /// a real deadlock here would be invisible to every test in Task 2's
+    /// scope, since none of them go through `dispatch`.
+    ///
+    /// The brainpool sidecar itself is not on this machine's `DEFAULT_
+    /// SIDECAR_SCRIPT` path outside the production container (see
+    /// `primitives::brainpool`'s own `verify_brainpool_routes_through_the_
+    /// documented_default_path` test), so the realistic outcome here is
+    /// `Skipped` -- that is fine: the property under test is "returns
+    /// promptly", not "the sidecar accepts this arbitrary, non-cryptographic
+    /// fixture".
+    #[tokio::test]
+    async fn brainpool_dispatch_through_verify_inputs_does_not_deadlock() {
+        let p = params::lookup("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1")
+            .expect("known circuit");
+        let inputs = testkit::brainpool_passport_inputs(p.n, p.k as usize);
+
+        let uuid = uuid::Uuid::new_v4();
+        let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(std::path::Path::new(&dir).join("input.json"), inputs.to_string())
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            verify_inputs(uuid, "register_sha256_sha256_sha256_ecdsa_brainpoolP256r1"),
+        )
+        .await;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+
+        let v = result.expect(
+            "dispatch's EcdsaBrainpool arm must return, not hang -- a deadlock here would mean \
+             block_on ran on a thread spawn_blocking did not actually give it",
+        );
+        match v {
+            Verdict::Skipped(_) | Verdict::Invalid(_) => {}
+            Verdict::Valid => {
+                panic!("did not expect an arbitrary, non-cryptographic fixture to verify as Valid")
+            }
+        }
     }
 }

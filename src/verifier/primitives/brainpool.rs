@@ -20,9 +20,13 @@
 //! sidecar breaks -- a mass false-reject, this project's defined production
 //! outage.
 //!
-//! Not yet wired into `passport.rs`/`dsc.rs`'s dispatch -- that is Task 3.
-//! Until then several items here are unused outside this module's own tests,
-//! hence the scattered `#[cfg_attr(not(test), allow(dead_code))]`.
+//! Wired into `passport.rs`/`dsc.rs`'s dispatch as of Task 3, via
+//! `Scheme::EcdsaBrainpool`. Both call sites are synchronous, so they reach
+//! `verify_brainpool` through `tokio::runtime::Handle::current().block_on(...)`
+//! -- safe only because `mod::verify_inputs` now runs `dispatch` inside
+//! `tokio::task::spawn_blocking`, a blocking-pool thread rather than an async
+//! worker thread. See `mod.rs`'s `verify_inputs` for the full reasoning and
+//! its own doc comment / tests for the no-deadlock proof.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -36,9 +40,8 @@ use tokio::time::timeout;
 use super::ecdsa::EcdsaError;
 
 /// The four brainpool curves used by the 20 circuits no Rust crate covers.
-/// Not yet constructed outside this module's own tests -- Task 3 wires
-/// `from_name`'s output into dispatch.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Constructed by `passport.rs`/`dsc.rs`'s dispatch (via `from_name`, from
+/// `Scheme::EcdsaBrainpool`'s curve name) as of Task 3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrainpoolCurve {
     P224r1,
@@ -54,7 +57,6 @@ impl BrainpoolCurve {
     /// exactly the sidecar's own `curve` key (see `verify.mjs`'s `CURVES`
     /// map): both sides read the identical circuit-name substring, so no
     /// translation table is needed between them.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
             "brainpoolP224r1" => BrainpoolCurve::P224r1,
@@ -94,7 +96,6 @@ impl BrainpoolCurve {
 /// The in-image sidecar path, matching Task 1's `Dockerfile.tee` placement.
 /// `verify_brainpool` uses this; tests point `verify_brainpool_with` at stub
 /// scripts instead.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const DEFAULT_SIDECAR_SCRIPT: &str = "/brainpool-verifier/verify.mjs";
 
 /// Generous relative to a Groth16 proving step measured in minutes -- this
@@ -328,7 +329,6 @@ async fn verify_brainpool_with(
 /// affirmatively rejected the signature; the caller maps this to
 /// `Verdict::Invalid`. See this module's doc comment for why that split is
 /// the entire point of this client.
-#[cfg_attr(not(test), allow(dead_code))]
 pub async fn verify_brainpool(
     curve: BrainpoolCurve,
     x: &BigUint,

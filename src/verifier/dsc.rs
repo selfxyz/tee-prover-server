@@ -56,6 +56,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::verifier::chunks::{bigint_from_limbs, bytes_from_decimal_strings, field_as_strings, scalar_usize};
 use crate::verifier::params::{CircuitParams, Scheme};
+use crate::verifier::primitives::brainpool::{self, BrainpoolCurve};
 use crate::verifier::primitives::ecdsa::{self, Curve};
 use crate::verifier::primitives::rsa::verify_pkcs1v15;
 use crate::verifier::primitives::rsapss;
@@ -131,9 +132,13 @@ fn to_fixed_bytes(v: &BigUint, size: usize) -> Option<Vec<u8>> {
 }
 
 pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
-    if !matches!(p.scheme, Scheme::Rsa { .. } | Scheme::RsaPss { .. } | Scheme::Ecdsa { .. }) {
+    if !matches!(
+        p.scheme,
+        Scheme::Rsa { .. } | Scheme::RsaPss { .. } | Scheme::Ecdsa { .. } | Scheme::EcdsaBrainpool { .. }
+    ) {
         return Verdict::Skipped(format!(
-            "dsc::verify only handles the RSA PKCS#1v15, RSASSA-PSS, and ECDSA schemes, got {:?}",
+            "dsc::verify only handles the RSA PKCS#1v15, RSASSA-PSS, ECDSA, and brainpool-ECDSA \
+             schemes, got {:?}",
             p.scheme
         ));
     }
@@ -213,7 +218,11 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
                 );
             }
         }
-        Scheme::Ecdsa { .. } => {
+        // Same x||y limb-layout check for both curve families -- this step is
+        // about limb geometry (getKLengthFactor(alg) == 2), not curve math,
+        // so Ecdsa and EcdsaBrainpool share it. The curve-specific signature
+        // math happens below, in the link-2 match.
+        Scheme::Ecdsa { .. } | Scheme::EcdsaBrainpool { .. } => {
             if csca_pubkey_actual_size % 2 != 0 {
                 return Verdict::Skipped(
                     "csca_pubKey_actual_size is odd; an ECDSA x||y split must be even".to_string(),
@@ -257,7 +266,8 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
         // Guarded out at the top of this function -- unreachable here.
         _ => {
             return Verdict::Skipped(
-                "dsc::verify only handles the RSA PKCS#1v15, RSASSA-PSS, and ECDSA schemes".to_string(),
+                "dsc::verify only handles the RSA PKCS#1v15, RSASSA-PSS, ECDSA, and brainpool-ECDSA schemes"
+                    .to_string(),
             )
         }
     }
@@ -341,10 +351,55 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
                 }
             }
         }
+        Scheme::EcdsaBrainpool { curve } => {
+            let Some(curve) = BrainpoolCurve::from_name(curve) else {
+                return Verdict::Skipped(format!("unknown brainpool curve name: {curve}"));
+            };
+            let k = p.k as usize;
+            let Some(x) = bigint_from_limbs(&pubkey_limbs[0..k], p.n) else {
+                return Verdict::Skipped("csca_pubKey's x half does not reassemble into a valid integer".to_string());
+            };
+            let Some(y) = bigint_from_limbs(&pubkey_limbs[k..2 * k], p.n) else {
+                return Verdict::Skipped("csca_pubKey's y half does not reassemble into a valid integer".to_string());
+            };
+            if sig_limbs.len() != 2 * k {
+                return Verdict::Skipped(format!(
+                    "signature has {} limbs, expected 2*k={}",
+                    sig_limbs.len(),
+                    2 * k
+                ));
+            }
+            let Some(r) = bigint_from_limbs(&sig_limbs[0..k], p.n) else {
+                return Verdict::Skipped("signature's r half does not reassemble into a valid integer".to_string());
+            };
+            let Some(s) = bigint_from_limbs(&sig_limbs[k..2 * k], p.n) else {
+                return Verdict::Skipped("signature's s half does not reassemble into a valid integer".to_string());
+            };
+
+            // Same sync/async boundary as passport.rs's identical arm: dsc::
+            // verify must stay sync too, and block_on is sound here for the
+            // same reason -- this is only reached, in production, via
+            // mod::dispatch running inside mod::verify_inputs's
+            // spawn_blocking, never directly on an async worker thread. See
+            // passport.rs's EcdsaBrainpool arm for the full reasoning.
+            let handle = tokio::runtime::Handle::current();
+            match handle.block_on(brainpool::verify_brainpool(curve, &x, &y, &r, &s, raw_dsc_msg, p.sig_hash)) {
+                Ok(()) => {}
+                Err(ecdsa::EcdsaError::Structural(reason)) => {
+                    return Verdict::Skipped(format!(
+                        "brainpool ECDSA public key or signature cannot be checked natively: {reason}"
+                    ));
+                }
+                Err(ecdsa::EcdsaError::Failed(reason)) => {
+                    return Verdict::Invalid(reason);
+                }
+            }
+        }
         // Guarded out at the top of this function -- unreachable here.
         _ => {
             return Verdict::Skipped(
-                "dsc::verify only handles the RSA PKCS#1v15, RSASSA-PSS, and ECDSA schemes".to_string(),
+                "dsc::verify only handles the RSA PKCS#1v15, RSASSA-PSS, ECDSA, and brainpool-ECDSA schemes"
+                    .to_string(),
             )
         }
     }

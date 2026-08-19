@@ -178,6 +178,56 @@ pub fn ecdsa_passport_inputs(n: u32, k: usize) -> (Value, BigUint, BigUint, BigU
     (inputs, x, y, r, s)
 }
 
+/// Builds a self-consistent-up-to-link-2 passport input whose scheme is a
+/// brainpool curve (`Scheme::EcdsaBrainpool`): the same dg1 -> eContent ->
+/// signed_attr chain as `passport_inputs`/`ecdsa_passport_inputs` above (all
+/// SHA-256, matching `register_sha256_sha256_sha256_ecdsa_brainpoolP256r1`),
+/// but `x`/`y`/`r`/`s` are arbitrary small integers, not a real signature --
+/// unlike `ecdsa_passport_inputs`, which signs for real with `p256`, no
+/// brainpool-curve signing crate is available to this project (see
+/// `primitives::brainpool`'s module doc on why the whole sidecar exists).
+/// That's fine for this helper's one caller: a test proving `dispatch`'s
+/// sync/async boundary (spawn_blocking + block_on into the sidecar client)
+/// returns rather than hanging does not need the sidecar to actually accept
+/// the signature, only for the brainpool arm to be reached and to return.
+pub fn brainpool_passport_inputs(n: u32, k: usize) -> Value {
+    let dg1: Vec<u8> = (0u8..93).collect();
+    let dg1_hash = Sha256::digest(&dg1);
+
+    let dg1_hash_offset = 32usize;
+    let mut econtent = vec![0u8; 128];
+    econtent[dg1_hash_offset..dg1_hash_offset + 32].copy_from_slice(&dg1_hash);
+    let econtent_padded = sha_pad(&econtent);
+    let econtent_hash = Sha256::digest(&econtent);
+
+    let sa_offset = 16usize;
+    let mut signed_attr = vec![0u8; 96];
+    signed_attr[sa_offset..sa_offset + 32].copy_from_slice(&econtent_hash);
+    let signed_attr_padded = sha_pad(&signed_attr);
+
+    let x = BigUint::from(2u32);
+    let y = BigUint::from(3u32);
+    let r = BigUint::from(4u32);
+    let s = BigUint::from(5u32);
+
+    let mut pubkey_limbs = to_limbs(&x, n, k);
+    pubkey_limbs.extend(to_limbs(&y, n, k));
+    let mut sig_limbs = to_limbs(&r, n, k);
+    sig_limbs.extend(to_limbs(&s, n, k));
+
+    json!({
+        "dg1": bytes_to_decimal(&dg1),
+        "dg1_hash_offset": [dg1_hash_offset.to_string()],
+        "eContent": bytes_to_decimal(&econtent_padded),
+        "eContent_padded_length": [econtent_padded.len().to_string()],
+        "signed_attr": bytes_to_decimal(&signed_attr_padded),
+        "signed_attr_padded_length": [signed_attr_padded.len().to_string()],
+        "signed_attr_econtent_hash_offset": [sa_offset.to_string()],
+        "pubKey_dsc": pubkey_limbs,
+        "signature_passport": sig_limbs,
+    })
+}
+
 /// Self-consistent Aadhaar input: one sha256 over padded QR data, one RSA-65537 signature.
 pub fn aadhaar_inputs(key: &TestRsaKey, n: u32, k: usize) -> Value {
     let qr: Vec<u8> = (0u8..200).cycle().take(512).collect();

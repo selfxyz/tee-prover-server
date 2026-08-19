@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::verifier::chunks::{bigint_from_limbs, bytes_from_decimal_strings, field_as_strings, scalar_usize};
 use crate::verifier::params::{CircuitParams, Scheme};
+use crate::verifier::primitives::brainpool::{self, BrainpoolCurve};
 use crate::verifier::primitives::ecdsa::{self, Curve};
 use crate::verifier::primitives::rsa::verify_pkcs1v15;
 use crate::verifier::primitives::rsapss;
@@ -80,9 +81,13 @@ fn slice_at<'a>(buf: &'a [u8], offset: usize, len: usize) -> Option<&'a [u8]> {
 }
 
 pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
-    if !matches!(p.scheme, Scheme::Rsa { .. } | Scheme::RsaPss { .. } | Scheme::Ecdsa { .. }) {
+    if !matches!(
+        p.scheme,
+        Scheme::Rsa { .. } | Scheme::RsaPss { .. } | Scheme::Ecdsa { .. } | Scheme::EcdsaBrainpool { .. }
+    ) {
         return Verdict::Skipped(format!(
-            "passport::verify only handles the RSA PKCS#1v15, RSASSA-PSS, and ECDSA schemes, got {:?}",
+            "passport::verify only handles the RSA PKCS#1v15, RSASSA-PSS, ECDSA, and brainpool-ECDSA \
+             schemes, got {:?}",
             p.scheme
         ));
     }
@@ -275,10 +280,93 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
                 }
             }
         }
+        Scheme::EcdsaBrainpool { curve } => {
+            let Some(curve) = BrainpoolCurve::from_name(curve) else {
+                return Verdict::Skipped(format!("unknown brainpool curve name: {curve}"));
+            };
+            // Same 2k-limb x||y / r||s split as the NIST-curve Scheme::Ecdsa
+            // arm above -- getKLengthFactor(alg) == 2 for every ECDSA
+            // algorithm id, brainpool included.
+            let k = p.k as usize;
+            if pubkey_limbs.len() != 2 * k {
+                return Verdict::Skipped(format!(
+                    "pubKey_dsc has {} limbs, expected 2*k={}",
+                    pubkey_limbs.len(),
+                    2 * k
+                ));
+            }
+            if sig_limbs.len() != 2 * k {
+                return Verdict::Skipped(format!(
+                    "signature_passport has {} limbs, expected 2*k={}",
+                    sig_limbs.len(),
+                    2 * k
+                ));
+            }
+            let Some(x) = bigint_from_limbs(&pubkey_limbs[0..k], p.n) else {
+                return Verdict::Skipped("pubKey_dsc's x half does not reassemble into a valid integer".to_string());
+            };
+            let Some(y) = bigint_from_limbs(&pubkey_limbs[k..2 * k], p.n) else {
+                return Verdict::Skipped("pubKey_dsc's y half does not reassemble into a valid integer".to_string());
+            };
+            let Some(r) = bigint_from_limbs(&sig_limbs[0..k], p.n) else {
+                return Verdict::Skipped("signature_passport's r half does not reassemble into a valid integer".to_string());
+            };
+            let Some(s) = bigint_from_limbs(&sig_limbs[k..2 * k], p.n) else {
+                return Verdict::Skipped("signature_passport's s half does not reassemble into a valid integer".to_string());
+            };
+
+            // verify_brainpool is async (it shells out to a Node/OpenSSL
+            // sidecar -- see primitives::brainpool's module doc), but
+            // passport::verify must stay sync: 42 call sites across this
+            // crate (almost all tests) depend on that, so converting it to
+            // `async fn` for the sake of one scheme's one arm was rejected in
+            // favour of this. `block_on` is normally a bug inside an async
+            // context -- it panics if the current thread is a Tokio async
+            // worker thread -- but it is sound here specifically because
+            // `passport::verify` is only ever reached, in production, via
+            // `mod::dispatch`, and `mod::verify_inputs` now runs `dispatch`
+            // inside `tokio::task::spawn_blocking`. A spawn_blocking thread is
+            // a blocking-pool thread, not an async worker thread, so
+            // `Handle::current()` still resolves (the runtime is still
+            // running) and `block_on` does not panic. See mod.rs's
+            // `verify_inputs` doc comment and its
+            // `brainpool_dispatch_through_verify_inputs_does_not_deadlock`
+            // test, which exercises exactly this arm through the real
+            // `dispatch` entry point and asserts it returns rather than
+            // hanging.
+            let handle = tokio::runtime::Handle::current();
+            match handle.block_on(brainpool::verify_brainpool(
+                curve,
+                &x,
+                &y,
+                &r,
+                &s,
+                signed_attr_msg,
+                p.sig_hash,
+            )) {
+                Ok(()) => {}
+                // Structural: the sidecar could not be reached or did not
+                // give a clean answer -- same asymmetry as the NIST-curve
+                // arm's Structural case above, see EcdsaError's doc comment.
+                Err(ecdsa::EcdsaError::Structural(reason)) => {
+                    return Verdict::Skipped(format!(
+                        "brainpool ECDSA public key or signature cannot be checked natively: {reason}"
+                    ));
+                }
+                // Failed: the sidecar affirmatively rejected the signature --
+                // an outcome the circuit's own constraints would also
+                // produce.
+                Err(ecdsa::EcdsaError::Failed(reason)) => {
+                    return Verdict::Invalid(reason);
+                }
+            }
+        }
         // Guarded out at the top of this function -- unreachable here.
         _ => {
             return Verdict::Skipped(
-                "passport::verify only handles the RSA PKCS#1v15, RSASSA-PSS, and ECDSA schemes".to_string(),
+                "passport::verify only handles the RSA PKCS#1v15, RSASSA-PSS, ECDSA, and \
+                 brainpool-ECDSA schemes"
+                    .to_string(),
             )
         }
     }
