@@ -79,8 +79,9 @@ pub fn verify_pss(
             m_hash.len()
         ));
     }
-    // Checked rather than a bare `h_len + salt_len + 2`: `salt_len` is a
-    // caller-supplied parameter, and a pathological value must not be able
+    // Mirrors rsapss65537.circom:119's `assert(EM_LEN >= HASH_LEN + SALT_LEN
+    // + 2)`. Checked rather than a bare `h_len + salt_len + 2`: `salt_len` is
+    // a caller-supplied parameter, and a pathological value must not be able
     // to wrap this addition and slip a too-short EM past the guard below --
     // that would surface later as a panic on `db[..zero_len]` instead of a
     // clean `Err`.
@@ -105,7 +106,7 @@ pub fn verify_pss(
     let mut em = vec![0u8; em_len - raw.len()];
     em.extend_from_slice(&raw);
 
-    // rsapss65537.circom:119
+    // rsapss65537.circom:122
     let Some(&trailer) = em.last() else {
         return Err("EM is empty".into());
     };
