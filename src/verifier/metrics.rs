@@ -16,11 +16,21 @@
 //! cross-image metric.
 //!
 //! Deliberately three flat `AtomicU64` counters plus a `println!` summary,
-//! not the spec's fuller `(circuit_name, verdict)` breakdown: this repo has
-//! no metrics framework and adding one is explicitly out of scope (the
-//! spec's Metrics section), so this answers the one question that matters
-//! most cheaply -- "is the skip rate near 100%?" -- using the existing log
-//! stream.
+//! not the current spec's fuller `(circuit_name, verdict)` breakdown.
+//!
+//! **Updated 2026-08-19.** An earlier draft of this module doc justified
+//! that gap by citing an out-of-scope ruling from the *old* spec
+//! (`docs/superpowers/specs/2026-08-18-native-signature-precheck-design.md`).
+//! The current spec (`docs/superpowers/specs/2026-08-19-tee-signature-
+//! authority-design.md`, "Fail-closed, and how it ships") reverses that
+//! ruling: per-circuit metrics are not out of scope, they are a named
+//! prerequisite for the enforce-on-known -> enforce transition ("this is
+//! what the `(circuit_name, verdict)` metrics debt -- outstanding across all
+//! five previous plans -- is finally needed for. **It must be paid here**").
+//! It is scheduled, not declined: it is being sequenced deliberately as the
+//! next plan's first task, after this fix wave, rather than added here as
+//! scope creep on a bug-fix pass. These three flat counters remain the
+//! coarse, this-process-lifetime signal until that plan lands.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -84,24 +94,31 @@ pub fn record(v: &Verdict) {
     }
 }
 
-/// Records one brainpool-sidecar-unavailable event. Call this from
-/// `primitives::brainpool` at each point it cannot get a clean answer out of
-/// the sidecar process itself (spawn failure, timeout, non-zero exit,
-/// unparseable/empty output, or an explicit `{"error":...}` response) --
-/// i.e. every `Structural` `run_sidecar`/`parse_response` can produce.
-/// Deliberately separate from `record`: the caller still calls `record(&
-/// Verdict::Skipped(reason))` exactly as before (so `SKIPPED` counts every
-/// skip, sidecar-caused or not); this adds the narrower, overlapping count
-/// on top, in addition to (not instead of) that call.
+/// Records one sidecar-unavailable event. Call this from `sidecar.rs`
+/// (`run_sidecar`/`parse_response`, its only current call sites -- see
+/// their own module doc) at each point it cannot get a clean answer out of
+/// the JS `signature-verifier` sidecar process itself (spawn failure,
+/// timeout, non-zero exit, unparseable/empty output, or an explicit
+/// `{"error":...}` response) -- i.e. every case those functions produce a
+/// `Skipped` for reasons attributable to the sidecar rather than the input.
+/// `primitives::brainpool` was the caller before Plan A, Task 4 deleted it
+/// along with every other Rust family verifier; the sidecar now serves that
+/// role for every non-KYC circuit. Deliberately separate from `record`: the
+/// caller still calls `record(&Verdict::Skipped(reason))` exactly as before
+/// (so `SKIPPED` counts every skip, sidecar-caused or not); this adds the
+/// narrower, overlapping count on top, in addition to (not instead of) that
+/// call.
 pub fn record_sidecar_unavailable() {
     SIDECAR_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Test-only read of the running total, for `primitives::brainpool`'s own
-/// tests to confirm each of its sidecar-unavailable failure modes actually
-/// calls `record_sidecar_unavailable` -- without making the counter itself
-/// `pub`, which would let production code outside this module increment or
-/// read it directly, bypassing the one intended call path.
+/// Test-only read of the running total, for `sidecar.rs`'s own tests to
+/// confirm each of its sidecar-unavailable failure modes actually calls
+/// `record_sidecar_unavailable` -- without making the counter itself `pub`,
+/// which would let production code outside this module increment or read it
+/// directly, bypassing the one intended call path. (`primitives::brainpool`
+/// held this role before Plan A, Task 4 deleted it; see
+/// `record_sidecar_unavailable`'s own doc comment.)
 #[cfg(test)]
 pub(crate) fn sidecar_unavailable_count() -> u64 {
     SIDECAR_UNAVAILABLE.load(Ordering::Relaxed)

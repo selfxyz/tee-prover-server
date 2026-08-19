@@ -21,6 +21,17 @@ import { limbsToBigInt, fieldAsStrings, recoverMessage, certPublicKey, keyMatche
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'tests', 'fixtures');
 
+// Mirrors real_fixtures.rs's `all_real_fixtures_are_present`: that Rust test
+// reads the directory itself (`std::fs::read_dir`) and asserts the on-disk
+// `.json` count against its `FIXTURES` table, so a fixture checked in
+// without a row fails loudly instead of silently going unchecked. The JS
+// suite below used to assert two bare integer literals (21, 22) instead --
+// numbers that stayed correct only because nobody added a fixture without
+// remembering to update them by hand. Deriving from an actual directory
+// scan here means an added-but-unlisted fixture now fails in *both*
+// languages, not just Rust's.
+const ON_DISK_FIXTURE_COUNT = fs.readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.json')).length;
+
 // The sibling monorepo checkout that carries the mock certificates these
 // fixtures were generated against (see real_fixtures.rs's module doc and
 // this task's brief). Tests that need it skip cleanly if it is absent,
@@ -180,7 +191,13 @@ const DSC_FAMILY = [
 }));
 
 const ALL_CERT_FIXTURES = [...REGISTER_FAMILY, ...DSC_FAMILY];
-assert.equal(ALL_CERT_FIXTURES.length, 21, 'expected 21 of the 23 fixtures to carry a raw_dsc/raw_csca certificate window (Aadhaar and KYC do not)');
+assert.equal(
+  ALL_CERT_FIXTURES.length,
+  ON_DISK_FIXTURE_COUNT - 2,
+  `expected all but 2 (register_aadhaar.json, register_kyc.json -- neither carries a raw_dsc/raw_csca ` +
+    `certificate window) of the ${ON_DISK_FIXTURE_COUNT} on-disk tests/fixtures/*.json files to be listed ` +
+    'in REGISTER_FAMILY/DSC_FAMILY',
+);
 
 function tbsBytesOf(row, fixture) {
   const raw = bytesFromDecimalArray(fixture[row.rawCertField]);
@@ -623,8 +640,9 @@ const ALL_FIXTURE_CIRCUITS = [
 
 assert.equal(
   ALL_FIXTURE_CIRCUITS.length,
-  22,
-  'expected 22 of the 23 fixtures to be handled by this verifier -- register_kyc is the deliberate exception',
+  ON_DISK_FIXTURE_COUNT - 1,
+  `expected all but 1 (register_kyc.json, the deliberate exception) of the ${ON_DISK_FIXTURE_COUNT} on-disk ` +
+    'tests/fixtures/*.json files to be handled by this verifier',
 );
 
 // Reason-text fragments used to assert a mutation failed for its OWN reason
