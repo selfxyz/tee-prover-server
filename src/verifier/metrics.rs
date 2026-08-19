@@ -109,6 +109,7 @@ pub(crate) fn sidecar_unavailable_count() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     // These counters are process-global statics, so under cargo test's
     // default parallel execution other tests in this file (and this test
@@ -117,9 +118,28 @@ mod tests {
     // ">= before + 1", never "== before + 1": these counters only ever go
     // up, so ">=" still proves this call's increment landed, without being
     // flaky about how many OTHER increments landed in the same window.
+    //
+    // `recording_sidecar_unavailable_increments_its_own_counter_not_skipped`
+    // is the one exception: its whole point is an exact-equality read of
+    // SKIPPED (proving record_sidecar_unavailable does NOT touch it), which
+    // an unsynchronised concurrent incrementer -- namely
+    // `recording_never_panics_regardless_of_running_total` below, which
+    // calls `record(&Verdict::Skipped(..))` REPORT_EVERY+1 times in this
+    // same module -- can and does race (observed ~8 failures in 30 runs of
+    // `cargo test --bin tee-server -- metrics::tests`). `record` has exactly
+    // one non-test caller (`main.rs`), so serialising just these four tests
+    // behind a lock costs nothing in production and turns the race into a
+    // deterministic pass. A module-local lock, not a crate-wide one: it only
+    // needs to order this file's own tests against each other.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    fn locked() -> std::sync::MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn recording_a_valid_verdict_increments_the_valid_counter() {
+        let _guard = locked();
         let before = VALID.load(Ordering::Relaxed);
         record(&Verdict::Valid);
         assert!(VALID.load(Ordering::Relaxed) >= before + 1);
@@ -127,6 +147,7 @@ mod tests {
 
     #[test]
     fn recording_a_skipped_verdict_increments_the_skipped_counter() {
+        let _guard = locked();
         let before = SKIPPED.load(Ordering::Relaxed);
         record(&Verdict::Skipped("reason".to_string()));
         assert!(SKIPPED.load(Ordering::Relaxed) >= before + 1);
@@ -134,6 +155,7 @@ mod tests {
 
     #[test]
     fn recording_an_invalid_verdict_increments_the_invalid_counter() {
+        let _guard = locked();
         let before = INVALID.load(Ordering::Relaxed);
         record(&Verdict::Invalid("reason".to_string()));
         assert!(INVALID.load(Ordering::Relaxed) >= before + 1);
@@ -146,6 +168,12 @@ mod tests {
         // brainpool (in addition to this, not instead of it). This test
         // pins that record_sidecar_unavailable is its own counter, distinct
         // from SKIPPED, not a side door into it.
+        //
+        // This is an exact-equality read of a process-global atomic, so it
+        // needs `locked()` (see the module doc above): without it, this can
+        // race against `recording_never_panics_regardless_of_running_total`
+        // incrementing SKIPPED concurrently in the same binary.
+        let _guard = locked();
         let before_unavailable = SIDECAR_UNAVAILABLE.load(Ordering::Relaxed);
         let before_skipped = SKIPPED.load(Ordering::Relaxed);
         record_sidecar_unavailable();
@@ -160,7 +188,12 @@ mod tests {
     #[test]
     fn recording_never_panics_regardless_of_running_total() {
         // Exercises the REPORT_EVERY modulo/print path itself, whatever the
-        // current running total happens to be from other tests.
+        // current running total happens to be from other tests. Takes the
+        // same lock as the other tests here: it increments SKIPPED
+        // REPORT_EVERY+1 times, which is exactly the traffic
+        // `recording_sidecar_unavailable_increments_its_own_counter_not_skipped`
+        // needs to not be racing against when it reads SKIPPED for equality.
+        let _guard = locked();
         for _ in 0..(REPORT_EVERY + 1) {
             record(&Verdict::Skipped("x".to_string()));
         }
