@@ -625,6 +625,38 @@ mod tests {
     }
 
     #[test]
+    fn every_ecdsa_row_s_curve_string_is_recognized_by_the_primitive() {
+        // Fix wave item 3: ECDSA_LIMBS's curve strings and
+        // primitives::ecdsa::Curve::from_name's match arms are two
+        // independently maintained lists that happen to agree today. A typo
+        // in a future row (or a Curve::from_name arm renamed out of step)
+        // would not fail to compile -- lookup would just build a
+        // Scheme::Ecdsa{curve} that Curve::from_name can't parse, and
+        // passport::verify degrades that to Skipped, silently, for every
+        // document on that circuit. This loops every row in ECDSA_LIMBS
+        // (not a hand-copied subset) so a future 15th row is covered
+        // automatically.
+        use crate::verifier::primitives::ecdsa::Curve;
+
+        assert_eq!(ECDSA_LIMBS.len(), 14, "update this test if ECDSA_LIMBS gains/loses rows");
+        for (name, curve, _n, _k) in ECDSA_LIMBS {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            match &p.scheme {
+                Scheme::Ecdsa { curve: got_curve } => {
+                    assert_eq!(got_curve, curve, "lookup({name})'s curve string diverged from ECDSA_LIMBS");
+                }
+                other => panic!("{name} is not Ecdsa: {other:?}"),
+            }
+            assert!(
+                Curve::from_name(curve).is_some(),
+                "ECDSA_LIMBS row {name} carries curve string {curve:?}, which \
+                 Curve::from_name does not recognize -- this circuit would silently \
+                 degrade to Skipped for every document"
+            );
+        }
+    }
+
+    #[test]
     fn secp521r1_uses_non_byte_aligned_66_bit_limbs() {
         // n = 66 is not a typo: secp521r1's 521-bit field does not divide evenly
         // into byte-sized limbs. If this ever reads 64 (the "normal" NIST-curve
