@@ -173,6 +173,54 @@ const PSS_SALT_AND_KEY_LENGTH: &[(&str, usize, u32)] = &[
     ("register_id_sha256_sha256_sha256_rsapss_65537_64_2048", 64, 2048), // id 46: rsapss_sha256_65537_2048 salt 64
 ];
 
+/// `(name, n, k)` for the 7 RSA PKCS#1 v1.5 DSC circuits (a CSCA signing a
+/// DSC), transcribed verbatim from `../self/circuits/circuits/dsc/instances/
+/// <name>.circom`'s `DSC(signatureAlgorithm, n, k)` 2nd/3rd arguments. All 7
+/// currently use `(120, 35)`, same as every RSA PKCS#1 v1.5 `register`/
+/// `register_id` circuit. DSC circuit names carry only one hash tag
+/// (`dsc_<sig>_<scheme>`), unlike `register`'s three (`register_<dg>_
+/// <econtent>_<sig>_<scheme>`) -- there is no dg1/eContent link at the DSC
+/// level, see `lookup`'s DSC branch below.
+const DSC_RSA_LIMBS: &[(&str, u32, u32)] = &[
+    ("dsc_sha1_rsa_65537_4096", 120, 35),     // alg 11
+    ("dsc_sha256_rsa_65537_4096", 120, 35),   // alg 10
+    ("dsc_sha512_rsa_65537_4096", 120, 35),   // alg 15
+    ("dsc_sha256_rsa_130689_4096", 120, 35),  // alg 48
+    ("dsc_sha256_rsa_122125_4096", 120, 35),  // alg 49
+    ("dsc_sha256_rsa_107903_4096", 120, 35),  // alg 50
+    ("dsc_sha256_rsa_56611_4096", 120, 35),   // alg 51
+];
+
+/// `(name, curve, n, k)` for the 6 ECDSA NIST-curve DSC circuits, transcribed
+/// verbatim from the same instance files' `DSC(signatureAlgorithm, n, k)`
+/// arguments. The 6 brainpool-curve DSC circuits living alongside these in
+/// the same directory are deliberately absent -- out of scope for this plan,
+/// so `lookup` returns `None` for them (the safe default; see this file's
+/// module doc on the false-reject/false-accept asymmetry).
+const DSC_ECDSA_LIMBS: &[(&str, &str, u32, u32)] = &[
+    ("dsc_sha1_ecdsa_secp256r1", "secp256r1", 64, 4),    // alg 7
+    ("dsc_sha256_ecdsa_secp256r1", "secp256r1", 64, 4),  // alg 8
+    ("dsc_sha384_ecdsa_secp384r1", "secp384r1", 64, 6),  // alg 9
+    ("dsc_sha256_ecdsa_secp384r1", "secp384r1", 64, 6),  // alg 23
+    ("dsc_sha256_ecdsa_secp521r1", "secp521r1", 66, 8),  // alg 40
+    ("dsc_sha512_ecdsa_secp521r1", "secp521r1", 66, 8),  // alg 41
+];
+
+/// `(name, salt_len bytes, key_bits)` for the 5 RSASSA-PSS DSC circuits.
+/// Same convention as `PSS_SALT_AND_KEY_LENGTH` above: derived by applying
+/// `signatureVerifier.circom`'s `SALT_LEN = 64 if id == 46 else
+/// getHashLength(id) / 8` and `KEY_LENGTH = getMinKeyLength(id)` to each
+/// circuit's `signatureAlgorithm` ID (the 1st `DSC` argument), not read from
+/// the circuit name's own embedded numbers (which happen to agree here, same
+/// as every PSS row above).
+const DSC_PSS_SALT_AND_KEY_LENGTH: &[(&str, usize, u32)] = &[
+    ("dsc_sha256_rsapss_65537_32_4096", 32, 4096), // alg 12
+    ("dsc_sha256_rsapss_3_32_3072", 32, 3072),     // alg 16
+    ("dsc_sha384_rsapss_65537_48_3072", 48, 3072), // alg 18
+    ("dsc_sha256_rsapss_65537_32_3072", 32, 3072), // alg 19
+    ("dsc_sha512_rsapss_65537_64_4096", 64, 4096), // alg 39
+];
+
 /// `(signatureAlgorithm ID, hash_bits, exponent)`, transcribed from
 /// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom`: its
 /// top-of-file "ID to Signature Algorithm" comment table (which names the
@@ -222,6 +270,13 @@ const SIGNATURE_ALGORITHM_TABLE: &[(u32, u32, u64)] = &[
     (49, 256, 122125), // rsa_sha256_122125_4096
     (50, 256, 107903), // rsa_sha256_107903_4096
     (51, 256, 56611),  // rsa_sha256_56611_4096
+    // The 3 RSASSA-PSS ids new to this crate (DSC circuits, see DSC_PSS_SALT_
+    // AND_KEY_LENGTH below). Transcribed from signatureAlgorithm.circom's
+    // "ID to Signature Algorithm" comment table and cross-checked against
+    // getHashLength/getExponentBits there, same standard as every row above.
+    (16, 256, 3),      // rsapss_sha256_3_3072 (getExponentBits(16) == 2 -> e=3)
+    (18, 384, 65537),  // rsapss_sha384_65537_3072
+    (39, 512, 65537),  // rsapss_sha512_65537_4096
 ];
 
 /// Looks up `(hash_bits, exponent)` for a `signatureAlgorithm` ID from the
@@ -255,6 +310,11 @@ const MIN_KEY_LENGTH_TABLE: &[(u32, u32)] = &[
     (43, 2048), // rsapss_sha256_3_2048
     (45, 2048), // rsapss_sha384_65537_2048
     (46, 2048), // rsapss_sha256_65537_2048 salt 64
+    // New to this crate for the DSC circuits (see SIGNATURE_ALGORITHM_TABLE's
+    // matching comment).
+    (16, 3072), // rsapss_sha256_3_3072
+    (18, 3072), // rsapss_sha384_65537_3072
+    (39, 4096), // rsapss_sha512_65537_4096
 ];
 
 /// Looks up `getMinKeyLength`'s result for a `signatureAlgorithm` ID from the
@@ -286,6 +346,10 @@ const ECDSA_ALGORITHM_TABLE: &[(u32, u32)] = &[
     (23, 256), // ecdsa_sha256_secp384r1_384
     (41, 512), // ecdsa_sha512_secp521r1_521
     (44, 224), // ecdsa_sha224_secp224r1_224
+    // New to this crate for the DSC circuits: ecdsa_sha256_secp521r1_256.
+    // Transcribed from signatureAlgorithm.circom's "ID to Signature Algorithm"
+    // comment table and getHashLength, same standard as every row above.
+    (40, 256), // ecdsa_sha256_secp521r1_256
 ];
 
 /// Looks up `getHashLength`'s result for an ECDSA `signatureAlgorithm` ID from the
@@ -299,6 +363,17 @@ fn ecdsa_algorithm_hash_bits(id: u32) -> Option<u32> {
 }
 
 pub fn lookup(name: &str) -> Option<CircuitParams> {
+    // DSC circuits (a CSCA signing a DSC) get a dedicated branch, not a fall-
+    // through into the register parsing below. `dsc_<sig>_<scheme>` carries
+    // only ONE hash component; `register_<dg>_<econtent>_<sig>_<scheme>`
+    // carries THREE. Reusing the register split logic here would silently
+    // misread every DSC name (e.g. reading "rsa" as if it were parts[3] of a
+    // 6-part register name) and produce a wrong sig_hash -- a false reject,
+    // not a safe skip. See lookup_dsc's own doc comment.
+    if let Some(rest) = name.strip_prefix("dsc_") {
+        return lookup_dsc(name, rest);
+    }
+
     // register_aadhaar.circom instantiates REGISTER_AADHAAR(121, 17, 512 * 3) — a
     // different template with a different argument order (n, k, maxDataLength).
     // (n, k) = (121, 17) is transcribed directly from that file's first two args.
@@ -441,6 +516,100 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
     })
 }
 
+/// Parses a DSC circuit's name, already stripped of its `dsc_` prefix, into
+/// `CircuitParams`. Deliberately separate from the `register`/`register_id`
+/// parsing in `lookup` above: a DSC circuit name is `<sig>_<scheme>` (one hash
+/// tag), not `<dg>_<econtent>_<sig>_<scheme>` (three) — there is no dg1 or
+/// eContent link at the DSC level (a CSCA signs a DSC certificate, not a
+/// passport data group), so there is nothing for two of those three
+/// components to name. `dg_hash` and `econtent_hash` in the returned
+/// `CircuitParams` are set to `sig_hash` and are N/A — same precedent as
+/// `register_aadhaar` above: a plausible-looking placeholder is safer than an
+/// invented distinct value, because `dsc::verify` (Task 2) must never read
+/// either field, and a wrong-but-plausible value is a false-reject risk if
+/// that invariant is ever violated by accident.
+fn lookup_dsc(name: &str, rest: &str) -> Option<CircuitParams> {
+    let parts: Vec<&str> = rest.split('_').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let sig_hash = sha_bits(parts[0])?;
+    // N/A: DSC (a CSCA signing a DSC cert) has no dg1<->eContent<->signed_attr
+    // chain to describe at all -- see this function's doc comment.
+    let dg_hash = sig_hash;
+    let econtent_hash = sig_hash;
+
+    if parts[1] == "rsapss" {
+        if parts.len() != 5 {
+            return None;
+        }
+        let e: u64 = parts[2].parse().ok()?;
+        // parts[3] (salt) and parts[4] (bits) are the name's own embedded
+        // numbers and are intentionally unused here -- same convention as
+        // PSS_SALT_AND_KEY_LENGTH above: salt_len/bits come from the
+        // algorithm id via DSC_PSS_SALT_AND_KEY_LENGTH, never the name.
+        let (salt_len, bits) = DSC_PSS_SALT_AND_KEY_LENGTH
+            .iter()
+            .find(|(entry_name, _, _)| *entry_name == name)
+            .map(|(_, salt_len, bits)| (*salt_len, *bits))?;
+
+        return Some(CircuitParams {
+            dg_hash,
+            econtent_hash,
+            sig_hash,
+            scheme: Scheme::RsaPss { e, salt_len, bits },
+            n: 120,
+            k: 35,
+        });
+    }
+
+    if parts[1] == "ecdsa" {
+        if parts.len() != 3 {
+            return None;
+        }
+        let (curve, n, k) = DSC_ECDSA_LIMBS
+            .iter()
+            .find(|(entry_name, _, _, _)| *entry_name == name)
+            .map(|(_, curve, n, k)| (*curve, *n, *k))?;
+
+        return Some(CircuitParams {
+            dg_hash,
+            econtent_hash,
+            sig_hash,
+            scheme: Scheme::Ecdsa {
+                curve: curve.to_string(),
+            },
+            n,
+            k,
+        });
+    }
+
+    // Only RSA PKCS#1 v1.5 is left; RSASSA-PSS and ECDSA (NIST curves) are
+    // handled above.
+    if parts[1] != "rsa" {
+        return None;
+    }
+    if parts.len() != 4 {
+        return None;
+    }
+    let e: u64 = parts[2].parse().ok()?;
+    let bits: u32 = parts[3].parse().ok()?;
+
+    let (n, k) = DSC_RSA_LIMBS
+        .iter()
+        .find(|(entry_name, _, _)| *entry_name == name)
+        .map(|(_, n, k)| (*n, *k))?;
+
+    Some(CircuitParams {
+        dg_hash,
+        econtent_hash,
+        sig_hash,
+        scheme: Scheme::Rsa { e, bits },
+        n,
+        k,
+    })
+}
+
 /// Extracts the comma-separated argument list following `marker` in `src`, up to
 /// the matching close-paren. Tolerant of whitespace and newlines between args.
 /// Used only by the `#[cfg(test)]` drift guard below (via the two `parse_*`
@@ -513,6 +682,29 @@ pub(crate) fn parse_instance_hash_and_sig_algo(src: &str) -> Option<(u32, u32, u
     let econtent_hash: u32 = args[1].parse().ok()?;
     let sig_algo: u32 = args[2].parse().ok()?;
     Some((dg_hash, econtent_hash, sig_algo))
+}
+
+/// Finds a `DSC(...)` call and returns its `(signatureAlgorithm, n, k)`
+/// arguments. `DSC(alg, n, k)` is a different template from `REGISTER(...)`/
+/// `REGISTER_ID(...)` in both shape and argument order: `alg` is the 1st
+/// argument here (the 3rd for `REGISTER`/`REGISTER_ID`), and there is no
+/// dg_hash/econtent_hash pair at all. Reusing `parse_instance_hash_and_sig_
+/// algo`/`parse_instance_n_k` on a DSC instance file would misread `n` as
+/// `alg` and so on -- exactly the false-reject-generating mistake this file's
+/// module doc and `lookup_dsc` both warn about, now also guarded against on
+/// the drift-test side.
+///
+/// Used only by the `#[cfg(test)]` drift guard below.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn parse_dsc_instance_alg_n_k(src: &str) -> Option<(u32, u32, u32)> {
+    let args = extract_args(src, "DSC(")?;
+    if args.len() < 3 {
+        return None;
+    }
+    let alg: u32 = args[0].parse().ok()?;
+    let n: u32 = args[1].parse().ok()?;
+    let k: u32 = args[2].parse().ok()?;
+    Some((alg, n, k))
 }
 
 #[cfg(test)]
@@ -688,6 +880,120 @@ mod tests {
         // Skipped, the safe default per this file's module doc.
         assert!(lookup("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1").is_none());
         assert!(lookup("register_id_sha256_sha256_sha256_ecdsa_brainpoolP256r1").is_none());
+    }
+
+    #[test]
+    fn dsc_rows_match_the_inventory_table() {
+        // (name, n, k, sig_hash) -- see task-1-brief.md's Circuit inventory table.
+        // scheme details (exponent / curve) are asserted per-branch below.
+        let rsa = [
+            ("dsc_sha1_rsa_65537_4096", 120, 35, 160, 65537u64),   // alg 11
+            ("dsc_sha256_rsa_65537_4096", 120, 35, 256, 65537),    // alg 10
+            ("dsc_sha512_rsa_65537_4096", 120, 35, 512, 65537),    // alg 15
+            ("dsc_sha256_rsa_130689_4096", 120, 35, 256, 130689),  // alg 48
+            ("dsc_sha256_rsa_122125_4096", 120, 35, 256, 122125),  // alg 49
+            ("dsc_sha256_rsa_107903_4096", 120, 35, 256, 107903),  // alg 50
+            ("dsc_sha256_rsa_56611_4096", 120, 35, 256, 56611),    // alg 51
+        ];
+        for (name, n, k, sig_hash, e) in rsa {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            assert_eq!(p.sig_hash, sig_hash, "sig_hash for {name}");
+            assert_eq!((p.n, p.k), (n, k), "(n, k) for {name}");
+            match p.scheme {
+                Scheme::Rsa { e: got_e, .. } => assert_eq!(got_e, e, "exponent for {name}"),
+                other => panic!("{name} is not Rsa: {other:?}"),
+            }
+        }
+
+        let pss = [
+            ("dsc_sha256_rsapss_65537_32_4096", 256, 65537u64, 32usize, 4096u32), // alg 12
+            ("dsc_sha256_rsapss_3_32_3072", 256, 3, 32, 3072),                    // alg 16
+            ("dsc_sha384_rsapss_65537_48_3072", 384, 65537, 48, 3072),            // alg 18
+            ("dsc_sha256_rsapss_65537_32_3072", 256, 65537, 32, 3072),            // alg 19
+            ("dsc_sha512_rsapss_65537_64_4096", 512, 65537, 64, 4096),            // alg 39
+        ];
+        for (name, sig_hash, e, salt_len, bits) in pss {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            assert_eq!(p.sig_hash, sig_hash, "sig_hash for {name}");
+            assert_eq!((p.n, p.k), (120, 35), "(n, k) for {name}");
+            match p.scheme {
+                Scheme::RsaPss { e: got_e, salt_len: got_salt, bits: got_bits } => {
+                    assert_eq!(got_e, e, "exponent for {name}");
+                    assert_eq!(got_salt, salt_len, "salt for {name}");
+                    assert_eq!(got_bits, bits, "key bits for {name}");
+                }
+                other => panic!("{name} is not RsaPss: {other:?}"),
+            }
+        }
+
+        let ecdsa = [
+            ("dsc_sha1_ecdsa_secp256r1", "secp256r1", 64, 4, 160),   // alg 7
+            ("dsc_sha256_ecdsa_secp256r1", "secp256r1", 64, 4, 256), // alg 8
+            ("dsc_sha384_ecdsa_secp384r1", "secp384r1", 64, 6, 384), // alg 9
+            ("dsc_sha256_ecdsa_secp384r1", "secp384r1", 64, 6, 256), // alg 23
+            ("dsc_sha256_ecdsa_secp521r1", "secp521r1", 66, 8, 256), // alg 40
+            ("dsc_sha512_ecdsa_secp521r1", "secp521r1", 66, 8, 512), // alg 41
+        ];
+        for (name, curve, n, k, sig_hash) in ecdsa {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            assert_eq!(p.sig_hash, sig_hash, "sig_hash for {name}");
+            assert_eq!((p.n, p.k), (n, k), "(n, k) for {name}");
+            match &p.scheme {
+                Scheme::Ecdsa { curve: got_curve } => assert_eq!(got_curve, curve, "curve for {name}"),
+                other => panic!("{name} is not Ecdsa: {other:?}"),
+            }
+        }
+
+        assert_eq!(rsa.len() + pss.len() + ecdsa.len(), 18, "expected exactly 18 DSC rows");
+    }
+
+    #[test]
+    fn dsc_rows_have_no_meaning_for_dg_or_econtent_hash() {
+        // dsc_<sig>_<scheme> has no dg1<->eContent link at all -- there is no
+        // register-style 3-hash chain to describe. Following the register_aadhaar
+        // precedent above: dg_hash/econtent_hash are set to sig_hash as an
+        // explicit "not applicable" placeholder. dsc::verify (Task 2) must never
+        // read either field for a DSC circuit.
+        let p = lookup("dsc_sha256_rsa_65537_4096").unwrap();
+        assert_eq!(p.dg_hash, p.sig_hash);
+        assert_eq!(p.econtent_hash, p.sig_hash);
+    }
+
+    #[test]
+    fn brainpool_dsc_circuits_are_out_of_scope() {
+        // The 6 brainpool DSC circuits get no rows -- lookup returns None and
+        // callers skip. Skipped is always safe (see this file's module doc on
+        // the false-reject/false-accept asymmetry); a wrong row would not be.
+        for name in [
+            "dsc_sha1_ecdsa_brainpoolP256r1",
+            "dsc_sha256_ecdsa_brainpoolP256r1",
+            "dsc_sha256_ecdsa_brainpoolP384r1",
+            "dsc_sha384_ecdsa_brainpoolP384r1",
+            "dsc_sha384_ecdsa_brainpoolP512r1",
+            "dsc_sha512_ecdsa_brainpoolP512r1",
+        ] {
+            assert!(lookup(name).is_none(), "{name} should be out of scope");
+        }
+    }
+
+    #[test]
+    fn dsc_prefix_does_not_fall_through_to_register_parsing() {
+        // The trap this task exists to avoid: `dsc_<sig>_<scheme>` carries one
+        // hash component, not three. If a DSC name ever fell through into the
+        // register branch's `strip_prefix`/`split('_')` logic, it would either
+        // return None (safe) or, worse, silently misassign parts[0..2] as
+        // dg/econtent/sig and misparse the scheme suffix. Every case below must
+        // resolve via the dedicated DSC branch, never register's.
+        assert!(!"dsc_sha256_rsa_65537_4096".starts_with("register"));
+        let p = lookup("dsc_sha256_rsa_65537_4096").unwrap();
+        // A register-shaped misparse of this DSC name would try to read
+        // parts[3] as the scheme tag ("rsa_65537_4096" split further) rather
+        // than parts[1] ("rsa") -- i.e. it would not even find "rsa" as
+        // parts[3] here (parts[3] would be out of range for a 4-part rest),
+        // and Option::? would return None. Getting `Some` at all here is
+        // already proof the DSC branch (not a register fallthrough) fired.
+        assert_eq!(p.sig_hash, 256);
+        assert!(matches!(p.scheme, Scheme::Rsa { e: 65537, bits: 4096 }));
     }
 
     /// The drift guard. Parses the sibling monorepo's instance files and asserts our
@@ -894,14 +1200,170 @@ mod tests {
                 checked += 1;
             }
         }
+
+        // DSC(alg, n, k) is a different template from REGISTER(...)/
+        // REGISTER_ID(...) -- different name, different argument order (alg
+        // is 1st here, not 3rd), and no dg_hash/econtent_hash pair at all.
+        // parse_dsc_instance_alg_n_k is a dedicated parser for exactly that
+        // reason (see its doc comment). Unlike the register loop above, every
+        // DSC instance file increments `checked` -- including the 6
+        // brainpool ones -- because we assert *why* each None is expected
+        // (brainpool) rather than silently `continue`-ing past it: that
+        // gives this guard directory-completeness coverage (a stray 25th
+        // DSC circuit that's neither supported nor brainpool fails loudly)
+        // that the register loop's baseline count predates.
+        let dsc_dir = root.join("dsc").join("instances");
+        if dsc_dir.exists() {
+            for entry in std::fs::read_dir(&dsc_dir).unwrap() {
+                let path = entry.unwrap().path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let src = std::fs::read_to_string(&path).unwrap();
+                let (alg, n, k) = parse_dsc_instance_alg_n_k(&src).unwrap_or_else(|| {
+                    panic!("could not parse DSC(...) args from {}", path.display())
+                });
+
+                match lookup(stem) {
+                    None => {
+                        assert!(
+                            stem.contains("brainpool"),
+                            "{stem}: lookup returned None but this is not a brainpool \
+                             circuit -- add a row to params.rs (or explain why it's still \
+                             out of scope) instead of leaving it silently unsupported"
+                        );
+                    }
+                    Some(ours) => {
+                        assert_eq!(
+                            (ours.n, ours.k),
+                            (n, k),
+                            "DSC table drift for {stem}: table says {:?}, instance file says \
+                             {:?}",
+                            (ours.n, ours.k),
+                            (n, k)
+                        );
+
+                        if let Scheme::Ecdsa { .. } = ours.scheme {
+                            let expected_sig_hash =
+                                ecdsa_algorithm_hash_bits(alg).unwrap_or_else(|| {
+                                    panic!(
+                                        "{stem}: no entry in ECDSA_ALGORITHM_TABLE for \
+                                         signatureAlgorithm id {alg} (instance file's 1st DSC \
+                                         arg) — add it by reading getHashLength in \
+                                         signatureAlgorithm.circom, do not guess"
+                                    )
+                                });
+                            assert_eq!(
+                                ours.sig_hash, expected_sig_hash,
+                                "sig_hash drift for {stem}: table says {}, but \
+                                 signatureAlgorithm id {alg} (from the instance file) implies \
+                                 {} via getHashLength",
+                                ours.sig_hash, expected_sig_hash
+                            );
+
+                            // Same truncation-avoidance check as the register loop above
+                            // (ecdsaVerifier.circom:27-41): alg 40 (secp521r1, sha256) is
+                            // the widest left-pad in the codebase at n*k = 66*8 = 528.
+                            let nk = ours.n * ours.k;
+                            assert!(
+                                expected_sig_hash <= nk,
+                                "{stem}: HASH_LEN_BITS ({expected_sig_hash}) > n*k \
+                                 ({}*{}={nk}) — ecdsaVerifier.circom would truncate the \
+                                 digest here, and the native path does not implement \
+                                 truncation. Mark this circuit Skipped in params.rs, do not \
+                                 guess.",
+                                ours.n, ours.k
+                            );
+                        } else {
+                            let (expected_sig_hash, expected_exponent) =
+                                signature_algorithm_hash_and_exponent(alg).unwrap_or_else(|| {
+                                    panic!(
+                                        "{stem}: no entry in SIGNATURE_ALGORITHM_TABLE for \
+                                         signatureAlgorithm id {alg} (instance file's 1st DSC \
+                                         arg) — add it by reading signatureAlgorithm.circom, \
+                                         do not guess"
+                                    )
+                                });
+                            assert_eq!(
+                                ours.sig_hash, expected_sig_hash,
+                                "sig_hash drift for {stem}: table says {}, but \
+                                 signatureAlgorithm id {alg} (from the instance file) implies \
+                                 {}",
+                                ours.sig_hash, expected_sig_hash
+                            );
+                            match ours.scheme {
+                                Scheme::Rsa { e: ours_e, .. } => {
+                                    assert_eq!(
+                                        ours_e, expected_exponent,
+                                        "RSA exponent drift for {stem}: table says \
+                                         e={ours_e}, but signatureAlgorithm id {alg} (from \
+                                         the instance file) implies e={expected_exponent}"
+                                    );
+                                }
+                                Scheme::RsaPss {
+                                    e: ours_e,
+                                    salt_len: ours_salt_len,
+                                    bits: ours_bits,
+                                } => {
+                                    assert_eq!(
+                                        ours_e, expected_exponent,
+                                        "RSASSA-PSS exponent drift for {stem}: table says \
+                                         e={ours_e}, but signatureAlgorithm id {alg} (from \
+                                         the instance file) implies e={expected_exponent}"
+                                    );
+
+                                    // No DSC id is 46 (the salt-64 exception), so the
+                                    // hash/8 rule applies unconditionally here.
+                                    let expected_salt_len: usize =
+                                        (expected_sig_hash / 8) as usize;
+                                    assert_eq!(
+                                        ours_salt_len, expected_salt_len,
+                                        "salt_len drift for {stem}: table says \
+                                         salt_len={ours_salt_len}, but signatureAlgorithm id \
+                                         {alg} (from the instance file) implies \
+                                         salt_len={expected_salt_len} via \
+                                         getHashLength(alg) / 8"
+                                    );
+
+                                    let expected_key_bits =
+                                        min_key_length(alg).unwrap_or_else(|| {
+                                            panic!(
+                                                "{stem}: no entry in MIN_KEY_LENGTH_TABLE for \
+                                                 signatureAlgorithm id {alg} (instance \
+                                                 file's 1st DSC arg) — add it by reading \
+                                                 getMinKeyLength in signatureAlgorithm.circom, \
+                                                 do not guess"
+                                            )
+                                        });
+                                    assert_eq!(
+                                        ours_bits, expected_key_bits,
+                                        "key_bits (KEY_LENGTH) drift for {stem}: table says \
+                                         bits={ours_bits}, but signatureAlgorithm id {alg} \
+                                         (from the instance file) implies \
+                                         bits={expected_key_bits} via getMinKeyLength"
+                                    );
+                                }
+                                other => panic!(
+                                    "{stem}: table's scheme is {other:?}, but the instance \
+                                     file's signatureAlgorithm id {alg} is an RSA PKCS#1v15 \
+                                     or RSASSA-PSS id"
+                                ),
+                            }
+                        }
+                    }
+                }
+
+                checked += 1;
+            }
+        }
+
         // Exact count, not just > 0: a future parser change that silently matched
         // only one file should fail loudly here, not slip through a bare non-zero check.
         assert_eq!(
-            checked, 44,
-            "expected to check 44 circuits (14 REGISTER/REGISTER_ID RSA instances + \
-             register_aadhaar + 15 REGISTER/REGISTER_ID RSASSA-PSS instances + 14 \
-             REGISTER/REGISTER_ID ECDSA NIST-curve instances) but checked {checked} — table or \
-             instance coverage drifted"
+            checked, 68,
+            "expected to check 68 circuits (44 REGISTER/REGISTER_ID + register_aadhaar, as \
+             before, plus all 24 DSC instances -- 18 supported + 6 verified-brainpool) but \
+             checked {checked} — table or instance coverage drifted"
         );
     }
 }
