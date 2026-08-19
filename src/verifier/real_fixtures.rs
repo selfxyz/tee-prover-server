@@ -23,7 +23,7 @@
 //! `params::table_matches_the_monorepo_instance_files`'s pattern of never
 //! hard-failing on missing external state.
 
-use crate::verifier::{aadhaar, kyc, params, passport, Verdict};
+use crate::verifier::{aadhaar, dsc, kyc, params, passport, Verdict};
 
 /// Reads `tests/fixtures/<name>` relative to the crate root. `None` (with a
 /// SKIP message) if the file is absent; panics on unreadable-but-present or
@@ -84,8 +84,50 @@ fn all_real_fixtures_are_present() {
 /// `every_fixture_stops_verifying_when_its_signature_is_tampered` both key off
 /// it, so a fixture that is checked in but not listed is caught by the count
 /// assertion rather than silently going uncovered.
+///
+/// **Known finding, deliberately not in this table: `dsc_sha256_ecdsa_secp521r1`
+/// (alg 40).** A real fixture for it was captured successfully (via
+/// `genAndInitMockPassportData('sha256', 'sha256', 'ecdsa_sha256_secp521r1_521',
+/// ...)`, circuit name confirmed as `dsc_sha256_ecdsa_secp521r1` via
+/// `doc.getDscCircuitName()`), but `dsc::verify` returns `Invalid("ECDSA
+/// signature does not verify: signature error")` against it -- for a
+/// signature that is, by construction of the capture, genuinely valid.
+///
+/// Root cause, confirmed by reading the `ecdsa` crate's source
+/// (`ecdsa-0.16.9/src/hazmat.rs:185-205`, `bits2field`): it hard-errors
+/// whenever the prehash is shorter than *half* the curve's field width
+/// (`bits.len() < FieldBytesSize::USIZE / 2`). secp521r1's field is 66 bytes
+/// wide, so the floor is 33 bytes; alg 40's digest is SHA-256, 32 bytes --
+/// one byte under the floor. This is exactly the "widest left-pad" edge case
+/// this task's brief called out for alg 40, and it breaks: RustCrypto's own
+/// `bits2field` refuses to zero-pad a digest that short, even though FIPS
+/// 186-4's `bits2int` has no such restriction (a shorter-than-field digest
+/// is simply used as its integer value, which zero-padding preserves).
+/// `primitives::ecdsa::verify_ecdsa`'s `Secp521r1` arm calls
+/// `PrehashVerifier::verify_prehash` directly, which surfaces this as a
+/// generic signature error -- currently classified `Failed` (-> `Invalid`),
+/// not `Structural` (-> `Skipped`), alongside every other verify_prehash
+/// failure.
+///
+/// Per this task's brief, that misclassification is not fixed here: fixing
+/// it means changing `primitives::ecdsa::verify_ecdsa`'s error
+/// classification (a `dsc.rs`/`ecdsa.rs` change, outside Task 3's file
+/// scope, and exactly the "adjust the verifier to suit the fixture" move
+/// the brief warns against without first fully understanding the failure).
+/// The fixture is therefore captured but **not checked in and not claimed
+/// here** -- `dsc_sha256_ecdsa_secp521r1` ships exactly as Task 1/Task 2 left
+/// it, and this is flagged as a live concern: as written today, a real
+/// `dsc_sha256_ecdsa_secp521r1` document's native pre-check will return
+/// `Invalid` for a genuinely valid signature, a false reject the moment this
+/// path sees production traffic. `dsc_sha512_ecdsa_secp521r1` (alg 41, SHA-512
+/// = 64 bytes, comfortably above the 33-byte floor) is captured instead below,
+/// covering the ECDSA family and the same non-byte-aligned `n = 66` limb
+/// shape without tripping this crate limitation.
 const FIXTURES: &[(&str, &str, &str)] = &[
     ("register_aadhaar.json", "register_aadhaar", "signature"),
+    ("dsc_sha512_ecdsa_secp521r1.json", "dsc_sha512_ecdsa_secp521r1", "signature"),
+    ("dsc_sha256_rsa_65537_4096.json", "dsc_sha256_rsa_65537_4096", "signature"),
+    ("dsc_sha256_rsapss_65537_32_3072.json", "dsc_sha256_rsapss_65537_32_3072", "signature"),
     ("register_ecdsa_secp224r1.json", "register_sha256_sha224_sha224_ecdsa_secp224r1", "signature_passport"),
     ("register_ecdsa_secp256r1.json", "register_sha256_sha256_sha256_ecdsa_secp256r1", "signature_passport"),
     ("register_ecdsa_secp256r1_sha1.json", "register_sha1_sha1_sha1_ecdsa_secp256r1", "signature_passport"),
@@ -423,4 +465,68 @@ fn real_ecdsa_secp256r1_fixture_with_a_corrupted_signature_limb_is_invalid_for_t
         reason.contains("ECDSA") || reason.contains("does not verify"),
         "the reason must name the ECDSA signature check, not a chain link, got: {reason}"
     );
+}
+
+#[test]
+fn real_dsc_rsa_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha256',
+    // 'rsa_sha256_65537_2048', 'FRA', '000101', '300101') ->
+    // createCircuitInputGenerator().generateDscInputs(doc,
+    // serialized_csca_tree), mirroring circuits/tests/dsc/dsc.test.ts's RSA
+    // row from test_cases.ts's fullSigAlgs (sigAlg: 'rsa', hashFunction:
+    // 'sha256', domainParameter: '65537', keyLength: '2048'). Circuit name
+    // confirmed via doc.getDscCircuitName() as dsc_sha256_rsa_65537_4096 --
+    // adapter.ts's RSA branch always names the circuit ..._4096 regardless
+    // of the mock key's own bit length, since only the 4096 DSC-RSA circuit
+    // exists.
+    let Some(inputs) = read_fixture("dsc_sha256_rsa_65537_4096.json") else {
+        return;
+    };
+    let p = params::lookup("dsc_sha256_rsa_65537_4096").expect("known circuit");
+    assert_eq!(dsc::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_dsc_pss_3072_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha256',
+    // 'rsapss_sha256_65537_3072', 'FRA', '000101', '300101'), mirroring
+    // fullSigAlgs's { sigAlg: 'rsapss', hashFunction: 'sha256', saltLen:
+    // '32', domainParameter: '65537', keyLength: '3072' } row (no explicit
+    // salt suffix in the SignatureAlgorithm string: 32 is the sha256/8
+    // default, same as the register PSS fixtures' precedent). Circuit name
+    // confirmed as dsc_sha256_rsapss_65537_32_3072 -- alg 19, the first
+    // 3072-bit PSS fixture captured in this crate (every PSS fixture
+    // captured before this task was 2048 or 4096). This and the fixture
+    // below are the first coverage at all for dsc::verify's PSS and ECDSA
+    // branches; Task 2 unit-tested only the RSA path.
+    let Some(inputs) = read_fixture("dsc_sha256_rsapss_65537_32_3072.json") else {
+        return;
+    };
+    let p = params::lookup("dsc_sha256_rsapss_65537_32_3072").expect("known circuit");
+    assert_eq!(dsc::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_dsc_ecdsa_secp521r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha512', 'sha512',
+    // 'ecdsa_sha512_secp521r1_521', 'FRA', '000101', '300101'), mirroring
+    // fullSigAlgs's { sigAlg: 'ecdsa', hashFunction: 'sha512',
+    // domainParameter: 'secp521r1', keyLength: '521' } row. Circuit name
+    // confirmed as dsc_sha512_ecdsa_secp521r1 -- alg 41: n=66, so its limbs
+    // are still not byte-aligned (the same non-byte-aligned-limb edge case
+    // alg 40 would have exercised), and this is the first real-fixture
+    // coverage of dsc::verify's ECDSA branch.
+    //
+    // This is a *substitute* for the brief's preferred alg 40
+    // (dsc_sha256_ecdsa_secp521r1): that fixture was captured successfully
+    // but does not verify, and per this module's doc comment on real
+    // findings, the fix is to not claim it rather than to bend dsc::verify
+    // or primitives::ecdsa to make it pass. See this file's module doc
+    // comment section "Known finding: dsc_sha256_ecdsa_secp521r1 (alg 40)"
+    // for the root cause.
+    let Some(inputs) = read_fixture("dsc_sha512_ecdsa_secp521r1.json") else {
+        return;
+    };
+    let p = params::lookup("dsc_sha512_ecdsa_secp521r1").expect("known circuit");
+    assert_eq!(dsc::verify(&inputs, &p), Verdict::Valid);
 }
