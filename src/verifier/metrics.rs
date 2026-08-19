@@ -30,23 +30,24 @@ static VALID: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static INVALID: AtomicU64 = AtomicU64::new(0);
 
-/// A subset of `SKIPPED` (Plan 4, Task 4): counts skips specifically
-/// attributable to the brainpool Node/OpenSSL sidecar not producing a clean
-/// answer -- a spawn failure, a timeout, a non-zero exit, or output that
-/// wasn't a well-formed `{"valid":bool}`/`{"error":...}` response (see
-/// `primitives::brainpool`'s `run_sidecar`/`parse_response`, the only call
-/// sites of `record_sidecar_unavailable`). NOT incremented for an ordinary
-/// skip that has nothing to do with the sidecar being reachable -- an
-/// unknown circuit, a missing/malformed field, an unsupported scheme, an
-/// unrecognized curve name, or a limb-count mismatch. Those stay counted
-/// only in `SKIPPED`.
+/// A subset of `SKIPPED`: counts skips specifically attributable to the
+/// `signature-verifier` Node sidecar not producing a clean answer -- a spawn
+/// failure, a timeout, a non-zero exit, or output that wasn't one of the
+/// three well-formed verdict shapes (see `sidecar::run_sidecar`/
+/// `parse_response`, the only call sites of `record_sidecar_unavailable`).
+/// NOT incremented for an ordinary skip that has nothing to do with the
+/// sidecar being reachable -- an unknown circuit, a missing/malformed field,
+/// or `verify.mjs` itself choosing to skip (e.g. `register_kyc`, which never
+/// reaches the sidecar at all -- see `mod.rs`'s `dispatch`). Those stay
+/// counted only in `SKIPPED`.
 ///
-/// After Plan 4, brainpool is the only thing the sidecar serves, so a
-/// widening gap between `skipped` and `sidecar_unavailable` in the summary
-/// line below is the signal that distinguishes "the sidecar has been dead
-/// for a day" from "no brainpool traffic arrived today" -- two situations
-/// that would otherwise print an identical `skipped=N` line and be
-/// impossible to tell apart from the log stream alone.
+/// Plan A, Task 4: since the sidecar now serves every non-KYC circuit
+/// (previously just brainpool), a widening gap between `skipped` and
+/// `sidecar_unavailable` in the summary line below is still the signal that
+/// distinguishes "the sidecar has been dead for a day" from "no traffic
+/// arrived today" -- two situations that would otherwise print an identical
+/// `skipped=N` line and be impossible to tell apart from the log stream
+/// alone.
 static SIDECAR_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
 
 /// Print a summary line every this many processed requests (valid + skipped

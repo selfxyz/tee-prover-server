@@ -25,11 +25,12 @@ FROM debian:trixie
 RUN apt-get update
 RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
 
-# Node runs the brainpool-verifier sidecar: no usable Rust crate covers
-# brainpoolP{224,256,384,512}r1 ECDSA (see brainpool-verifier/verify.mjs),
-# so the native signature pre-check for those curves shells out to Node's
-# OpenSSL binding instead. verify.mjs has zero dependencies, so no `npm ci`
-# is needed here -- just install Node and copy the directory.
+# Node runs the signature-verifier sidecar: the pre-check's signature
+# verification (RSA, RSA-PSS, and ECDSA over both NIST and brainpool curves)
+# is done in JS via node:crypto, not native Rust (see
+# signature-verifier/verify.mjs's header comment for why). verify.mjs has
+# zero dependencies, so no `npm ci` is needed here -- just install Node and
+# copy the directory.
 #
 # NOTE: the `feat/tee-attestation-proof-signing` branch independently adds
 # this same Node install (for jwt-input-generator). At merge, keep exactly
@@ -58,7 +59,7 @@ RUN chmod +x /usr/local/bin/update_creds.sh
 COPY start.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/start.sh
 
-COPY brainpool-verifier /brainpool-verifier
+COPY signature-verifier /signature-verifier
 
 EXPOSE 8888
 LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
