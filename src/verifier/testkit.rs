@@ -193,11 +193,59 @@ pub fn aadhaar_inputs(key: &TestRsaKey, n: u32, k: usize) -> Value {
     })
 }
 
+/// Self-consistent DSC input: a CSCA "certificate" (`raw_csca`) with its RSA
+/// modulus embedded literally at `csca_pubKey_offset`, and a DSC
+/// "certificate" (`raw_dsc`) signed by that same key. `csca_pubKey` is the
+/// modulus reassembled into limbs -- the same bytes as the `raw_csca` window,
+/// by construction, so a caller can corrupt either independently: flipping a
+/// `csca_pubKey` limb breaks link 1 (the certificate-key binding) without
+/// touching link 2 (the signature); flipping a `signature` limb does the
+/// reverse.
+pub fn dsc_inputs(key: &TestRsaKey, n: u32, k: usize) -> Value {
+    let modulus_bytes = key.n.to_bytes_be();
+    let actual_size = modulus_bytes.len();
+    let offset = 40usize;
+
+    let mut raw_csca = vec![0u8; offset + actual_size + 16];
+    raw_csca[offset..offset + actual_size].copy_from_slice(&modulus_bytes);
+    let raw_csca_actual_length = raw_csca.len();
+
+    let dsc_body: Vec<u8> = (0u8..77).cycle().take(150).collect();
+    let raw_dsc_padded = sha_pad(&dsc_body);
+    let digest = Sha256::digest(&dsc_body);
+    let sig = key.sign_digest_pkcs1v15(&digest, 256);
+
+    json!({
+        "raw_csca": bytes_to_decimal(&raw_csca),
+        "raw_csca_actual_length": [raw_csca_actual_length.to_string()],
+        "csca_pubKey_offset": [offset.to_string()],
+        "csca_pubKey_actual_size": [actual_size.to_string()],
+        "raw_dsc": bytes_to_decimal(&raw_dsc_padded),
+        "raw_dsc_padded_length": [raw_dsc_padded.len().to_string()],
+        "csca_pubKey": to_limbs(&key.n, n, k),
+        "signature": to_limbs(&sig, n, k),
+    })
+}
+
 /// Flips one byte of a decimal-string byte array field, in place.
 pub fn flip_byte(v: &mut Value, key: &str, index: usize) {
     let arr = v[key].as_array_mut().expect("array field");
     let cur: u8 = arr[index].as_str().unwrap().parse().unwrap();
     arr[index] = Value::String((cur ^ 0x01).to_string());
+}
+
+/// Perturbs one limb of a decimal-string big-integer field (e.g. `pubKey_dsc`,
+/// `csca_pubKey`), in place. Unlike `flip_byte`, a limb is not bounded to
+/// `0..=255` -- it can be a multi-hundred-bit base-`2^n` digit -- so this
+/// parses it as a `BigUint` and nudges it by 1 (toggling its low bit) rather
+/// than treating it as a byte, which would overflow `u8::parse` for any real
+/// limb.
+pub fn flip_limb(v: &mut Value, key: &str, index: usize) {
+    let arr = v[key].as_array_mut().expect("array field");
+    let cur: BigUint = arr[index].as_str().unwrap().parse().unwrap();
+    let one = BigUint::from(1u32);
+    let flipped = if &cur % 2u32 == BigUint::from(1u32) { cur - &one } else { cur + &one };
+    arr[index] = Value::String(flipped.to_string());
 }
 
 /// The independent test vector transcribed from didit-tee's own unit test

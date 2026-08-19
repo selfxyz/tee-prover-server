@@ -12,6 +12,7 @@ use futures::FutureExt;
 
 pub mod aadhaar;
 pub mod chunks;
+pub mod dsc;
 pub mod kyc;
 pub mod params;
 pub mod passport;
@@ -100,6 +101,16 @@ pub(crate) fn dispatch(
     // prefix, so a single prefix check covers both).
     if circuit_name.starts_with("register") {
         return passport::verify(inputs, p);
+    }
+
+    // DSC circuits (a CSCA signing a DSC certificate). The "dsc" and
+    // "register" prefixes are disjoint, so this arm's position relative to
+    // the one above is not load-bearing -- but this file has already had two
+    // prefix-shadowing bugs caught in review (see the Aadhaar/KYC comment
+    // above), so it gets its own routing-pin test below rather than resting
+    // on "the prefixes happen not to collide today".
+    if circuit_name.starts_with("dsc") {
+        return dsc::verify(inputs, p);
     }
 
     Verdict::Skipped(format!("no verifier wired for circuit {circuit_name}"))
@@ -257,5 +268,38 @@ mod tests {
                 "register_kyc must never reach the passport verifier, got {other:?}"
             ),
         }
+    }
+
+    /// Pins DSC routing directly against `dispatch`, exercising the real
+    /// routing table against in-memory inputs -- exactly what `dispatch`'s
+    /// own doc comment says it was split out for. A self-consistent RSA DSC
+    /// fixture only verifies `Valid` if it actually reached `dsc::verify`;
+    /// passport::verify would reject it outright (no `dg1`/`pubKey_dsc`/
+    /// `signature_passport` fields at all).
+    #[test]
+    fn dsc_prefixed_circuits_are_routed_to_the_dsc_verifier() {
+        let p = params::lookup("dsc_sha256_rsa_65537_4096").expect("known circuit");
+        let key = testkit::TestRsaKey::generate(65537);
+        let inputs = testkit::dsc_inputs(&key, p.n, p.k as usize);
+
+        let v = dispatch("dsc_sha256_rsa_65537_4096", &inputs, &p);
+        assert_eq!(v, Verdict::Valid, "a self-consistent dsc_ fixture must reach dsc::verify, got {v:?}");
+    }
+
+    /// The other half of the pin: a `register_` name must still reach
+    /// `passport::verify`, not be swallowed by a `dsc` arm matched too
+    /// broadly (e.g. `contains("dsc")` instead of a `starts_with` prefix, or
+    /// an ordering mistake). Reuses the existing passport fixture -- if
+    /// dsc::verify ever ran on this instead, it would skip on a missing
+    /// `raw_csca` field rather than verify `Valid` the way passport::verify
+    /// does here.
+    #[test]
+    fn register_prefixed_circuits_are_never_routed_to_the_dsc_verifier() {
+        let p = params::lookup("register_sha256_sha256_sha256_rsa_65537_4096").expect("known circuit");
+        let key = testkit::TestRsaKey::generate(65537);
+        let inputs = testkit::passport_inputs(&key, p.n, p.k as usize);
+
+        let v = dispatch("register_sha256_sha256_sha256_rsa_65537_4096", &inputs, &p);
+        assert_eq!(v, Verdict::Valid, "register_ names must still reach passport::verify, got {v:?}");
     }
 }
