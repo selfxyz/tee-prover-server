@@ -57,12 +57,28 @@
 // declares" check below: each names a fixed-size circuit signal that either
 // cannot be populated at all from the given input, or cannot satisfy the
 // signal's own byte-range constraint -- an affirmative structural failure,
-// not uncertainty, so these report `Invalid`. A handful of superficially
-// similar checks (the four SHA-padding-shape checks; an RSA-scheme, as
-// opposed to RSA-PSS-scheme, modulus that fails to reassemble; three
-// Aadhaar-specific width checks) remain `Skipped` deliberately: this
-// module's report for that task explains, case by case, why no comparable
-// certainty was available for those.
+// not uncertainty, so these report `Invalid`.
+//
+// Plan B, Task 3 asked a different question of the small remainder Task 2
+// left `Skipped`: not "does the circuit also reject this" (Task 2's test),
+// but "could a genuine document ever have this property." A genuine
+// `signed_attr`/`eContent`/`raw_dsc`/`qrDataPadded` is always padded by a
+// deterministic client-side padding routine, so malformed padding is never a
+// property of the underlying document -- Task 3 promoted all four
+// padding-shape checks to `Invalid` on that basis. The same reasoning
+// promoted a limb-encoded modulus that fails to reassemble regardless of
+// scheme (chunking a real modulus into fixed-width limbs cannot itself
+// produce an out-of-range limb) and a non-object `input.json` (a genuine
+// circuit-input generator never emits anything but a JSON object). What
+// remains `Skipped` after Task 3 -- and why -- is documented at each
+// remaining site and in that task's report: a handful of node:crypto
+// catch-alls this module cannot fully enumerate, and -- the one item that
+// reflects a real, ongoing possibility rather than an oversight -- a
+// `raw_dsc`/`raw_csca` whose ASN.1 structure a strict parser rejects, or
+// whose embedded key uses an algorithm this module does not carry limb
+// parameters for. Unlike padding, that structure and algorithm choice come
+// from the issuing government PKI, not from client-controlled encoding
+// logic, so "no genuine document has this" cannot be asserted there.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -1074,19 +1090,9 @@ function offsetInRange(offset, size, bound) {
  * @param {string} keyField field name, for the reason string (e.g. `pubKey_dsc`).
  * @param {string} rawField field name, for the reason string (e.g. `raw_dsc`).
  * @param {string} offsetField field name, for the reason string (e.g. `dsc_pubKey_offset`).
- * @param {boolean} modulusRangeChecked whether the RSA-scheme certificate this
- *   window is read from is signed by an RSA-PSS circuit -- `validate.circom`'s
- *   `ValidateRsaPss` range-checks BOTH `signature[i]` and `pubkey[i]` against
- *   `CHUNK_SIZE` bits, where the plain-PKCS#1v1.5 verifiers
- *   (`verifyRsa65537Pkcs1v1_5.circom` and siblings) only range-check
- *   `signature[i]`, leaving the modulus chunks themselves unconstrained. Only
- *   changes which verdict a modulus that fails to reassemble gets; unused for
- *   `scheme === 'ecdsa'`, where the equivalent range check
- *   (`ecdsaVerifier.circom`'s `Num2Bits(n)` over `pubKey_x`/`pubKey_y`) always
- *   applies regardless of scheme.
  * @returns {{ok:true} | {ok:false, skip:boolean, reason:string}}
  */
-function keyMatchesWindow(suppliedLimbs, n, k, scheme, rawBuf, offset, size, keyField, rawField, offsetField, modulusRangeChecked) {
+function keyMatchesWindow(suppliedLimbs, n, k, scheme, rawBuf, offset, size, keyField, rawField, offsetField) {
   const window = rawBuf.subarray(offset, offset + size);
   const sizeField = offsetField.replace(/_offset$/, '_actual_size');
   if (scheme === 'ecdsa') {
@@ -1132,14 +1138,13 @@ function keyMatchesWindow(suppliedLimbs, n, k, scheme, rawBuf, offset, size, key
   // (same convention as keyMatchesCert's 'rsa' scheme).
   const modulus = limbsToBigInt(suppliedLimbs, n);
   if (modulus === null) {
-    // validate.circom's ValidateRsaPss range-checks pubkey[i] with
-    // Num2Bits(CHUNK_SIZE) alongside signature[i] (validate.circom:22-27), so
-    // an out-of-range or non-decimal modulus limb cannot satisfy an RSA-PSS
-    // circuit's constraints either. The plain PKCS#1v1.5 verifiers
-    // (verifyRsa65537Pkcs1v1_5.circom and siblings) range-check only the
-    // signature, leaving this modulus-reassembly case unconfirmed for that
-    // scheme -- so it stays a skip there rather than a guessed reject.
-    return { ok: false, skip: !modulusRangeChecked, reason: `${keyField} does not reassemble into a valid integer` };
+    // Chunking a genuine modulus into fixed-width limbs is a deterministic
+    // client-side transform: every limb of a correctly-chunked value is, by
+    // construction, in `[0, 2^n)`. An out-of-range or non-decimal limb is
+    // therefore never a property of the underlying key, only of how the JSON
+    // was built -- an affirmative structural failure, not a coverage gap, for
+    // every scheme (RSA and RSA-PSS alike).
+    return { ok: false, skip: false, reason: `${keyField} does not reassemble into a valid integer` };
   }
   const modulusBytes = bigIntToFixedBytes(modulus, size);
   if (!modulusBytes) {
@@ -1374,6 +1379,14 @@ function verifyEcdsa(cert, hashBits, message, rLimbs, sLimbs, n) {
   if (r === null || s === null) {
     return { ok: false, skip: false, reason: 'signature does not reassemble into a valid integer' };
   }
+  // The next two catches are reached only if the SAME `cert.key` already
+  // failed the identical export/point-extraction inside `keyMatchesCert`,
+  // called on this same certificate before any call reaches this function --
+  // both are pure, stateless computations over the same bytes, so neither
+  // can newly fail here having already succeeded there. Left as `Skipped`
+  // regardless (not promoted, not deleted): they cost nothing to keep as a
+  // second line of defence, and this module makes no argument for deleting a
+  // check just because it currently cannot fire.
   let spkiDer;
   try {
     spkiDer = cert.key.export({ format: 'der', type: 'spki' });
@@ -1388,6 +1401,10 @@ function verifyEcdsa(cert, hashBits, message, rLimbs, sLimbs, n) {
   const rBytes = bigIntToFixedBytes(r, fieldBytes);
   const sBytes = bigIntToFixedBytes(s, fieldBytes);
   if (!rBytes || !sBytes) {
+    // Also unreachable in practice: for every curve this module supports,
+    // `n * k` (limbsToBigInt's own range bound) equals `fieldBytes * 8`
+    // exactly, so a value that reassembles at all already fits in
+    // `fieldBytes` bytes. Kept for the same reason as the two checks above.
     return { ok: false, skip: true, reason: 'signature scalar is wider than the curve field' };
   }
   const sigBytes = Buffer.concat([rBytes, sBytes]);
@@ -1763,7 +1780,11 @@ function verifyRegisterFamily(inputs, p) {
   // --- link 2: sha(recoverMessage(eContent)) == signed_attr window ---
   const econtentMsg = recoverMessage(econtent, econtentPaddedLength);
   if (!econtentMsg) {
-    return skipped('eContent padding is malformed or inconsistent with eContent_padded_length');
+    // eContent's padding is applied by a deterministic client-side padding
+    // routine, not read off the document itself -- a genuine eContent is
+    // always correctly padded, so malformed padding here is never a property
+    // of the underlying document, only of how the JSON was built.
+    return invalid('eContent padding is malformed or inconsistent with eContent_padded_length');
   }
   const econtentDigest = digestBuffer(p.econtentHash, econtentMsg);
   if (!econtentDigest) {
@@ -1809,7 +1830,6 @@ function verifyRegisterFamily(inputs, p) {
     'pubKey_dsc',
     'raw_dsc',
     'dsc_pubKey_offset',
-    p.scheme === 'rsapss',
   );
   if (!windowResult.ok) {
     return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
@@ -1835,7 +1855,12 @@ function verifyRegisterFamily(inputs, p) {
     // or the SPKI names an algorithm this module does not support (a
     // `reason` naming it -- see certPublicKeyOrInvalidReason/
     // classifySpkiAlgorithm) -- both are honest coverage gaps, not evidence
-    // of a bad key.
+    // of a bad key. Unlike the padding/reassembly checks elsewhere in this
+    // file, this is not promoted to `Invalid`: raw_dsc's certificate bytes
+    // come from the issuing government's own PKI, not from a client-side
+    // encoding routine this module can reason about, so "no genuine document
+    // has this" cannot be asserted here the way it can for a deterministic
+    // padding transform.
     return skipped(dscCertResult.reason || 'raw_dsc does not parse as a readable certificate');
   }
   const dscCert = { key: dscCertResult.key, details: dscCertResult.details };
@@ -1860,7 +1885,8 @@ function verifyRegisterFamily(inputs, p) {
   // --- link 4: signature_passport verifies over sha(recoverMessage(signed_attr)) under the certificate's key ---
   const signedAttrMsg = recoverMessage(signedAttr, signedAttrPaddedLength);
   if (!signedAttrMsg) {
-    return skipped('signed_attr padding is malformed or inconsistent with signed_attr_padded_length');
+    // Same reasoning as eContent's padding check above.
+    return invalid('signed_attr padding is malformed or inconsistent with signed_attr_padded_length');
   }
   const result = verifySignatureLink(p.scheme, dscCert, p.sigHash, signedAttrMsg, sigLimbs, p.n, p.k, p.saltLen);
   if (!result.ok) {
@@ -1967,7 +1993,6 @@ function verifyDscFamily(inputs, p) {
     'csca_pubKey',
     'raw_csca',
     'csca_pubKey_offset',
-    p.scheme === 'rsapss',
   );
   if (!windowResult.ok) {
     return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
@@ -2006,7 +2031,11 @@ function verifyDscFamily(inputs, p) {
   // --- link 2: signature verifies over sig_hash(recoverMessage(raw_dsc)) under the certificate's key ---
   const rawDscMsg = recoverMessage(rawDsc, rawDscPaddedLength);
   if (!rawDscMsg) {
-    return skipped('raw_dsc padding is malformed or inconsistent with raw_dsc_padded_length');
+    // Same reasoning as the register family's padding checks: this is the
+    // deterministic SHA-padding wrapper applied around raw_dsc for hashing,
+    // not the certificate's own ASN.1 structure -- a genuine document's
+    // padding is always well-formed.
+    return invalid('raw_dsc padding is malformed or inconsistent with raw_dsc_padded_length');
   }
   const result = verifySignatureLink(p.scheme, cscaCert, p.sigHash, rawDscMsg, sigLimbs, p.n, p.k, p.saltLen);
   if (!result.ok) {
@@ -2023,6 +2052,35 @@ function verifyDscFamily(inputs, p) {
 // reconstructed into a real `KeyObject` so node:crypto -- not a hand-rolled
 // modexp -- performs the actual verification.
 // ---------------------------------------------------------------------
+
+/**
+ * The minimal big-endian byte width a positive `value` needs -- i.e.
+ * `ceil(bitLength(value) / 8)`. `null` for a non-positive value (never a
+ * genuine RSA modulus).
+ *
+ * Used in place of a hardcoded modulus width for Aadhaar (below), which has
+ * no certificate to read a declared key size from: a genuine RSA modulus
+ * always has its top bit set at its own true bit length (that is what "an
+ * N-bit modulus" means), so deriving the expected width from the supplied
+ * modulus's own magnitude is the direct substitute for "read it off the
+ * certificate" when there is no certificate -- and unlike a hardcoded size
+ * class, it does not assume which key size the issuer currently uses.
+ *
+ * @param {bigint} value
+ * @returns {number | null}
+ */
+function minimalByteLength(value) {
+  if (typeof value !== 'bigint' || value <= 0n) {
+    return null;
+  }
+  let bits = 0n;
+  let v = value;
+  while (v > 0n) {
+    v >>= 1n;
+    bits++;
+  }
+  return Number((bits + 7n) / 8n);
+}
 
 function verifyAadhaar(inputs, p) {
   const qrStrs = fieldAsStrings(inputs.qrDataPadded);
@@ -2044,7 +2102,10 @@ function verifyAadhaar(inputs, p) {
   }
   const modulus = limbsToBigInt(pubkeyLimbs, p.n);
   if (modulus === null) {
-    return skipped('pubKey does not reassemble into a valid integer');
+    // Same reasoning as keyMatchesWindow's RSA modulus-reassembly check:
+    // chunking a real modulus into fixed-width limbs cannot itself produce an
+    // out-of-range or non-decimal limb.
+    return invalid('pubKey does not reassemble into a valid integer');
   }
 
   const sigLimbs = fieldAsStrings(inputs.signature);
@@ -2058,18 +2119,28 @@ function verifyAadhaar(inputs, p) {
 
   const qrMsg = recoverMessage(qrPadded, qrPaddedLen);
   if (!qrMsg) {
-    return skipped('qrDataPadded padding is malformed or inconsistent with qrDataPaddedLength');
+    // Same reasoning as the register/DSC families' padding checks: a genuine
+    // qrDataPadded is always correctly padded by the same deterministic
+    // client-side routine.
+    return invalid('qrDataPadded padding is malformed or inconsistent with qrDataPaddedLength');
   }
 
-  // params.rs's register_aadhaar branch fixes the modulus at 2048 bits
-  // (Scheme::Rsa{e:65537,bits:2048}) -- 256 bytes.
-  const modulusBytes = bigIntToFixedBytes(modulus, 256);
-  if (!modulusBytes) {
-    return skipped('pubKey is wider than the expected 2048-bit Aadhaar modulus');
+  // No certificate exists for this family (see this section's module doc),
+  // so the expected modulus width is derived from pubKey's own magnitude
+  // rather than a fixed key-size assumption -- see minimalByteLength's doc
+  // comment for why that is the direct substitute here.
+  const modulusByteLen = minimalByteLength(modulus);
+  if (!modulusByteLen) {
+    return invalid('pubKey is not a positive modulus');
   }
-  const sigBytes = bigIntToFixedBytes(signature, 256);
+  const modulusBytes = bigIntToFixedBytes(modulus, modulusByteLen);
+  const sigBytes = bigIntToFixedBytes(signature, modulusByteLen);
   if (!sigBytes) {
-    return skipped('signature is wider than the expected 2048-bit Aadhaar modulus');
+    // A valid RSA signature is always numerically smaller than the modulus
+    // it is verified under -- the same requirement already enforced (and
+    // reported this way) for the register/DSC families' RSA and RSA-PSS
+    // signatures.
+    return invalid("signature is wider than pubKey's modulus");
   }
 
   let publicKey;
@@ -2118,7 +2189,10 @@ function verifyAadhaar(inputs, p) {
  */
 export function verify(circuitName, inputs) {
   if (typeof inputs !== 'object' || inputs === null || Array.isArray(inputs)) {
-    return skipped('input.json is not a JSON object');
+    // A genuine circuit-input generator always emits a JSON object keyed by
+    // signal name -- every field access below assumes exactly that shape, so
+    // anything else is never a property a real document's inputs can have.
+    return invalid('input.json is not a JSON object');
   }
   const p = parseCircuitName(circuitName);
   if (!p) {

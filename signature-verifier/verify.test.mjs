@@ -1011,10 +1011,10 @@ describe('verify -- skip paths', () => {
     assert.equal(result.verdict, 'skipped');
   });
 
-  test('a non-object input.json is skipped, not a thrown exception', () => {
-    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', null).verdict, 'skipped');
-    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', 'not an object').verdict, 'skipped');
-    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]).verdict, 'skipped');
+  test('a non-object input.json is invalid, not a thrown exception (Plan B Task 3: a genuine circuit-input generator never emits anything else)', () => {
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', null).verdict, 'invalid');
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', 'not an object').verdict, 'invalid');
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]).verdict, 'invalid');
   });
 
   test('a missing field is invalid, not skipped (register family)', () => {
@@ -1039,7 +1039,7 @@ describe('verify -- skip paths', () => {
     assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('malformed eContent padding is skipped, not invalid (register family)', () => {
+  test('malformed eContent padding is invalid (register family; Plan B Task 3: a genuine eContent is always correctly padded by the deterministic client-side routine that built it)', () => {
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     // Not a multiple of 64: recoverMessage's block-alignment check rejects
@@ -1047,22 +1047,22 @@ describe('verify -- skip paths', () => {
     // content -- unlike a padded length that IS block-aligned (e.g. 64),
     // which this real fixture's actual bytes might still happen to parse as
     // a differently-recovered (but structurally valid) message, breaking
-    // link 2 (Invalid) rather than the padding parse itself (Skipped). Still
-    // >= dg1_hash_offset(70) + dg_hash/8(32) = 102, so link 1's own offset
-    // bound check (checked first) does not trip instead.
+    // link 2 for a different reason instead of the padding parse itself.
+    // Still >= dg1_hash_offset(70) + dg_hash/8(32) = 102, so link 1's own
+    // offset bound check (checked first) does not trip instead.
     tampered.eContent_padded_length = ['447'];
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('malformed raw_dsc padding is skipped, not invalid (DSC family)', () => {
+  test('malformed raw_dsc padding is invalid (DSC family; same reasoning)', () => {
     const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
     const tampered = structuredClone(fixture);
     // Not a multiple of 64 -- see the eContent test above for why this is
     // the deterministic choice rather than a block-aligned length.
     tampered.raw_dsc_padded_length = '703';
     const result = verify('dsc_sha256_rsa_65537_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
   test('an unreadable certificate is skipped (register family: raw_dsc\'s outer DER tag corrupted)', () => {
@@ -1389,73 +1389,110 @@ describe('verify -- Plan B Task 2: plain-RSA-scheme SIGNATURE reassembly is inva
   });
 });
 
-describe('verify -- Plan B Task 2: left as skipped -- no confirmed circuit citation, so no promotion on a guess (see this task\'s report)', () => {
-  test('pubKey_dsc modulus out of range STAYS skipped for plain RSA (register family -- only the signature, not the modulus, is range-checked by verifyRsa65537Pkcs1v1_5.circom)', () => {
+describe("verify -- Plan B Task 3: promoted from Task 2's cannot-confirm bucket (right question: could a genuine document ever have this property? see this task's report)", () => {
+  test('pubKey_dsc modulus out of range is now invalid for plain RSA too (chunking a real modulus into limbs cannot itself produce an out-of-range limb, regardless of scheme)', () => {
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     const limbs = [...tampered.pubKey_dsc];
     limbs[0] = outOfRangeLimb();
     tampered.pubKey_dsc = limbs;
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
     assert.match(result.reason, /pubKey_dsc does not reassemble into a valid integer/);
   });
 
-  test('pubKey out of range STAYS skipped for Aadhaar (same reasoning -- Aadhaar dispatches through the same plain-PKCS1v1.5 verifier, modulus unchecked)', () => {
+  test('pubKey out of range is now invalid for Aadhaar (same reasoning)', () => {
     const fixture = loadFixture('register_aadhaar.json');
     const tampered = structuredClone(fixture);
     const limbs = [...tampered.pubKey];
     limbs[0] = outOfRangeLimb();
     tampered.pubKey = limbs;
     const result = verify(AADHAAR_CIRCUIT, tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
     assert.match(result.reason, /pubKey does not reassemble into a valid integer/);
   });
 
-  test('pubKey reassembling wider than the fixed 2048-bit Aadhaar modulus STAYS skipped (no confirmed circuit assertion of that exact bound)', () => {
+  test("Aadhaar no longer assumes a fixed 2048-bit modulus -- a pubKey that reassembles to a different magnitude is verified against ITS OWN derived width, and rejected (invalid) because the signature under the real key no longer matches it, not skipped for being an unexpected width", () => {
     const fixture = loadFixture('register_aadhaar.json');
     const tampered = structuredClone(fixture);
     const limbs = [...tampered.pubKey];
     // n=121, k=17: the top limb (index 16) is scaled by 2^(121*16)=2^1936.
-    // 2^113 is still a valid in-range limb (< 2^121), but 2^113 * 2^1936 =
-    // 2^2049 needs 257 bytes -- one more than the fixed 256-byte modulus.
+    // 2^113 is still a valid in-range limb (< 2^121), but 2^113 * 2^1936 is
+    // far past any real 2048-bit modulus -- previously an unconfirmed
+    // "too wide" skip; now just a wrong modulus, caught by verification.
     limbs[limbs.length - 1] = (1n << 113n).toString();
     tampered.pubKey = limbs;
     const result = verify(AADHAAR_CIRCUIT, tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
-    assert.match(result.reason, /pubKey is wider than the expected 2048-bit Aadhaar modulus/);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /Aadhaar signature does not verify/);
   });
 
-  test('signature reassembling wider than the fixed 2048-bit Aadhaar modulus STAYS skipped', () => {
+  test('a signature reassembling wider than pubKey\'s own derived modulus width is invalid for Aadhaar (same "signature must be narrower than the modulus" requirement already enforced for the register/DSC families)', () => {
     const fixture = loadFixture('register_aadhaar.json');
     const tampered = structuredClone(fixture);
     const limbs = [...tampered.signature];
     limbs[limbs.length - 1] = (1n << 113n).toString();
     tampered.signature = limbs;
     const result = verify(AADHAAR_CIRCUIT, tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
-    assert.match(result.reason, /signature is wider than the expected 2048-bit Aadhaar modulus/);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature is wider than pubKey's modulus/);
   });
 
-  test('malformed signed_attr padding STAYS skipped (register family, link 4 -- see report: only block-alignment is a confirmed circuit constraint, not the marker/zero-run/bit-length shape)', () => {
+  test('malformed signed_attr padding is now invalid (register family, link 4 -- a genuine signed_attr is always correctly SHA-padded by the deterministic client-side routine that built it)', () => {
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     const original = Number([].concat(fixture.signed_attr_padded_length)[0]);
     tampered.signed_attr_padded_length = [String(original + 1)]; // no longer a multiple of 64
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
     assert.match(result.reason, /signed_attr padding is malformed/);
   });
 
-  test('malformed qrDataPadded padding STAYS skipped (Aadhaar, same Sha256Bytes/Sha256General mechanics as the other padding checks)', () => {
+  test('malformed qrDataPadded padding is now invalid (Aadhaar, same deterministic-padding reasoning)', () => {
     const fixture = loadFixture('register_aadhaar.json');
     const tampered = structuredClone(fixture);
     tampered.qrDataPaddedLength = Number(fixture.qrDataPaddedLength) + 1;
     const result = verify(AADHAAR_CIRCUIT, tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
     assert.match(result.reason, /qrDataPadded padding is malformed/);
   });
+
+  test('malformed eContent padding is now invalid (register family, link 2 -- same reasoning)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const original = Number([].concat(fixture.eContent_padded_length)[0]);
+    tampered.eContent_padded_length = [String(original + 1)];
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /eContent padding is malformed/);
+  });
+
+  test('malformed raw_dsc padding is now invalid (DSC family, link 2 -- same reasoning)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    const original = Number([].concat(fixture.raw_dsc_padded_length)[0]);
+    tampered.raw_dsc_padded_length = [String(original + 1)];
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_dsc padding is malformed/);
+  });
+
+  test('input.json that is not a JSON object is now invalid (a genuine circuit-input generator never emits anything else)', () => {
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /input.json is not a JSON object/);
+  });
 });
+
+// The one item Task 3 re-tested and deliberately left `Skipped` -- not
+// because no test covers it, but because a genuine document CAN have this
+// property: a real DSC/CSCA may legitimately use a signature algorithm this
+// module carries no limb parameters for, unlike the padding/reassembly
+// checks promoted above, which are about a client-side encoding step this
+// module can reason about directly. Already regression-pinned by the
+// "an unsupported SPKI algorithm is skipped, not invalid (the OID-flip case)"
+// suite further down this file (`certPublicKeyOrInvalidReason`/
+// `classifySpkiAlgorithm`) -- re-run, not re-written, by this task.
 
 // =======================================================================
 // Plan B, Task 1: RFC-strict negative vectors.
@@ -2095,6 +2132,17 @@ describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) mat
     for (const file of files) {
       const stem = file.slice(0, -'.circom'.length);
       if (stem === 'register_kyc') {
+        // No limb layout to drift-check (EdDSA-BabyJubJub has none), but
+        // Plan B Task 3's zero-skip target still requires this on-disk name
+        // to parse -- an unrecognized name is a coverage gap, not a
+        // "nothing to check here." See src/verifier/mod.rs's
+        // `register_kyc_is_routed_to_the_native_kyc_verifier` for the
+        // routing this parse result feeds into.
+        test(`${familyDir}/instances/${file}`, () => {
+          const parsed = parseCircuitName(stem);
+          assert.ok(parsed, `${stem}: parseCircuitName does not recognize this on-disk instance name at all`);
+          assert.equal(parsed.family, 'kyc', `${stem}: expected family 'kyc', got ${JSON.stringify(parsed)}`);
+        });
         continue;
       }
       test(`${familyDir}/instances/${file}`, () => {
@@ -2196,6 +2244,75 @@ describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) mat
             `signatureAlgorithm id ${sigAlgoId} implies ${expectedSalt} via signatureVerifier.circom:95)`,
         );
       }
+    });
+  }
+});
+
+// =======================================================================
+// Plan B, Task 3, Step 5 -- the residual is empty: every deployed circuit
+// name is not just parseable (the drift guard above) but VERIFIABLE, by one
+// of the two paths production actually has -- this module's own dispatch
+// (register/register_id/dsc/aadhaar), or the native Rust handoff
+// (register_kyc, routed by src/verifier/mod.rs's `dispatch`). This is what
+// turns "zero skips" into a property of the deployed circuit set, not an
+// aspiration: a name that parses but that `verify()`'s own dispatch still
+// treats as an unrecognized/unhandled coverage gap would fail this test,
+// which is exactly the "parses but isn't verifiable" case Step 5 exists to
+// rule out. Extends the drift guard's own file walk rather than building a
+// second one, and self-skips under the same condition and with the same
+// unmistakable message.
+// =======================================================================
+
+describe('residual coverage: every deployed circuit name is verifiable, not merely parseable (Plan B Task 3, Step 5)', () => {
+  if (!SIBLING_AVAILABLE) {
+    const msg = `SKIP: sibling monorepo not present at ${SIBLING_CIRCUITS_ROOT} -- residual coverage guard did NOT run`;
+    console.log(msg);
+    test('sibling monorepo not present -- this whole guard is SKIPPED, not passing', { skip: msg }, () => {});
+    return;
+  }
+
+  function stemsIn(familyDir) {
+    const dir = path.join(SIBLING_CIRCUITS_ROOT, familyDir, 'instances');
+    return fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith('.circom'))
+      .sort()
+      .map((f) => f.slice(0, -'.circom'.length));
+  }
+
+  const allStems = [...stemsIn('register'), ...stemsIn('register_id'), ...stemsIn('dsc')];
+
+  test('at least one on-disk instance file was found (otherwise every test below is vacuous)', () => {
+    assert.ok(allStems.length > 0, `found 0 instance files under ${SIBLING_CIRCUITS_ROOT}`);
+  });
+
+  for (const stem of allStems) {
+    test(`${stem} is verifiable, not merely parseable`, () => {
+      const parsed = parseCircuitName(stem);
+      assert.ok(parsed, `${stem}: does not even parse -- a coverage gap (see the drift guard above)`);
+
+      if (stem === 'register_kyc') {
+        // Verified by the native Rust path instead of this module -- see
+        // src/verifier/mod.rs's `dispatch` and its own
+        // register_kyc_is_routed_to_the_native_kyc_verifier test, which
+        // asserts the ROUTING (not a JS verdict here, since this module
+        // always, and correctly, declines EdDSA-BabyJubJub).
+        assert.equal(parsed.family, 'kyc');
+        return;
+      }
+
+      // Every non-KYC family this module recognizes at all must be routed to
+      // a real verifier function, never the dead-code "unhandled circuit
+      // family" fallback -- exercised by calling verify() with a
+      // deliberately empty input and asserting the verdict is a specific
+      // field-level rejection from that family's own verifier (Plan B Task 2
+      // promoted every "missing or malformed field" case to Invalid, so a
+      // real dispatch always produces exactly that here), never the generic
+      // "unknown or unsupported circuit"/"unhandled circuit family" wording
+      // a coverage gap would produce.
+      const result = verify(stem, {});
+      assert.equal(result.verdict, 'invalid', `${stem}: expected a field-level rejection, got ${JSON.stringify(result)}`);
+      assert.match(result.reason, /^missing or malformed field: /, `${stem}: got ${JSON.stringify(result)}`);
     });
   }
 });
