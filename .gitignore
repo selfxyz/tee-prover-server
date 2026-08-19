@@ -2,3 +2,7 @@
 /tmp*
 /circuits
 /relayer/node_modules
+# Never commit environment files (CLAUDE.md: NEVER commit .env)
+.env
+.env.*
+!.env.example
