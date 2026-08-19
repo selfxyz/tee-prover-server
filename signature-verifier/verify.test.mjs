@@ -1213,6 +1213,158 @@ describe('verify -- an off-curve embedded public key is invalid, not skipped (RF
   });
 });
 
+// ---------------------------------------------------------------------
+// A minimal, test-local DER TLV reader used only to locate the SPKI's
+// AlgorithmIdentifier OID inside a raw_dsc/raw_csca tbsCertificate buffer,
+// so the tests below can flip one of its bytes -- mirroring verify.mjs's
+// own readDerTLV/findSubjectPublicKeyInfo (neither is exported, since
+// they're internal to the fix under test, not part of its public surface).
+// ---------------------------------------------------------------------
+
+function readDerTlvForOidLocation(buf, offset) {
+  const tag = buf[offset];
+  const first = buf[offset + 1];
+  let length;
+  let headerLen;
+  if (first & 0x80) {
+    const numLenBytes = first & 0x7f;
+    let len = 0;
+    for (let i = 0; i < numLenBytes; i++) len = len * 256 + buf[offset + 2 + i];
+    length = len;
+    headerLen = 2 + numLenBytes;
+  } else {
+    length = first;
+    headerLen = 2;
+  }
+  const contentStart = offset + headerLen;
+  return { tag, contentStart, content: buf.subarray(contentStart, contentStart + length), nextOffset: contentStart + length };
+}
+
+/** Locates the SPKI `AlgorithmIdentifier` OID inside `tbsBuf` (a raw_dsc/
+ * raw_csca buffer already truncated to its actual length) and flips its
+ * last byte in place -- leaving every other byte, and the ASN.1 structure
+ * itself, untouched. */
+function flipSpkiAlgorithmOidByte(tbsBuf) {
+  const outer = readDerTlvForOidLocation(tbsBuf, 0);
+  let offset = 0;
+  let oidAbsOffset = null;
+  let oidLen = null;
+  while (offset < outer.content.length) {
+    const tlv = readDerTlvForOidLocation(outer.content, offset);
+    if (tlv.tag === 0x30) {
+      const alg = readDerTlvForOidLocation(tlv.content, 0);
+      if (alg.tag === 0x30) {
+        const bitstr = readDerTlvForOidLocation(tlv.content, alg.nextOffset);
+        if (bitstr.tag === 0x03 && bitstr.nextOffset === tlv.content.length) {
+          const oidTlv = readDerTlvForOidLocation(alg.content, 0);
+          if (oidTlv.tag === 0x06) {
+            oidAbsOffset = outer.contentStart + tlv.contentStart + oidTlv.contentStart;
+            oidLen = oidTlv.content.length;
+            break;
+          }
+        }
+      }
+    }
+    offset = tlv.nextOffset;
+  }
+  assert.ok(oidAbsOffset !== null, 'expected to find the SPKI AlgorithmIdentifier OID in tbsBuf');
+  tbsBuf[oidAbsOffset + oidLen - 1] ^= 0xff;
+}
+
+describe('verify -- an unsupported SPKI algorithm is skipped, not invalid (the OID-flip case)', () => {
+  // certPublicKeyOrInvalidReason's earlier version treated ANY cert.publicKey
+  // throw as Invalid, reasoning that an off-curve point throws there while a
+  // structurally-corrupt certificate throws at the X509Certificate
+  // constructor instead. The first half is right; the conclusion was too
+  // broad: the constructor only parses ASN.1 *structure* -- cert.publicKey is
+  // where OpenSSL actually builds an EVP_PKEY, and EVERYTHING semantic about
+  // the SPKI throws there, including an algorithm OID this OpenSSL build
+  // does not implement, with the SAME generic "decode error" an off-curve
+  // point produces. Flipping one byte of the SPKI algorithm OID -- leaving
+  // the rest of the certificate's ASN.1 structure completely untouched --
+  // demonstrates this: the certificate still parses fine at step 1, and
+  // still throws only at step 2, indistinguishable BY WHICH CALL THREW from
+  // a genuine off-curve key. This must be Skipped ("we don't recognise this
+  // algorithm"), not Invalid ("we know this algorithm and the key is still
+  // bad") -- otherwise a DSC whose SPKI uses an algorithm this build lacks
+  // gets every document from that issuer rejected as a forgery, one
+  // enforcement mode earlier than intended (mode 2 already rejects Invalid;
+  // only mode 3 rejects Skipped), with no skip-rate signal to warn of it.
+
+  test('register family (ECDSA): flipping the SPKI algorithm OID in raw_dsc is skipped, naming the unsupported algorithm', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const circuit = 'register_sha256_sha256_sha256_ecdsa_secp256r1';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const rawDscActualLength = scalarNumber(tampered.raw_dsc_actual_length);
+    flipSpkiAlgorithmOidByte(rawDsc.subarray(0, rawDscActualLength));
+    tampered.raw_dsc = [...rawDsc].map(String);
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /algorithm this build does not support/, `got ${result.reason}`);
+  });
+
+  test('register family (RSA): flipping the SPKI algorithm OID in raw_dsc is skipped, naming the unsupported algorithm', () => {
+    const fixture = loadFixture('register_passport.json');
+    const circuit = 'register_sha256_sha256_sha256_rsa_3_4096';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const rawDscActualLength = scalarNumber(tampered.raw_dsc_actual_length);
+    flipSpkiAlgorithmOidByte(rawDsc.subarray(0, rawDscActualLength));
+    tampered.raw_dsc = [...rawDsc].map(String);
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /algorithm this build does not support/, `got ${result.reason}`);
+  });
+
+  test('DSC family: flipping the SPKI algorithm OID in raw_csca is skipped, naming the unsupported algorithm', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const circuit = 'dsc_sha256_rsa_65537_4096';
+    const tampered = structuredClone(fixture);
+
+    const rawCsca = bytesFromDecimalArray(tampered.raw_csca);
+    const rawCscaActualLength = scalarNumber(tampered.raw_csca_actual_length);
+    flipSpkiAlgorithmOidByte(rawCsca.subarray(0, rawCscaActualLength));
+    tampered.raw_csca = [...rawCsca].map(String);
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /algorithm this build does not support/, `got ${result.reason}`);
+  });
+
+  test('the other direction still holds: a RECOGNIZED algorithm with a genuinely bad key is still invalid, not skipped', () => {
+    // Cross-check so the two directions cannot silently collapse into one
+    // outcome: an off-curve point (recognized algorithm, bad key material)
+    // must stay Invalid even after this fix -- re-asserted here, beside the
+    // OID-flip verdict above, so a regression that made classifySpkiAlgorithm
+    // over-eager (treating everything as unrecognized) would be caught in
+    // the same place as the fix it is meant to pin. Uses the exact
+    // construction the "off-curve embedded public key" suite above already
+    // establishes.
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const circuit = 'register_sha256_sha256_sha256_ecdsa_secp256r1';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const offset = scalarNumber(tampered.dsc_pubKey_offset);
+    const size = scalarNumber(tampered.dsc_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset);
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset + half);
+    tampered.raw_dsc = [...rawDsc].map(String);
+    const onesLimbs = limbsFromBigInt(BigInt(`0x${Buffer.alloc(half, 0x01).toString('hex')}`), 64, 4);
+    tampered.pubKey_dsc = [...onesLimbs, ...onesLimbs];
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /not carry a valid point on secp256r1/, `got ${result.reason}`);
+  });
+});
+
 describe('verify -- an out-of-range ECDSA scalar (r >= curve order) is invalid', () => {
   // node:crypto/OpenSSL's own ECDSA verification already rejects a
   // component outside [1, n-1] (n = the curve order) -- there is no

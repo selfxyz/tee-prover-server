@@ -325,6 +325,274 @@ function extractEcPoint(spkiDer) {
   return { x: point.subarray(1, 1 + coordLen), y: point.subarray(1 + coordLen) };
 }
 
+// ---------------------------------------------------------------------
+// SPKI algorithm classification -- decides WHY OpenSSL refused to build a
+// KeyObject for an embedded public key (certPublicKeyOrInvalidReason,
+// below), never used to perform verification itself.
+//
+// `X509Certificate`'s constructor parses DER *structure* only.
+// `cert.publicKey` is where OpenSSL actually builds an `EVP_PKEY`, and
+// EVERYTHING semantic about the key -- including an algorithm identifier
+// this OpenSSL build has no implementation for at all -- throws there,
+// with the same generic `"decode error"` a genuinely invalid key produces.
+// Verified empirically: flipping one byte of the SPKI `AlgorithmIdentifier`
+// OID in a real `raw_dsc` (leaving the rest of the ASN.1 structure intact)
+// makes `cert.publicKey` throw for both an RSA and an ECDSA fixture, with
+// the exact same error OpenSSL gives for an off-curve point (this file's
+// report). Distinguishing "we don't recognise this algorithm" from "we
+// recognise it and the key is bad anyway" requires reading the SPKI's own
+// `AlgorithmIdentifier` OID directly, independent of whatever OpenSSL made
+// of it.
+// ---------------------------------------------------------------------
+
+const ID_EC_PUBLIC_KEY_OID = '1.2.840.10045.2.1';
+const ID_RSA_ENCRYPTION_OID = '1.2.840.113549.1.1.1';
+const PRIME_FIELD_OID = '1.2.840.10045.1.1'; // ANSI X9.62 prime-field fieldType
+
+// OID -> curve name, matching node:crypto's own `namedCurve` strings (and
+// `CURVE_PARAMS`'s keys, defined later in this file). Values verified
+// empirically: generating a real key for each curve and inspecting its
+// exported SPKI DER (this file's report).
+const CURVE_OID_TO_NAME = {
+  '1.3.132.0.33': 'secp224r1',
+  '1.2.840.10045.3.1.7': 'secp256r1',
+  '1.3.132.0.34': 'secp384r1',
+  '1.3.132.0.35': 'secp521r1',
+  '1.3.36.3.3.2.8.1.1.5': 'brainpoolP224r1',
+  '1.3.36.3.3.2.8.1.1.7': 'brainpoolP256r1',
+  '1.3.36.3.3.2.8.1.1.11': 'brainpoolP384r1',
+  '1.3.36.3.3.2.8.1.1.13': 'brainpoolP512r1',
+};
+
+// Field prime (hex, no leading-zero pad byte) -> curve name, for EC keys
+// that encode their domain parameters EXPLICITLY (`ECParameters`) rather
+// than via the named-curve OID shortcut above. This is not a hypothetical:
+// this repo's own `register_ecdsa_secp256r1.json` fixture's `raw_dsc` does
+// exactly this for a perfectly valid, on-curve secp256r1 key (verified
+// while building this fix -- its SPKI `AlgorithmIdentifier` parameters are
+// an `ECParameters` SEQUENCE, not an OID), and this plan's own design doc
+// flags explicit domain parameters as a real-world DSC pattern. Treating
+// every explicit encoding as "unrecognized" would silently reopen the exact
+// off-curve vulnerability this plan closes for any DSC using this fully
+// standard, OpenSSL-supported encoding: an off-curve point behind explicit
+// parameters would report Skipped (uncertain) rather than Invalid, and
+// nothing else in this module checks curve membership either. The field
+// prime is unique across our 8 supported curves, so matching it is a
+// reliable fingerprint without needing to compare the full parameter set
+// (generator point, order, cofactor). Values verified empirically via
+// `openssl ecparam -name <curve> -param_enc explicit -text` for each of the
+// 8 curves (this file's report).
+const CURVE_PRIME_HEX_TO_NAME = {
+  'ffffffffffffffffffffffffffffffff000000000000000000000001': 'secp224r1',
+  'ffffffff00000001000000000000000000000000ffffffffffffffffffffffff': 'secp256r1',
+  'fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff': 'secp384r1',
+  '01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff':
+    'secp521r1',
+  'd7c134aa264366862a18302575d1d787b09f075797da89f57ec8c0ff': 'brainpoolP224r1',
+  'a9fb57dba1eea9bc3e660a909d838d726e3bf623d52620282013481d1f6e5377': 'brainpoolP256r1',
+  '8cb91e82a3386d280f5d6f7e50e641df152f7109ed5456b412b1da197fb71123acd3a729901d1a71874700133107ec53': 'brainpoolP384r1',
+  'aadd9db8dbe9c48b3fd4e6ae33c9fc07cb308db3b3c9d20ed6639cca703308717d4d9b009bc66842aecda12ae6a380e62881ff2f2d82c68528aa6056583a48f3':
+    'brainpoolP512r1',
+};
+
+/**
+ * Decodes a DER OBJECT IDENTIFIER's raw content bytes (no tag/length) into
+ * its dotted-decimal string, e.g. `[0x2a,0x86,0x48,...]` -> `"1.2.840..."`.
+ * The first byte encodes the first two arcs (`40*X + Y`); every byte after
+ * that is a base-128 value, continued across bytes while the high bit is
+ * set. A truncated trailing value (the final byte still has its
+ * continuation bit set) is simply dropped rather than thrown on -- this is
+ * only ever used to compare against a small fixed set of known-good
+ * dotted strings (below), so a malformed encoding just fails to match any
+ * of them, which is the correct (unrecognized) outcome either way.
+ *
+ * @param {Buffer} bytes
+ * @returns {string | null} null for an empty input.
+ */
+function oidBytesToDotted(bytes) {
+  if (!bytes || bytes.length === 0) {
+    return null;
+  }
+  const first = bytes[0];
+  const x = first < 80 ? Math.floor(first / 40) : 2;
+  const parts = [x, first - 40 * x];
+  let value = 0;
+  for (let i = 1; i < bytes.length; i++) {
+    value = value * 128 + (bytes[i] & 0x7f);
+    if ((bytes[i] & 0x80) === 0) {
+      parts.push(value);
+      value = 0;
+    }
+  }
+  return parts.join('.');
+}
+
+/**
+ * Finds the `SubjectPublicKeyInfo` field inside an already-parsed
+ * `TBSCertificate`'s content (the bytes inside its outer `SEQUENCE`, i.e.
+ * `version`, `serialNumber`, `signature`, `issuer`, `validity`, `subject`,
+ * `subjectPublicKeyInfo`, ...). Rather than counting fields (the `version`
+ * field is `OPTIONAL` and context-tagged, so its presence shifts every
+ * later field's index), this scans each top-level element for the one
+ * whose *shape* is unambiguously `SubjectPublicKeyInfo ::= SEQUENCE {
+ * AlgorithmIdentifier, BIT STRING }` -- a SEQUENCE containing exactly two
+ * children, a nested SEQUENCE (`AlgorithmIdentifier`) whose own first
+ * child is an OBJECT IDENTIFIER, followed immediately by a BIT STRING that
+ * accounts for the rest of the outer SEQUENCE's content. No other
+ * `TBSCertificate` field matches that shape: `issuer`/`subject` are
+ * `SEQUENCE OF SET`, not `SEQUENCE OF SEQUENCE`; `validity` is a `SEQUENCE`
+ * of two `Time` values (`UTCTime`/`GeneralizedTime`, tags `0x17`/`0x18`,
+ * not `0x30`); `signature` (the TBS's own `AlgorithmIdentifier`) is a bare
+ * `AlgorithmIdentifier`, not one wrapped in an outer `SEQUENCE` alongside a
+ * `BIT STRING`.
+ *
+ * @param {Buffer} tbsContent
+ * @returns {{algorithmContent: Buffer, oid: Buffer, afterOidOffset: number} | null}
+ */
+function findSubjectPublicKeyInfo(tbsContent) {
+  let offset = 0;
+  while (offset < tbsContent.length) {
+    const tlv = readDerTLV(tbsContent, offset);
+    if (!tlv) {
+      return null;
+    }
+    if (tlv.tag === 0x30) {
+      const alg = readDerTLV(tlv.content, 0);
+      if (alg && alg.tag === 0x30) {
+        const bitstr = readDerTLV(tlv.content, alg.nextOffset);
+        if (bitstr && bitstr.tag === 0x03 && bitstr.nextOffset === tlv.content.length) {
+          const oidTlv = readDerTLV(alg.content, 0);
+          if (oidTlv && oidTlv.tag === 0x06) {
+            return { algorithmContent: alg.content, oid: oidTlv.content, afterOidOffset: oidTlv.nextOffset };
+          }
+        }
+      }
+    }
+    offset = tlv.nextOffset;
+  }
+  return null;
+}
+
+/**
+ * Strips a DER INTEGER's leading `0x00` pad byte, if present. DER INTEGER
+ * encoding prepends exactly one such byte only when needed to keep the
+ * value positive (i.e. when the following byte's own high bit is set) --
+ * removing it yields the plain unsigned big-endian value.
+ *
+ * @param {Buffer} bytes
+ * @returns {Buffer}
+ */
+function stripDerIntegerPad(bytes) {
+  if (bytes.length > 1 && bytes[0] === 0x00 && (bytes[1] & 0x80) !== 0) {
+    return bytes.subarray(1);
+  }
+  return bytes;
+}
+
+/**
+ * Matches an explicit `ECParameters` DER structure's field prime against
+ * `CURVE_PRIME_HEX_TO_NAME`, returning the curve name if it matches one of
+ * our 8 supported curves' prime exactly, `null` otherwise (a genuinely
+ * unsupported/custom curve, a binary/char-2 field -- none of our curves use
+ * one -- or a structure this reader cannot parse).
+ *
+ * `ECParameters ::= SEQUENCE { version INTEGER, fieldID SEQUENCE { fieldType
+ * OBJECT IDENTIFIER, parameters ANY }, curve ..., base ..., order ...,
+ * cofactor ... }` -- only `version` and `fieldID` are read; everything after
+ * (the curve coefficients, generator point, order, cofactor) is unused,
+ * since the field prime alone is already a unique fingerprint across our 8
+ * supported curves.
+ *
+ * @param {Buffer} paramsContent the content of the explicit ECParameters SEQUENCE.
+ * @returns {string | null}
+ */
+function matchExplicitPrimeFieldCurve(paramsContent) {
+  const version = readDerTLV(paramsContent, 0);
+  if (!version || version.tag !== 0x02) {
+    return null;
+  }
+  const fieldId = readDerTLV(paramsContent, version.nextOffset);
+  if (!fieldId || fieldId.tag !== 0x30) {
+    return null;
+  }
+  const fieldType = readDerTLV(fieldId.content, 0);
+  if (!fieldType || fieldType.tag !== 0x06 || oidBytesToDotted(fieldType.content) !== PRIME_FIELD_OID) {
+    return null;
+  }
+  const primeTlv = readDerTLV(fieldId.content, fieldType.nextOffset);
+  if (!primeTlv || primeTlv.tag !== 0x02) {
+    return null;
+  }
+  const prime = stripDerIntegerPad(primeTlv.content);
+  return CURVE_PRIME_HEX_TO_NAME[prime.toString('hex')] || null;
+}
+
+/**
+ * Classifies the SPKI algorithm actually embedded in `certificateDer` (a
+ * full DER `Certificate`, e.g. from `wrapAsCertificate`), independent of
+ * whatever `cert.publicKey` made of it. Used only when the getter has
+ * already thrown -- never to perform verification itself.
+ *
+ * `recognized: true` means this module has a working `crypto.verify` path
+ * for the algorithm (`rsaEncryption`, or `id-ecPublicKey` with a curve this
+ * file's `CURVE_PARAMS` table covers, named OR explicitly encoded) -- so if
+ * OpenSSL still refuses the key, the key material itself is the problem,
+ * not our coverage. `recognized: false` covers everything else: an
+ * algorithm this build has no path for at all (`id-RSASSA-PSS` at the SPKI
+ * level, DSA, GOST, ...), or a curve (named or explicit) this module does
+ * not carry limb parameters for -- in every one of these cases OpenSSL's
+ * throw tells us nothing about whether the key material itself is valid.
+ *
+ * @param {Buffer} certificateDer
+ * @returns {{recognized: true, curve?: string, description: string} |
+ *   {recognized: false, description: string}}
+ */
+function classifySpkiAlgorithm(certificateDer) {
+  const outer = readDerTLV(certificateDer, 0);
+  if (!outer || outer.tag !== 0x30) {
+    return { recognized: false, description: 'certificate structure unreadable' };
+  }
+  const tbs = readDerTLV(outer.content, 0);
+  if (!tbs || tbs.tag !== 0x30) {
+    return { recognized: false, description: 'tbsCertificate unreadable' };
+  }
+  const spki = findSubjectPublicKeyInfo(tbs.content);
+  if (!spki) {
+    return { recognized: false, description: 'subjectPublicKeyInfo not found in tbsCertificate' };
+  }
+  const algOid = oidBytesToDotted(spki.oid);
+  if (algOid === ID_RSA_ENCRYPTION_OID) {
+    return { recognized: true, description: 'rsaEncryption' };
+  }
+  if (algOid === ID_EC_PUBLIC_KEY_OID) {
+    const params = readDerTLV(spki.algorithmContent, spki.afterOidOffset);
+    let curve;
+    let unrecognizedDetail;
+    if (params && params.tag === 0x06) {
+      const curveOid = oidBytesToDotted(params.content);
+      curve = CURVE_OID_TO_NAME[curveOid];
+      unrecognizedDetail = curve ? null : `unrecognized curve OID ${curveOid}`;
+    } else if (params && params.tag === 0x30) {
+      // Explicit domain parameters, not the named-curve OID shortcut --
+      // verified present in this repo's own register_ecdsa_secp256r1.json
+      // fixture (see CURVE_PRIME_HEX_TO_NAME's doc comment). Matched by
+      // field prime, not rejected outright.
+      curve = matchExplicitPrimeFieldCurve(params.content);
+      unrecognizedDetail = curve ? null : 'explicit curve parameters that do not match a supported curve';
+    } else {
+      unrecognizedDetail = 'curve parameters this reader cannot decode';
+    }
+    // CURVE_PARAMS is declared later in this file, but this function is
+    // never invoked until verify() runs, well after module evaluation
+    // completes, so this forward reference is safe.
+    if (curve && CURVE_PARAMS[curve]) {
+      return { recognized: true, curve, description: `id-ecPublicKey / ${curve}` };
+    }
+    return { recognized: false, description: `id-ecPublicKey with ${unrecognizedDetail}` };
+  }
+  return { recognized: false, description: `unsupported SPKI algorithm OID ${algOid || '(unreadable)'}` };
+}
+
 /**
  * Renders `value` as exactly `length` big-endian bytes, left-padding with
  * zeros. `null` if `value` is negative or its minimal encoding needs more
@@ -384,24 +652,36 @@ export function certPublicKey(derBytes) {
 }
 
 // ---------------------------------------------------------------------
-// certPublicKeyOrInvalidReason -- Task 2 (Plan B) addition. Same parse as
-// certPublicKey, but distinguishes WHY no key came out, because the two
+// certPublicKeyOrInvalidReason -- Task 1 (Plan B) addition. Same parse as
+// certPublicKey, but distinguishes WHY no key came out, because the
 // reasons now get different verdicts (RFC-strict, not circuit-mirroring):
 // a structurally unparseable certificate is still Skipped (uncertain,
-// unchanged from Plan A); a certificate that parses fine as ASN.1 but whose
-// embedded public key OpenSSL itself refuses to build a KeyObject for --
-// the off-curve-point case, primarily -- is now Invalid, an affirmative
-// rejection, per this plan's design doc ("RFC-strict: ECDSA" section).
+// unchanged from Plan A); a certificate that parses fine as ASN.1 and whose
+// embedded SPKI names an algorithm this module supports (rsaEncryption, or
+// id-ecPublicKey with a curve in CURVE_PARAMS) but whose key OpenSSL still
+// refuses to build a KeyObject for -- the off-curve-point case, primarily
+// -- is Invalid, an affirmative rejection, per this plan's design doc
+// ("RFC-strict: ECDSA" section). A certificate whose SPKI names an
+// algorithm this module does NOT support is Skipped instead, even though
+// `cert.publicKey` throws there too: `X509Certificate`'s constructor
+// parses ASN.1 *structure* only, so an algorithm OpenSSL cannot build an
+// `EVP_PKEY` for throws at the SAME getter, with the SAME generic
+// "decode error", as a genuinely bad key of a *supported* algorithm.
+// Conflating the two used to make an unsupported-algorithm DSC (e.g. one
+// this OpenSSL build has no implementation for) reject every document
+// from that issuer as a forgery, one enforcement mode earlier than
+// intended, with no skip-rate signal to warn of it -- see this file's
+// report and classifySpkiAlgorithm's own doc comment.
 //
-// certPublicKey itself is left alone (Task 1's contract, tested directly
-// with its own "returns null on any failure" semantics) rather than
-// widening its return shape -- this is a separate function used only by the
-// two call sites that need the distinction.
+// certPublicKey itself is left alone (Task 1's original contract, tested
+// directly with its own "returns null on any failure" semantics) rather
+// than widening its return shape -- this is a separate function used only
+// by the two call sites that need the distinction.
 // ---------------------------------------------------------------------
 
 /**
  * Splits certPublicKey's single "parse the certificate" step into its two
- * distinct OpenSSL calls, so the two ways it can fail can get two different
+ * distinct OpenSSL calls, so the two ways it can fail can get different
  * verdicts:
  *
  * 1. `new crypto.X509Certificate(buf)` parses DER/ASN.1 *structure* only. If
@@ -410,17 +690,28 @@ export function certPublicKey(derBytes) {
  *    report `Skipped`, unchanged from before.
  * 2. `cert.publicKey` is where OpenSSL actually builds an `EVP_PKEY` from the
  *    parsed `SubjectPublicKeyInfo` -- this is where curve-membership (and
- *    other key-validity) checks happen. Verified empirically (this file's
- *    report): a certificate carrying a syntactically well-formed but
- *    off-curve EC point parses fine at step 1, then throws only here
- *    (`"digital envelope routines::decode error"`), while a corrupted outer
- *    DER tag throws at step 1 instead. If step 2 throws, the certificate's
- *    structure was fine but its key material was not -- `{ok:false,
- *    invalid:true, reason}`, callers report `Invalid`.
+ *    other key-validity) checks happen, but it is ALSO where an algorithm
+ *    OpenSSL simply does not implement throws, with an indistinguishable
+ *    generic error. Verified empirically (this file's report): a
+ *    certificate carrying a syntactically well-formed but off-curve EC
+ *    point parses fine at step 1, then throws only here (`"digital
+ *    envelope routines::decode error"`), while a corrupted outer DER tag
+ *    throws at step 1 instead -- AND flipping one byte of the SPKI's own
+ *    `AlgorithmIdentifier` OID (leaving the rest of the ASN.1 untouched)
+ *    also parses fine at step 1 and throws only here, with the exact same
+ *    error text. So step 2 throwing is NOT by itself evidence the key
+ *    material is bad -- `classifySpkiAlgorithm` (below) resolves that by
+ *    reading the OID directly rather than trusting which OpenSSL call
+ *    failed. If step 2 throws AND the algorithm is one this module
+ *    supports, the key material itself was not valid -- `{ok:false,
+ *    invalid:true, reason}`, callers report `Invalid`. If step 2 throws
+ *    and the algorithm is unsupported, callers report `Skipped` instead --
+ *    `{ok:false, invalid:false, reason}`, naming the unsupported algorithm.
  *
  * @param {Uint8Array | Buffer} derBytes
  * @returns {{ok:true, key: import('node:crypto').KeyObject, details: object} |
- *   {ok:false, invalid:true, reason:string} | {ok:false, invalid:false}}
+ *   {ok:false, invalid:true, reason:string} |
+ *   {ok:false, invalid:false, reason?:string}}
  */
 function certPublicKeyOrInvalidReason(derBytes) {
   const buf = Buffer.isBuffer(derBytes) ? derBytes : Buffer.from(derBytes);
@@ -434,7 +725,15 @@ function certPublicKeyOrInvalidReason(derBytes) {
     const key = cert.publicKey;
     return { ok: true, key, details: { ...key.asymmetricKeyDetails } };
   } catch (err) {
-    return { ok: false, invalid: true, reason: err && err.message ? err.message : String(err) };
+    const alg = classifySpkiAlgorithm(buf);
+    if (alg.recognized) {
+      return { ok: false, invalid: true, reason: err && err.message ? err.message : String(err), curve: alg.curve };
+    }
+    return {
+      ok: false,
+      invalid: false,
+      reason: `SPKI uses an algorithm this build does not support (${alg.description}), so key validity cannot be checked`,
+    };
   }
 }
 
@@ -1405,7 +1704,12 @@ function verifyRegisterFamily(inputs, p) {
           `OpenSSL rejected the embedded key (${dscCertResult.reason})`,
       );
     }
-    return skipped('raw_dsc does not parse as a readable certificate');
+    // Either raw_dsc's ASN.1 structure was itself unparseable (no `reason`),
+    // or the SPKI names an algorithm this module does not support (a
+    // `reason` naming it -- see certPublicKeyOrInvalidReason/
+    // classifySpkiAlgorithm) -- both are honest coverage gaps, not evidence
+    // of a bad key.
+    return skipped(dscCertResult.reason || 'raw_dsc does not parse as a readable certificate');
   }
   const dscCert = { key: dscCertResult.key, details: dscCertResult.details };
   // Certificate-based comparison, kept alongside the window comparison
@@ -1552,7 +1856,9 @@ function verifyDscFamily(inputs, p) {
           `OpenSSL rejected the embedded key (${cscaCertResult.reason})`,
       );
     }
-    return skipped('raw_csca does not parse as a readable certificate');
+    // See verifyRegisterFamily's identical branch for why an unsupported
+    // SPKI algorithm gets its own named reason rather than the generic one.
+    return skipped(cscaCertResult.reason || 'raw_csca does not parse as a readable certificate');
   }
   const cscaCert = { key: cscaCertResult.key, details: cscaCertResult.details };
   // Certificate-based comparison, kept alongside the window comparison
