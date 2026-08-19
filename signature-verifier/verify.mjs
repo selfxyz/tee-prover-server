@@ -325,6 +325,61 @@ function extractEcPoint(spkiDer) {
   return { x: point.subarray(1, 1 + coordLen), y: point.subarray(1 + coordLen) };
 }
 
+/**
+ * Extracts the RSA modulus (`n`, a big-endian `Buffer`, no leading-zero pad
+ * byte) directly from a SubjectPublicKeyInfo DER buffer, without ever
+ * calling `KeyObject.export({format:'jwk'})` -- which throws `Unsupported
+ * JWK Key Type` for an `id-RSASSA-PSS` key (see this file's report and
+ * `keyMatchesCert`'s RSA branch, which used to rely on JWK and so
+ * false-rejected every real `id-RSASSA-PSS` SPKI certificate).
+ * `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }`
+ * lives inside the SPKI's `BIT STRING`, identically encoded regardless of
+ * which SPKI `AlgorithmIdentifier` (`rsaEncryption` or `id-RSASSA-PSS`)
+ * wraps it -- the two share one key format, differing only in which
+ * signature scheme the private key is permitted to use.
+ *
+ * Returns `null` for anything unexpected: a malformed outer structure, a
+ * BIT STRING with nonzero unused-bits, or a modulus that is not a DER
+ * INTEGER.
+ *
+ * @param {Buffer} spkiDer
+ * @returns {Buffer | null}
+ */
+function extractRsaModulus(spkiDer) {
+  const outer = readDerTLV(spkiDer, 0);
+  if (!outer || outer.tag !== 0x30) {
+    return null;
+  }
+  const alg = readDerTLV(outer.content, 0);
+  if (!alg) {
+    return null;
+  }
+  const bitstr = readDerTLV(outer.content, alg.nextOffset);
+  if (!bitstr || bitstr.tag !== 0x03 || bitstr.content.length < 2) {
+    return null;
+  }
+  if (bitstr.content[0] !== 0) {
+    return null; // nonzero unused-bits
+  }
+  const rsaPublicKey = readDerTLV(bitstr.content, 1);
+  if (!rsaPublicKey || rsaPublicKey.tag !== 0x30) {
+    return null;
+  }
+  const modulusTlv = readDerTLV(rsaPublicKey.content, 0);
+  if (!modulusTlv || modulusTlv.tag !== 0x02) {
+    return null;
+  }
+  // stripDerIntegerPad (defined further down, alongside the SPKI algorithm
+  // classifier that also needs it) removes the leading 0x00 pad byte DER
+  // INTEGER encoding adds only when needed to keep the value positive, so
+  // the result is the plain unsigned big-endian modulus -- matching the
+  // convention `bigIntToFixedBytes`/`Buffer.compare` below already expect
+  // (the same convention the old JWK `n` field gave). Referencing it here,
+  // before its declaration further down, is safe: this function is never
+  // called until verify() runs, well after module evaluation completes.
+  return stripDerIntegerPad(modulusTlv.content);
+}
+
 // ---------------------------------------------------------------------
 // SPKI algorithm classification -- decides WHY OpenSSL refused to build a
 // KeyObject for an embedded public key (certPublicKeyOrInvalidReason,
@@ -773,11 +828,18 @@ export function keyMatchesCert(suppliedLimbs, n, k, cert, scheme) {
       if (suppliedLimbs.length !== k) {
         return false;
       }
-      const jwk = cert.key.export({ format: 'jwk' });
-      if (jwk.kty !== 'RSA' || typeof jwk.n !== 'string') {
+      // DER SPKI export, not JWK: `KeyObject.export({format:'jwk'})` throws
+      // `Unsupported JWK Key Type` for an `id-RSASSA-PSS` key, which used to
+      // make this branch report a mismatch for every genuine RSASSA-PSS SPKI
+      // certificate regardless of whether the modulus actually matched (this
+      // file's report). `extractRsaModulus` reads the same DER `RSAPublicKey`
+      // structure either SPKI algorithm identifier wraps, exactly as
+      // `extractEcPoint` already does for the ECDSA branch below.
+      const spkiDer = cert.key.export({ format: 'der', type: 'spki' });
+      const certModulus = extractRsaModulus(spkiDer);
+      if (!certModulus) {
         return false;
       }
-      const certModulus = Buffer.from(jwk.n, 'base64url');
       const suppliedModulus = bigIntToFixedBytes(limbsToBigInt(suppliedLimbs, n), certModulus.length);
       if (!suppliedModulus) {
         return false;

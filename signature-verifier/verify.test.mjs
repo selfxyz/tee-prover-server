@@ -590,6 +590,104 @@ describe('keyMatchesCert', () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// An independent (test-only, not imported from verify.mjs) DER reader for
+// RSAPublicKey's modulus, used solely to build the "known correct" expected
+// value for the RSASSA-PSS tests below without relying on the very
+// extraction code (`extractRsaModulus`) those tests exist to pin -- reusing
+// the fix's own code to build its own input would not actually prove
+// anything. Validated against `KeyObject.export({format:'jwk'})` for a
+// plain RSA key (where JWK export works) before being trusted for the one
+// case JWK export cannot handle (RSASSA-PSS).
+// ---------------------------------------------------------------------
+
+function readTlv(buf, offset) {
+  const tag = buf[offset];
+  const first = buf[offset + 1];
+  let length;
+  let headerLen;
+  if (first & 0x80) {
+    const numLenBytes = first & 0x7f;
+    let len = 0;
+    for (let i = 0; i < numLenBytes; i++) len = len * 256 + buf[offset + 2 + i];
+    length = len;
+    headerLen = 2 + numLenBytes;
+  } else {
+    length = first;
+    headerLen = 2;
+  }
+  const contentStart = offset + headerLen;
+  return { tag, contentStart, content: buf.subarray(contentStart, contentStart + length), nextOffset: contentStart + length };
+}
+
+function rsaModulusFromSpkiDerIndependently(spkiDer) {
+  const outer = readTlv(spkiDer, 0);
+  const alg = readTlv(outer.content, 0);
+  const bitstr = readTlv(outer.content, alg.nextOffset);
+  const rsaPublicKey = readTlv(bitstr.content, 1); // skip the leading unused-bits byte
+  const modulusTlv = readTlv(rsaPublicKey.content, 0);
+  let modulus = modulusTlv.content;
+  if (modulus.length > 1 && modulus[0] === 0x00 && (modulus[1] & 0x80) !== 0) {
+    modulus = modulus.subarray(1);
+  }
+  return modulus;
+}
+
+describe('keyMatchesCert -- id-RSASSA-PSS SPKI certificates', () => {
+  // Real DSCs can carry an id-RSASSA-PSS SPKI algorithm identifier (this
+  // plan's design doc). keyMatchesCert's RSA branch used to call
+  // `cert.key.export({format:'jwk'})`, which throws `Unsupported JWK Key
+  // Type` for an rsa-pss KeyObject -- caught by the branch's own try/catch
+  // and reported as "does not match", even when the supplied modulus was
+  // correct. This pins the fix.
+
+  test("sanity check: this test file's own independent DER reader agrees with JWK export for a plain (non-PSS) RSA key", () => {
+    const { publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const jwkModulus = Buffer.from(publicKey.export({ format: 'jwk' }).n, 'base64url');
+    const derModulus = rsaModulusFromSpkiDerIndependently(publicKey.export({ format: 'der', type: 'spki' }));
+    assert.equal(Buffer.compare(jwkModulus, derModulus), 0);
+  });
+
+  test('the correct modulus for an id-RSASSA-PSS SPKI key is reported as a match, not a mismatch', () => {
+    const { publicKey } = crypto.generateKeyPairSync('rsa-pss', {
+      modulusLength: 3072,
+      hashAlgorithm: 'sha256',
+      mgf1HashAlgorithm: 'sha256',
+      saltLength: 32,
+    });
+    assert.equal(publicKey.asymmetricKeyType, 'rsa-pss');
+    // Confirms the premise this test rests on: JWK export genuinely throws
+    // for this key, so a test that passed without this fix would not
+    // actually be exercising the bug.
+    assert.throws(() => publicKey.export({ format: 'jwk' }), /Unsupported JWK Key Type/);
+
+    const modulus = rsaModulusFromSpkiDerIndependently(publicKey.export({ format: 'der', type: 'spki' }));
+    const n = 120;
+    const k = 35; // this file's fixed RSA limb parameters (register/DSC alike)
+    const suppliedLimbs = limbsFromBigInt(BigInt(`0x${modulus.toString('hex')}`), n, k);
+
+    const cert = { key: publicKey, details: { ...publicKey.asymmetricKeyDetails } };
+    assert.equal(
+      keyMatchesCert(suppliedLimbs, n, k, cert, 'rsa'),
+      true,
+      'the correct modulus must match even though the SPKI algorithm is id-RSASSA-PSS, not rsaEncryption',
+    );
+  });
+
+  test('a WRONG modulus for an id-RSASSA-PSS SPKI key is still reported as a mismatch', () => {
+    // Confirms the fix does not overcorrect into "always matches" for PSS
+    // keys -- it must still genuinely compare the modulus.
+    const { publicKey } = crypto.generateKeyPairSync('rsa-pss', {
+      modulusLength: 2048,
+      hashAlgorithm: 'sha256',
+      mgf1HashAlgorithm: 'sha256',
+      saltLength: 32,
+    });
+    const cert = { key: publicKey, details: { ...publicKey.asymmetricKeyDetails } };
+    const wrongLimbs = limbsFromBigInt(12345n, 120, 35);
+    assert.equal(keyMatchesCert(wrongLimbs, 120, 35, cert, 'rsa'), false);
+  });
+});
 describe('limbsToBigInt rejects what chunks.rs rejects', () => {
   // chunks.rs's bigint_from_limbs returns None for n == 0 and for any limb
   // outside [0, 2^n). Accepting them would accumulate overlapping bits and
