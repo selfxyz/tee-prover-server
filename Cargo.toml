@@ -21,12 +21,6 @@ google-cloud-secretmanager-v1 = "0.4.4"
 
 serde_bytes = "0.11.15"
 p256 = {version = "0.13.2", features = ["ecdh", "ecdsa"]}
-# ECDSA pre-check (NIST curves). Pinned to the elliptic-curve 0.13 line to
-# match the existing p256 0.13.2 used by the attestation key path; mixing in
-# the 0.14 line would compile but pull a second copy of elliptic-curve/ecdsa.
-p224 = { version = "0.13.2", features = ["ecdsa"] }
-p384 = { version = "0.13.1", features = ["ecdsa"] }
-p521 = { version = "0.13.3", features = ["ecdsa"] }
 rand_core = "0.6.4"
 serde_plain = "1.0.2"
 lru = "0.13.0"
@@ -52,8 +46,22 @@ babyjubjub-rs = { version = "0.0.11", default-features = false, features = ["aar
 # serialization pair (the same one babyjubjub-rs uses internally).
 ff_ce = "0.11.0"
 
+# secp256k1 enclave signing key (attestation)
+k256 = { version = "0.13", features = ["ecdsa"] }
+alloy-primitives = "0.8"
+alloy-sol-types = "0.8"
+rand = "0.8"
+hex = "0.4"
+
+# on-chain prover key registration (feature = "chain")
+alloy = { version = "1.5.2", features = ["essentials", "sol-types"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 register = []
 dsc = []
 disclose = []
 cherrypick = []
+chain = ["dep:alloy"]

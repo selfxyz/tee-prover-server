@@ -6,3 +6,4 @@
 .env
 .env.*
 !.env.example
+/jwt-input-generator/node_modules

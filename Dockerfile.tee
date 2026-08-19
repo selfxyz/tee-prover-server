@@ -25,17 +25,22 @@ FROM debian:trixie
 RUN apt-get update
 RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
 
-# Node runs the signature-verifier sidecar: the pre-check's signature
-# verification (RSA, RSA-PSS, and ECDSA over both NIST and brainpool curves)
-# is done in JS via node:crypto, not native Rust (see
-# signature-verifier/verify.mjs's header comment for why). verify.mjs has
-# zero dependencies, so no `npm ci` is needed here -- just install Node and
-# copy the directory.
+# One Node install serves BOTH sidecars. Two separate RUN lines arrived here
+# from independent branches -- the attestation JWT generator and the signature
+# verifier -- and installing Node twice would just make the image larger and
+# the layers harder to reason about.
 #
-# NOTE: the `feat/tee-attestation-proof-signing` branch independently adds
-# this same Node install (for jwt-input-generator). At merge, keep exactly
-# one Node install serving both sidecars rather than taking both RUN lines.
+# The two sidecars differ in one way that matters: jwt-input-generator has
+# dependencies and needs `npm ci`, while signature-verifier/verify.mjs has
+# zero dependencies by design, so copying the directory is sufficient.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
+
+# The JWT attestation sidecar (src/attestation/bootstrap.rs spawns it via the
+# installed tsx, with cwd /jwt/jwt-input-generator).
+WORKDIR /jwt/jwt-input-generator
+COPY jwt-input-generator/package*.json ./
+RUN npm ci --omit=dev
+COPY jwt-input-generator/ ./
 
 WORKDIR /rapidsnark
 COPY ./rapidsnark .
@@ -49,6 +54,13 @@ ARG PROOFTYPE=${PROOFTYPE}
 
 COPY ./circuits/$PROOFTYPE/$SIZE_FILTER /circuits
 COPY ./zkeys/$PROOFTYPE/$SIZE_FILTER /zkeys
+
+# The attestation circuit is needed by every image variant (register/dsc/disclose,
+# all sizes), so it's shipped unconditionally from a "common" category that
+# sort_circuits.sh/sort_zkeys.sh never touch, instead of the filtered copies above.
+COPY ./circuits/common/gcp_jwt_verifier_cpp /circuits/gcp_jwt_verifier_cpp
+COPY ./zkeys/common/gcp_jwt_verifier.zkey /zkeys/gcp_jwt_verifier.zkey
+RUN chmod +x /circuits/gcp_jwt_verifier_cpp/gcp_jwt_verifier
 
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 RUN chmod +x /usr/local/bin/tee-server
