@@ -1145,6 +1145,24 @@ function parseHashLengthTable(src) {
   return table.size > 0 ? table : null;
 }
 
+
+/**
+ * The PSS salt length the circuit itself uses, derived from the signature
+ * algorithm id rather than from the circuit name.
+ *
+ * signatureVerifier.circom:95 -- `SALT_LEN = signatureAlgorithm == 46 ? 64 :
+ * HASH_LEN_BITS / 8`. Algorithm 46 is the reason this rule cannot be inferred:
+ * it is SHA-256 with a 64-byte salt, breaking the otherwise-universal
+ * `hash / 8`. verify.mjs reads the salt out of the circuit NAME, which agrees
+ * with the id-derived value for all 20 PSS circuits deployed today -- so this
+ * assertion exists to catch the day that stops being true. A wrong salt makes
+ * OpenSSL reject a genuine signature, which the pipeline turns into a rejected
+ * request, so the failure direction is an outage rather than a lost fast path.
+ */
+function saltLenFromAlgorithmId(sigAlgoId, hashBits) {
+  return sigAlgoId === 46 ? 64 : hashBits / 8;
+}
+
 describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) match the sibling monorepo's instance files", () => {
   if (!SIBLING_AVAILABLE) {
     const msg = `SKIP: sibling monorepo not present at ${SIBLING_CIRCUITS_ROOT} -- drift guard did NOT run`;
@@ -1217,6 +1235,16 @@ describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) mat
 
         assert.equal(parsed.n, nArg, `${stem}: n drift (verify.mjs says ${parsed.n}, instance file says ${nArg})`);
         assert.equal(parsed.k, kArg, `${stem}: k drift (verify.mjs says ${parsed.k}, instance file says ${kArg})`);
+
+        if (parsed.scheme === 'rsapss') {
+          const expectedSalt = saltLenFromAlgorithmId(sigAlgoId, expectedSigHash);
+          assert.equal(
+            parsed.saltLen,
+            expectedSalt,
+            `${stem}: PSS salt drift (verify.mjs reads ${parsed.saltLen} from the circuit name, but ` +
+              `signatureAlgorithm id ${sigAlgoId} implies ${expectedSalt} via signatureVerifier.circom:95)`,
+          );
+        }
       });
     }
   }
@@ -1254,6 +1282,16 @@ describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) mat
       );
       assert.equal(parsed.n, nArg, `${stem}: n drift (verify.mjs says ${parsed.n}, instance file says ${nArg})`);
       assert.equal(parsed.k, kArg, `${stem}: k drift (verify.mjs says ${parsed.k}, instance file says ${kArg})`);
+
+      if (parsed.scheme === 'rsapss') {
+        const expectedSalt = saltLenFromAlgorithmId(sigAlgoId, expectedSigHash);
+        assert.equal(
+          parsed.saltLen,
+          expectedSalt,
+          `${stem}: PSS salt drift (verify.mjs reads ${parsed.saltLen} from the circuit name, but ` +
+            `signatureAlgorithm id ${sigAlgoId} implies ${expectedSalt} via signatureVerifier.circom:95)`,
+        );
+      }
     });
   }
 });
