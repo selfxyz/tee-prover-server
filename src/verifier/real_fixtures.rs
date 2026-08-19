@@ -458,8 +458,11 @@ fn real_dsc_rsa_fixture_is_valid() {
     // row from test_cases.ts's fullSigAlgs (sigAlg: 'rsa', hashFunction:
     // 'sha256', domainParameter: '65537', keyLength: '2048'). Circuit name
     // confirmed via doc.getDscCircuitName() as dsc_sha256_rsa_65537_4096 --
-    // adapter.ts's RSA branch always names the circuit ..._4096 regardless
-    // of the mock key's own bit length, since only the 4096 DSC-RSA circuit
+    // the driver's keyLength '2048' describes the DSC's OWN key, not the CSCA
+    // key that signs it -- reassembling this fixture's csca_pubKey from its 35
+    // limbs gives a 4096-bit modulus, which is the key this verifier actually
+    // checks against. adapter.ts's RSA branch names the circuit ..._4096
+    // accordingly, since only the 4096 DSC-RSA circuit
     // exists.
     let Some(inputs) = read_fixture("dsc_sha256_rsa_65537_4096.json") else {
         return;
