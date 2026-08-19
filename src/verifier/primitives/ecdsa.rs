@@ -18,11 +18,20 @@
 //! every deployed instance -- all 14 have `HASH_LEN_BITS <= n*k` (the
 //! tightest is secp224r1 + SHA-224, both exactly 224 bits) -- so this module
 //! does not implement it. Left-padding does not change the integer value, so
-//! the circuit's `z` is simply the digest read as a big-endian integer,
-//! which is exactly what RustCrypto's `bits2field` produces for a digest no
-//! longer than the field. Task 2 adds a drift assertion over the instance
-//! set that would catch a future instance needing the truncation branch;
-//! this primitive intentionally does not guess at it.
+//! the circuit's `z` is simply the digest read as a big-endian integer.
+//! RustCrypto's `bits2field` produces that same integer for a digest no
+//! longer than the field -- *except* it hard-errors first when the digest is
+//! shorter than half the field width (`ecdsa` crate, `hazmat::bits2field`),
+//! a floor the circuit has no equivalent of. `dsc_sha256_ecdsa_secp521r1`
+//! (alg 40: 32-byte SHA-256 under secp521r1's 66-byte field, whose floor is
+//! 33) trips it, which used to surface as a false reject. `verify_ecdsa`
+//! below left-pads the digest to the full field width itself before calling
+//! `verify_prehash`, so `bits2field` never sees a too-short input; see
+//! `pad_digest_to_field_width`'s doc comment for why that is equivalent to
+//! the crate's own short-input handling for every digest that was already
+//! being accepted. Task 2 adds a drift assertion over the instance set that
+//! would catch a future instance needing the truncation branch; this
+//! primitive intentionally does not guess at it.
 //!
 //! Wired into production via `passport.rs`'s dispatch arm for
 //! `Scheme::Ecdsa` (Task 3); no longer test-only.
@@ -66,6 +75,62 @@ impl Curve {
             Curve::Secp521r1 => 66,
         }
     }
+}
+
+/// Left-pads a message digest to the curve's full field width when it is
+/// narrower, so `verify_prehash` never has to invoke RustCrypto's
+/// `bits2field` on an under-width input.
+///
+/// Two facts justify this, both checked against `bits2field`'s own source
+/// (`ecdsa-0.16.9/src/hazmat.rs:184-206`) and its own unit tests
+/// (`hazmat.rs:296-330`) rather than assumed:
+///
+/// 1. `bits2field` hard-errors when `bits.len() < FieldBytesSize / 2` --
+///    secp521r1's field is 66 bytes, so the floor is 33, and alg 40's
+///    circuit (`dsc_sha256_ecdsa_secp521r1`) pairs it with a 32-byte SHA-256
+///    digest, one byte under. That `Err` used to surface as `EcdsaError::
+///    Failed` from this module's callers, i.e. `Verdict::Invalid` for a
+///    genuinely valid certificate -- a false reject, which this project's
+///    governing asymmetry treats as a production outage (a false accept
+///    costs nothing; the Groth16 circuit still verifies).
+/// 2. Padding ourselves does not change the answer for any digest that was
+///    already accepted. When `bits.len() < FieldBytesSize`, `bits2field`'s
+///    `Less` arm does exactly this left-pad internally
+///    (`field_bytes[(FieldBytesSize - bits.len())..].copy_from_slice(bits)`,
+///    confirmed byte-for-byte against its own `bits2field_size_less` test);
+///    doing it here first only moves the padding earlier, so the length
+///    `bits2field` sees becomes exactly `FieldBytesSize`, landing in its
+///    `Equal` arm (a bare `copy_from_slice`, confirmed against
+///    `bits2field_size_eq`) instead of its `Less` arm or the floor check --
+///    same resulting `z`, and the floor can never trip once the length is
+///    `FieldBytesSize`. This also matches the *circuit's* semantics
+///    (`ecdsaVerifier.circom:27-41`), which left-pads a short digest to
+///    `n*k` bits before use: left-padding with zeros does not change the
+///    big-endian integer value either way.
+///
+/// Digests already `>= width` are passed through unchanged. `== width`
+/// already lands in `bits2field`'s `Equal` arm without help. `> width` must
+/// keep hitting its `Greater` arm (truncate to the leading `FieldBytesSize`
+/// bytes, confirmed against `bits2field_size_greater`) exactly as before --
+/// padding must never run there, since padding is only equivalent to the
+/// crate's own behaviour in the shorter-than-field case. That branch is
+/// dead for every currently deployed circuit instance today (the drift
+/// assertion in `params.rs`'s `table_matches_the_monorepo_instance_files`
+/// guarantees `HASH_LEN_BITS <= n*k` for all of them), so this is a
+/// defensive no-op, not a workaround for a live case -- do not remove the
+/// guard on the strength of that, since a future instance could still need
+/// it.
+///
+/// A future reader: do not "simplify" this back to a bare `verify_prehash
+/// (m_hash, ...)` call. That reintroduces the exact false-reject this
+/// function exists to close.
+fn pad_digest_to_field_width(m_hash: &[u8], width: usize) -> Vec<u8> {
+    if m_hash.len() >= width {
+        return m_hash.to_vec();
+    }
+    let mut out = vec![0u8; width - m_hash.len()];
+    out.extend_from_slice(m_hash);
+    out
 }
 
 /// Left-pads `v` to exactly `width` bytes, big-endian. `Err` if `v` needs
@@ -176,13 +241,18 @@ pub fn verify_ecdsa(
     rs_bytes.extend_from_slice(&r_bytes);
     rs_bytes.extend_from_slice(&s_bytes);
 
+    // See `pad_digest_to_field_width`'s doc comment: this is what closes the
+    // alg-40 (`dsc_sha256_ecdsa_secp521r1`) false reject. Passed to
+    // `verify_prehash` in place of the raw `m_hash` in every arm below.
+    let padded_hash = pad_digest_to_field_width(m_hash, width);
+
     match curve {
         Curve::Secp224r1 => {
             let vk = p224::ecdsa::VerifyingKey::from_sec1_bytes(&point)
                 .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p224::ecdsa::Signature::from_slice(&rs_bytes)
                 .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
-            vk.verify_prehash(m_hash, &sig)
+            vk.verify_prehash(&padded_hash, &sig)
                 .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
         Curve::Secp256r1 => {
@@ -190,7 +260,7 @@ pub fn verify_ecdsa(
                 .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p256::ecdsa::Signature::from_slice(&rs_bytes)
                 .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
-            vk.verify_prehash(m_hash, &sig)
+            vk.verify_prehash(&padded_hash, &sig)
                 .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
         Curve::Secp384r1 => {
@@ -198,7 +268,7 @@ pub fn verify_ecdsa(
                 .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p384::ecdsa::Signature::from_slice(&rs_bytes)
                 .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
-            vk.verify_prehash(m_hash, &sig)
+            vk.verify_prehash(&padded_hash, &sig)
                 .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
         Curve::Secp521r1 => {
@@ -206,7 +276,7 @@ pub fn verify_ecdsa(
                 .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p521::ecdsa::Signature::from_slice(&rs_bytes)
                 .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
-            vk.verify_prehash(m_hash, &sig)
+            vk.verify_prehash(&padded_hash, &sig)
                 .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
     }
@@ -456,6 +526,82 @@ mod tests {
                 &BigUint::from_bytes_be(&sig.r().to_bytes()),
                 &BigUint::from_bytes_be(&sig.s().to_bytes()),
                 &m_hash,
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn pad_digest_to_field_width_left_pads_short_digests_without_changing_the_value() {
+        // Mirrors bits2field's `Less` arm byte-for-byte (hazmat.rs's
+        // `bits2field_size_less` test uses this exact shape): zeros
+        // prepended, original bytes kept at the tail, same big-endian
+        // integer value. Would fail if the padding landed on the wrong side
+        // or dropped/reordered a byte.
+        let short = [0xAAu8, 0xBB, 0xCC];
+        assert_eq!(
+            pad_digest_to_field_width(&short, 6),
+            vec![0x00, 0x00, 0x00, 0xAA, 0xBB, 0xCC]
+        );
+    }
+
+    #[test]
+    fn pad_digest_to_field_width_leaves_equal_and_longer_inputs_untouched() {
+        // `== width`: already what bits2field's `Equal` arm expects, so
+        // padding must be a no-op -- prepending anything here would be a
+        // length mismatch bug. `> width`: must be left for bits2field's own
+        // `Greater` (truncate) arm; padding here would be wrong (there is
+        // nothing to pad) and this module must never attempt it.
+        let exact = [0x11u8; 6];
+        assert_eq!(pad_digest_to_field_width(&exact, 6), exact.to_vec());
+        let longer = [0x22u8; 8];
+        assert_eq!(pad_digest_to_field_width(&longer, 6), longer.to_vec());
+    }
+
+    #[test]
+    fn a_sha256_prehash_verifies_under_p521_alg_40() {
+        // alg 40 (dsc_sha256_ecdsa_secp521r1): SHA-256 (32 bytes) under
+        // secp521r1's 66-byte field, whose bits2field floor is 33 bytes --
+        // one byte over the digest length. Before this fix, verify_ecdsa
+        // fed `m_hash` straight to `verify_prehash`, which routes through
+        // `bits2field` and hard-errors on exactly this shape -- see the real
+        // `dsc_sha256_ecdsa_secp521r1` fixture in `real_fixtures.rs`, which
+        // documented this as a live false-reject before this fix. This test
+        // can fail: reverting `verify_ecdsa` to call
+        // `vk.verify_prehash(m_hash, &sig)` on the raw, unpadded digest
+        // makes this `Err`, not `Ok`, since 32 < 33.
+        use p521::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey, VerifyingKey};
+        let mut seed = [0x37u8; 66];
+        seed[0] = 0x00; // see p521_round_trips's comment on why.
+        let sk = SigningKey::from_slice(&seed).unwrap();
+
+        // The raw, unpadded 32-byte digest -- exactly what a real alg-40
+        // certificate's signed-attribute hash looks like on the wire, and
+        // what this test feeds to `verify_ecdsa` below.
+        let short_hash = sha256(b"signed attributes");
+
+        // To produce a genuinely valid signature over this exact digest we
+        // still need a full-field-width prehash to hand to `sign_prehash`
+        // (p521's signing path has the identical `bits2field` floor on the
+        // way in), so pad it ourselves first. This is not circular: a real
+        // ECDSA-secp521r1/SHA-256 signer computes its `z` by zero-extending
+        // the short digest exactly this way (FIPS 186-4's `bits2int` has no
+        // floor at all), matching the circuit's own left-pad
+        // (`ecdsaVerifier.circom:27-41`) -- so this is what a real signature
+        // over this digest looks like, not a shortcut around one.
+        let padded = pad_digest_to_field_width(&short_hash, Curve::Secp521r1.field_bytes());
+        let sig: Signature = sk.sign_prehash(&padded).unwrap();
+        let vk = VerifyingKey::from(&sk);
+        let pt = vk.to_encoded_point(false);
+
+        assert_eq!(
+            verify_ecdsa(
+                Curve::Secp521r1,
+                &BigUint::from_bytes_be(pt.x().unwrap()),
+                &BigUint::from_bytes_be(pt.y().unwrap()),
+                &BigUint::from_bytes_be(&sig.r().to_bytes()),
+                &BigUint::from_bytes_be(&sig.s().to_bytes()),
+                &short_hash,
             ),
             Ok(())
         );
