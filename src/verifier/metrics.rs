@@ -30,6 +30,25 @@ static VALID: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static INVALID: AtomicU64 = AtomicU64::new(0);
 
+/// A subset of `SKIPPED` (Plan 4, Task 4): counts skips specifically
+/// attributable to the brainpool Node/OpenSSL sidecar not producing a clean
+/// answer -- a spawn failure, a timeout, a non-zero exit, or output that
+/// wasn't a well-formed `{"valid":bool}`/`{"error":...}` response (see
+/// `primitives::brainpool`'s `run_sidecar`/`parse_response`, the only call
+/// sites of `record_sidecar_unavailable`). NOT incremented for an ordinary
+/// skip that has nothing to do with the sidecar being reachable -- an
+/// unknown circuit, a missing/malformed field, an unsupported scheme, an
+/// unrecognized curve name, or a limb-count mismatch. Those stay counted
+/// only in `SKIPPED`.
+///
+/// After Plan 4, brainpool is the only thing the sidecar serves, so a
+/// widening gap between `skipped` and `sidecar_unavailable` in the summary
+/// line below is the signal that distinguishes "the sidecar has been dead
+/// for a day" from "no brainpool traffic arrived today" -- two situations
+/// that would otherwise print an identical `skipped=N` line and be
+/// impossible to tell apart from the log stream alone.
+static SIDECAR_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+
 /// Print a summary line every this many processed requests (valid + skipped
 /// + invalid, combined).
 const REPORT_EVERY: u64 = 100;
@@ -54,12 +73,37 @@ pub fn record(v: &Verdict) {
     let valid = VALID.load(Ordering::Relaxed);
     let skipped = SKIPPED.load(Ordering::Relaxed);
     let invalid = INVALID.load(Ordering::Relaxed);
+    let sidecar_unavailable = SIDECAR_UNAVAILABLE.load(Ordering::Relaxed);
     let total = valid + skipped + invalid;
     if total % REPORT_EVERY == 0 {
         println!(
-            "precheck summary: valid={valid} skipped={skipped} invalid={invalid} total={total}"
+            "precheck summary: valid={valid} skipped={skipped} invalid={invalid} \
+             sidecar_unavailable={sidecar_unavailable} total={total}"
         );
     }
+}
+
+/// Records one brainpool-sidecar-unavailable event. Call this from
+/// `primitives::brainpool` at each point it cannot get a clean answer out of
+/// the sidecar process itself (spawn failure, timeout, non-zero exit,
+/// unparseable/empty output, or an explicit `{"error":...}` response) --
+/// i.e. every `Structural` `run_sidecar`/`parse_response` can produce.
+/// Deliberately separate from `record`: the caller still calls `record(&
+/// Verdict::Skipped(reason))` exactly as before (so `SKIPPED` counts every
+/// skip, sidecar-caused or not); this adds the narrower, overlapping count
+/// on top, in addition to (not instead of) that call.
+pub fn record_sidecar_unavailable() {
+    SIDECAR_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Test-only read of the running total, for `primitives::brainpool`'s own
+/// tests to confirm each of its sidecar-unavailable failure modes actually
+/// calls `record_sidecar_unavailable` -- without making the counter itself
+/// `pub`, which would let production code outside this module increment or
+/// read it directly, bypassing the one intended call path.
+#[cfg(test)]
+pub(crate) fn sidecar_unavailable_count() -> u64 {
+    SIDECAR_UNAVAILABLE.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -93,6 +137,24 @@ mod tests {
         let before = INVALID.load(Ordering::Relaxed);
         record(&Verdict::Invalid("reason".to_string()));
         assert!(INVALID.load(Ordering::Relaxed) >= before + 1);
+    }
+
+    #[test]
+    fn recording_sidecar_unavailable_increments_its_own_counter_not_skipped() {
+        // Deliberately does NOT also call record(&Verdict::Skipped(..)) here
+        // -- that is the caller's job at the call site in primitives::
+        // brainpool (in addition to this, not instead of it). This test
+        // pins that record_sidecar_unavailable is its own counter, distinct
+        // from SKIPPED, not a side door into it.
+        let before_unavailable = SIDECAR_UNAVAILABLE.load(Ordering::Relaxed);
+        let before_skipped = SKIPPED.load(Ordering::Relaxed);
+        record_sidecar_unavailable();
+        assert!(SIDECAR_UNAVAILABLE.load(Ordering::Relaxed) >= before_unavailable + 1);
+        assert_eq!(
+            SKIPPED.load(Ordering::Relaxed),
+            before_skipped,
+            "record_sidecar_unavailable must not itself touch SKIPPED"
+        );
     }
 
     #[test]

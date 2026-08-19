@@ -27,6 +27,20 @@
 //! `tokio::task::spawn_blocking`, a blocking-pool thread rather than an async
 //! worker thread. See `mod.rs`'s `verify_inputs` for the full reasoning and
 //! its own doc comment / tests for the no-deadlock proof.
+//!
+//! Task 4 (Plan 4): every one of `run_sidecar`/`parse_response`'s
+//! `Structural` returns that stems from the sidecar process itself --
+//! spawn failure, non-zero exit, an I/O error talking to it, a timeout, or
+//! output that isn't a clean `{"valid":bool}`/`{"error":...}` response --
+//! also calls `metrics::record_sidecar_unavailable()`, on top of (never
+//! instead of) the ordinary `Verdict::Skipped` accounting the caller in
+//! `passport.rs`/`dsc.rs` already does. This is the one place production can
+//! tell "the sidecar has been dead for a day" apart from "no brainpool
+//! traffic arrived today" -- both would otherwise print an identical
+//! `skipped=N` line, since brainpool is the only thing the sidecar serves.
+//! Request-shape problems caught before a process is ever spawned (an
+//! oversized coordinate, an unmappable hash width) are deliberately NOT
+//! counted here -- those are not evidence the sidecar is unreachable.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -38,6 +52,7 @@ use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
 use super::ecdsa::EcdsaError;
+use crate::verifier::metrics;
 
 /// The four brainpool curves used by the 20 circuits no Rust crate covers.
 /// Constructed by `passport.rs`/`dsc.rs`'s dispatch (via `from_name`, from
@@ -93,15 +108,53 @@ impl BrainpoolCurve {
     }
 }
 
-/// The in-image sidecar path, matching Task 1's `Dockerfile.tee` placement.
-/// `verify_brainpool` uses this; tests point `verify_brainpool_with` at stub
-/// scripts instead.
+/// The in-image sidecar path, matching Task 1's `Dockerfile.tee` placement
+/// (`COPY brainpool-verifier /brainpool-verifier` in its final stage).
+/// `resolved_sidecar_script` uses this when present; tests that want an
+/// explicit stub still point `verify_brainpool_with` at one directly.
 pub const DEFAULT_SIDECAR_SCRIPT: &str = "/brainpool-verifier/verify.mjs";
 
 /// Generous relative to a Groth16 proving step measured in minutes -- this
 /// only needs to bound a `node` process doing one OpenSSL call, not compete
 /// with it on latency.
 const DEFAULT_SIDECAR_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Resolves the script path `verify_brainpool` -- the function `passport.rs`/
+/// `dsc.rs`'s dispatch arms actually call -- hands to the sidecar.
+///
+/// `DEFAULT_SIDECAR_SCRIPT` exists only inside the production container:
+/// `Dockerfile.tee`'s builder stage compiles with `WORKDIR /src`, so
+/// `CARGO_MANIFEST_DIR` (baked into the binary at *build* time by the `env!`
+/// macro below) is `/src` there, but the final stage never copies `/src`
+/// into the image -- only the compiled binary and, separately,
+/// `COPY brainpool-verifier /brainpool-verifier`. So `DEFAULT_SIDECAR_SCRIPT`
+/// is reachable in the real container and nowhere else: not a laptop, not
+/// CI, not this crate's own `cargo test` run.
+///
+/// Task 4 (Plan 4)'s real-fixture gate needs `verify_brainpool` itself (not
+/// just this module's own `verify_brainpool_with`-parameterised tests) to
+/// reach the *real* sidecar, because `real_fixtures.rs`'s brainpool tests
+/// and its tamper-table guarantee both go through the full `passport::verify`
+/// / `dsc::verify` dispatch chain -- the only way to also prove the tamper
+/// test's guarantee for these rows, not just this module's own unit tests.
+/// So when `DEFAULT_SIDECAR_SCRIPT` is absent, this falls back to the
+/// crate's own checked-in `brainpool-verifier/verify.mjs`, resolved from
+/// `CARGO_MANIFEST_DIR` -- a compile-time constant, not a runtime
+/// environment-variable read, so there is no test-order race: for any given
+/// build of this binary the choice is fixed once, identically for every
+/// test, before any test body runs.
+///
+/// A production container always has `DEFAULT_SIDECAR_SCRIPT` present, so
+/// this changes nothing there: `exists()` is true on the very first branch,
+/// every time, and `resolved_sidecar_script()` returns exactly
+/// `DEFAULT_SIDECAR_SCRIPT` unchanged.
+fn resolved_sidecar_script() -> String {
+    if std::path::Path::new(DEFAULT_SIDECAR_SCRIPT).exists() {
+        DEFAULT_SIDECAR_SCRIPT.to_string()
+    } else {
+        format!("{}/brainpool-verifier/verify.mjs", env!("CARGO_MANIFEST_DIR"))
+    }
+}
 
 /// Left-pads `v` to exactly `width` bytes, big-endian, then hex-encodes it.
 /// `Err(Structural)` if `v` needs more than `width` bytes -- silently
@@ -165,19 +218,24 @@ fn parse_response(raw: &[u8]) -> Result<bool, EcdsaError> {
     let text = String::from_utf8_lossy(raw);
     let trimmed = text.trim();
     if trimmed.is_empty() {
+        metrics::record_sidecar_unavailable();
         return Err(EcdsaError::Structural(
             "brainpool sidecar produced no output".to_string(),
         ));
     }
     let parsed: SidecarResponse = serde_json::from_str(trimmed).map_err(|e| {
+        metrics::record_sidecar_unavailable();
         EcdsaError::Structural(format!(
             "brainpool sidecar returned unparseable output: {e} (raw: {trimmed:?})"
         ))
     })?;
     match parsed {
-        SidecarResponse::Error { error } => Err(EcdsaError::Structural(format!(
-            "brainpool sidecar reported: {error}"
-        ))),
+        SidecarResponse::Error { error } => {
+            metrics::record_sidecar_unavailable();
+            Err(EcdsaError::Structural(format!(
+                "brainpool sidecar reported: {error}"
+            )))
+        }
         SidecarResponse::Result { valid } => Ok(valid),
     }
 }
@@ -233,6 +291,7 @@ async fn run_sidecar(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| {
+            metrics::record_sidecar_unavailable();
             EcdsaError::Structural(format!(
                 "failed to spawn brainpool sidecar (node {script_path}): {e}"
             ))
@@ -241,6 +300,7 @@ async fn run_sidecar(
     match timeout(sidecar_timeout, talk_to_sidecar(&mut child, stdin_bytes)).await {
         Ok(Ok((stdout, status))) => {
             if !status.success() {
+                metrics::record_sidecar_unavailable();
                 return Err(EcdsaError::Structural(format!(
                     "brainpool sidecar exited with status {status}"
                 )));
@@ -249,6 +309,7 @@ async fn run_sidecar(
         }
         Ok(Err(io_err)) => {
             let _ = child.kill().await;
+            metrics::record_sidecar_unavailable();
             Err(EcdsaError::Structural(format!(
                 "brainpool sidecar I/O error: {io_err}"
             )))
@@ -257,6 +318,7 @@ async fn run_sidecar(
             // The `talk_to_sidecar` future (and its borrow of `child`) was
             // just dropped by `timeout`, so `child` is available again here.
             let _ = child.kill().await;
+            metrics::record_sidecar_unavailable();
             Err(EcdsaError::Structural(format!(
                 "brainpool sidecar timed out after {sidecar_timeout:?}"
             )))
@@ -317,11 +379,13 @@ async fn verify_brainpool_with(
 }
 
 /// Verifies an ECDSA signature over one of the four brainpool curves via the
-/// Node/OpenSSL sidecar at `DEFAULT_SIDECAR_SCRIPT`. `message` is the
-/// recovered message *bytes*, not a digest -- the sidecar hashes and
-/// truncates it itself, deliberately keeping ECDSA's `bits2int` truncation
-/// semantics out of this interface. `hash_bits` is the same `sig_hash` width
-/// `params.rs` already carries per circuit (160/224/256/384/512).
+/// Node/OpenSSL sidecar at `resolved_sidecar_script()` (`DEFAULT_SIDECAR_
+/// SCRIPT` in production; see that function's doc comment for the dev-
+/// checkout fallback). `message` is the recovered message *bytes*, not a
+/// digest -- the sidecar hashes and truncates it itself, deliberately
+/// keeping ECDSA's `bits2int` truncation semantics out of this interface.
+/// `hash_bits` is the same `sig_hash` width `params.rs` already carries per
+/// circuit (160/224/256/384/512).
 ///
 /// `Ok(())` -- verified. `Err(EcdsaError::Structural(_))` -- the sidecar
 /// could not be reached or did not give a clean answer; the caller must map
@@ -339,7 +403,7 @@ pub async fn verify_brainpool(
     hash_bits: u32,
 ) -> Result<(), EcdsaError> {
     verify_brainpool_with(
-        DEFAULT_SIDECAR_SCRIPT,
+        &resolved_sidecar_script(),
         DEFAULT_SIDECAR_TIMEOUT,
         curve,
         x,
@@ -645,20 +709,116 @@ mod tests {
         );
     }
 
+    /// `DEFAULT_SIDECAR_SCRIPT` (the in-image path baked into `verify_
+    /// brainpool`, the public entry point `passport.rs`/`dsc.rs`'s dispatch
+    /// actually calls) does not exist on the machine running this test --
+    /// see `resolved_sidecar_script`'s doc comment for exactly why
+    /// (Dockerfile.tee's final stage never copies `/src` into the image, so
+    /// this path is reachable only inside the real container). Before Task 4
+    /// (Plan 4), that meant this test's only option was to pin the
+    /// "in-image path is missing" failure itself, which left `verify_
+    /// brainpool` -- as opposed to this module's own `verify_brainpool_with`
+    /// -parameterised tests above -- with no coverage that it can ever
+    /// reach a *working* sidecar at all. Task 4 needed exactly that
+    /// end-to-end path (its real-fixture brainpool tests in
+    /// `real_fixtures.rs` go through the full `passport::verify`/
+    /// `dsc::verify` dispatch, which calls `verify_brainpool`, not `verify_
+    /// brainpool_with`), so `resolved_sidecar_script` now falls back to this
+    /// crate's own checked-in `brainpool-verifier/verify.mjs` whenever the
+    /// in-image path is absent. This test now pins that fallback directly: a
+    /// known-good vector must genuinely verify through the public entry
+    /// point on a plain dev checkout, not merely fail predictably.
     #[tokio::test]
-    async fn verify_brainpool_routes_through_the_documented_default_path() {
-        // `DEFAULT_SIDECAR_SCRIPT` is the in-image path baked into the public
-        // entry point; it does not exist on the machine running this test,
-        // so this both exercises `verify_brainpool` itself (otherwise unused
-        // outside production dispatch, which is Task 3) and doubles as a
-        // "script missing" case through the real public API.
-        let (x, y, r, s) = valid_vector();
-        let err = verify_brainpool(BrainpoolCurve::P256r1, &x, &y, &r, &s, MESSAGE, 256)
-            .await
-            .expect_err("the default path does not exist on this machine");
+    async fn verify_brainpool_falls_back_to_the_checked_in_sidecar_when_the_image_path_is_absent() {
         assert!(
-            matches!(err, EcdsaError::Structural(_)),
-            "expected Structural, got {err:?}"
+            !std::path::Path::new(DEFAULT_SIDECAR_SCRIPT).exists(),
+            "this test's premise is that the in-image path is absent on a dev checkout; if \
+             that ever changes, the fallback branch this test exercises would go untested \
+             instead of failing loudly"
         );
+        let (x, y, r, s) = valid_vector();
+        let result = verify_brainpool(BrainpoolCurve::P256r1, &x, &y, &r, &s, MESSAGE, 256).await;
+        assert_eq!(result, Ok(()), "expected the fallback path to genuinely verify a valid vector");
     }
+
+    /// Pins `resolved_sidecar_script` directly: on this machine (no
+    /// `/brainpool-verifier`), it must return the checked-in path under
+    /// `CARGO_MANIFEST_DIR`, not silently fall through to something else.
+    #[test]
+    fn resolved_sidecar_script_falls_back_to_the_checked_in_copy() {
+        assert!(!std::path::Path::new(DEFAULT_SIDECAR_SCRIPT).exists());
+        assert_eq!(resolved_sidecar_script(), real_sidecar_path());
+    }
+
+    /// Task 4 (Plan 4)'s skip-reason counter: every way this module can fail
+    /// to get a clean answer out of the sidecar process (as opposed to the
+    /// sidecar cleanly rejecting a signature, or a request-shape problem
+    /// caught before the process is ever spawned) must call `metrics::
+    /// record_sidecar_unavailable` in addition to returning `Structural`.
+    /// Uses `>=`, same convention as `metrics`'s own tests: this is a
+    /// process-global counter, so other tests in this same binary may also
+    /// be incrementing it concurrently.
+    #[tokio::test]
+    async fn every_sidecar_unavailable_failure_mode_increments_the_counter() {
+        let (x, y, r, s) = valid_vector();
+        let cases: &[&str] = &["hang.mjs", "garbage.mjs", "nonzero-exit.mjs", "error-response.mjs", "empty.mjs"];
+        for name in cases {
+            let before = metrics::sidecar_unavailable_count();
+            let sidecar_timeout = if *name == "hang.mjs" { HANG_TEST_TIMEOUT } else { TEST_TIMEOUT };
+            let err = verify_brainpool_with(
+                &stub_path(name),
+                sidecar_timeout,
+                BrainpoolCurve::P256r1,
+                &x,
+                &y,
+                &r,
+                &s,
+                MESSAGE,
+                256,
+            )
+            .await
+            .expect_err("every one of these stubs must fail to verify");
+            assert!(matches!(err, EcdsaError::Structural(_)), "{name}: expected Structural, got {err:?}");
+            assert!(
+                metrics::sidecar_unavailable_count() >= before + 1,
+                "{name}: must increment the sidecar-unavailable counter"
+            );
+        }
+
+        // A missing script (Command spawns `node` fine, but node itself
+        // exits 1 on MODULE_NOT_FOUND) also counts -- covered by the
+        // non-zero-exit path in run_sidecar, not a spawn failure, since
+        // `node` itself is present on this machine.
+        let before = metrics::sidecar_unavailable_count();
+        let err = verify_brainpool_with(
+            "/does/not/exist/verify.mjs",
+            TEST_TIMEOUT,
+            BrainpoolCurve::P256r1,
+            &x,
+            &y,
+            &r,
+            &s,
+            MESSAGE,
+            256,
+        )
+        .await
+        .expect_err("a missing script must not verify");
+        assert!(matches!(err, EcdsaError::Structural(_)));
+        assert!(metrics::sidecar_unavailable_count() >= before + 1);
+    }
+
+    // Deliberately no test asserting that an affirmative {"valid":false}
+    // rejection leaves SIDECAR_UNAVAILABLE unchanged: that would need an
+    // exact-equality read of a process-global atomic, which -- under cargo
+    // test's default parallel execution, with other tests in this same
+    // module concurrently incrementing the identical counter -- is exactly
+    // the kind of assertion this file's own tests, and metrics.rs's, already
+    // avoid (both use ">=", never "==", for this reason). The guarantee
+    // itself still holds and is checked by inspection, not a flaky runtime
+    // assertion: parse_response's only branch that can produce Ok(false)
+    // (which becomes EcdsaError::Failed at the call site in
+    // verify_brainpool_with) has no metrics call anywhere near it -- every
+    // metrics::record_sidecar_unavailable() call in this file sits inside a
+    // Structural-producing branch, enumerated exhaustively by
+    // every_sidecar_unavailable_failure_mode_increments_the_counter above.
 }

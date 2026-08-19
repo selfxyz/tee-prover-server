@@ -110,6 +110,11 @@ const FIXTURES: &[(&str, &str, &str)] = &[
     ("dsc_sha512_ecdsa_secp521r1.json", "dsc_sha512_ecdsa_secp521r1", "signature"),
     ("dsc_sha256_rsa_65537_4096.json", "dsc_sha256_rsa_65537_4096", "signature"),
     ("dsc_sha256_rsapss_65537_32_3072.json", "dsc_sha256_rsapss_65537_32_3072", "signature"),
+    ("dsc_sha256_ecdsa_brainpoolP256r1.json", "dsc_sha256_ecdsa_brainpoolP256r1", "signature"),
+    ("register_ecdsa_brainpoolP224r1.json", "register_sha1_sha1_sha1_ecdsa_brainpoolP224r1", "signature_passport"),
+    ("register_ecdsa_brainpoolP256r1.json", "register_sha256_sha256_sha256_ecdsa_brainpoolP256r1", "signature_passport"),
+    ("register_ecdsa_brainpoolP384r1.json", "register_sha384_sha384_sha384_ecdsa_brainpoolP384r1", "signature_passport"),
+    ("register_ecdsa_brainpoolP512r1.json", "register_sha512_sha512_sha512_ecdsa_brainpoolP512r1", "signature_passport"),
     ("register_ecdsa_secp224r1.json", "register_sha256_sha224_sha224_ecdsa_secp224r1", "signature_passport"),
     ("register_ecdsa_secp256r1.json", "register_sha256_sha256_sha256_ecdsa_secp256r1", "signature_passport"),
     ("register_ecdsa_secp256r1_sha1.json", "register_sha1_sha1_sha1_ecdsa_secp256r1", "signature_passport"),
@@ -137,8 +142,20 @@ const FIXTURES: &[(&str, &str, &str)] = &[
 /// "1" still parses, so a `Skipped` here would mean the signature failed to
 /// *read* rather than failed to *verify*, which is a different and weaker
 /// property than the one being claimed.
-#[test]
-fn every_fixture_stops_verifying_when_its_signature_is_tampered() {
+///
+/// `#[tokio::test]` + `spawn_blocking` per row, not a plain `#[test]` calling
+/// `dispatch` directly: `Scheme::EcdsaBrainpool`'s dispatch arm reaches the
+/// Node/OpenSSL sidecar via `tokio::runtime::Handle::current().block_on(...)`,
+/// which panics with no Tokio runtime at all (a plain `#[test]`) and panics
+/// again on a normal async worker thread (a bare `#[tokio::test]` calling
+/// `dispatch` in its own body) -- `block_on` requires a blocking-pool thread,
+/// which only `spawn_blocking` provides. This mirrors exactly how production
+/// runs it in `mod::verify_inputs`. Brainpool rows are NOT excluded from this
+/// loop to sidestep that panic risk: an excluded row would be a fixture that
+/// ships without its tamper guarantee ever being checked, the same
+/// unchecked-row gap this whole gate exists to close.
+#[tokio::test]
+async fn every_fixture_stops_verifying_when_its_signature_is_tampered() {
     for (file, circuit, sig_field) in FIXTURES {
         let Some(mut inputs) = read_fixture(file) else {
             continue;
@@ -156,7 +173,10 @@ fn every_fixture_stops_verifying_when_its_signature_is_tampered() {
             other => *other = serde_json::Value::String(tampered(other)),
         }
 
-        let verdict = super::dispatch(circuit, &inputs, &p);
+        let circuit_owned = circuit.to_string();
+        let verdict = tokio::task::spawn_blocking(move || super::dispatch(&circuit_owned, &inputs, &p))
+            .await
+            .expect("dispatch must not panic");
         assert!(
             matches!(verdict, Verdict::Invalid(_)),
             "{file}: tampering {sig_field} must yield Invalid, got {verdict:?}"
@@ -534,4 +554,109 @@ fn real_dsc_ecdsa_secp521r1_fixture_is_valid() {
     };
     let p = params::lookup("dsc_sha512_ecdsa_secp521r1").expect("known circuit");
     assert_eq!(dsc::verify(&inputs, &p), Verdict::Valid);
+}
+
+// --- Brainpool (Plan 4, Task 4): real fixtures captured via genAndInit-
+// MockPassportData against the sibling monorepo's own generators, exactly
+// like every fixture above. `#[tokio::test]` + `spawn_blocking` here (not a
+// plain #[test] calling passport::verify/dsc::verify directly): the
+// EcdsaBrainpool dispatch arm calls the Node/OpenSSL sidecar via
+// `tokio::runtime::Handle::current().block_on(...)`, which needs a
+// blocking-pool thread, not a bare async worker thread or no runtime at all
+// -- see this module's other tokio::test fixture tests and mod.rs's
+// verify_inputs for the identical pattern production uses.
+
+#[tokio::test]
+async fn real_ecdsa_brainpoolp224r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha1', 'sha1',
+    // 'ecdsa_sha1_brainpoolP224r1_224', 'FRA', '000101', '300101') ->
+    // generator.generateRegisterInputs(..., { useTestPadding: true }),
+    // mirroring circuits/tests/register/test_cases.ts's brainpoolP224r1/
+    // SHA-1 row (alg 27). Circuit name confirmed via
+    // doc.getRegisterCircuitName() as
+    // register_sha1_sha1_sha1_ecdsa_brainpoolP224r1. signature_passport/
+    // pubKey_dsc both have 14 limbs (= 2*k for k=7), matching params.rs's
+    // ECDSA_BRAINPOOL_LIMBS row.
+    let Some(inputs) = read_fixture("register_ecdsa_brainpoolP224r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha1_sha1_sha1_ecdsa_brainpoolP224r1").expect("known circuit");
+    let verdict = tokio::task::spawn_blocking(move || passport::verify(&inputs, &p))
+        .await
+        .expect("verifier must not panic");
+    assert_eq!(verdict, Verdict::Valid);
+}
+
+#[tokio::test]
+async fn real_ecdsa_brainpoolp256r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha256',
+    // 'ecdsa_sha256_brainpoolP256r1_256', 'FRA', '000101', '300101'),
+    // mirroring test_cases.ts's brainpoolP256r1/SHA-256 row (alg 21).
+    // Circuit name confirmed as
+    // register_sha256_sha256_sha256_ecdsa_brainpoolP256r1.
+    let Some(inputs) = read_fixture("register_ecdsa_brainpoolP256r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1")
+        .expect("known circuit");
+    let verdict = tokio::task::spawn_blocking(move || passport::verify(&inputs, &p))
+        .await
+        .expect("verifier must not panic");
+    assert_eq!(verdict, Verdict::Valid);
+}
+
+#[tokio::test]
+async fn real_ecdsa_brainpoolp384r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha384', 'sha384',
+    // 'ecdsa_sha384_brainpoolP384r1_384', 'FRA', '000101', '300101'),
+    // mirroring test_cases.ts's brainpoolP384r1/SHA-384 row (alg 22).
+    // Circuit name confirmed as
+    // register_sha384_sha384_sha384_ecdsa_brainpoolP384r1.
+    let Some(inputs) = read_fixture("register_ecdsa_brainpoolP384r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha384_sha384_sha384_ecdsa_brainpoolP384r1")
+        .expect("known circuit");
+    let verdict = tokio::task::spawn_blocking(move || passport::verify(&inputs, &p))
+        .await
+        .expect("verifier must not panic");
+    assert_eq!(verdict, Verdict::Valid);
+}
+
+#[tokio::test]
+async fn real_ecdsa_brainpoolp512r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha512', 'sha512',
+    // 'ecdsa_sha512_brainpoolP512r1_512', 'FRA', '000101', '300101'),
+    // mirroring test_cases.ts's brainpoolP512r1/SHA-512 row (alg 29).
+    // Circuit name confirmed as
+    // register_sha512_sha512_sha512_ecdsa_brainpoolP512r1.
+    let Some(inputs) = read_fixture("register_ecdsa_brainpoolP512r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha512_sha512_sha512_ecdsa_brainpoolP512r1")
+        .expect("known circuit");
+    let verdict = tokio::task::spawn_blocking(move || passport::verify(&inputs, &p))
+        .await
+        .expect("verifier must not panic");
+    assert_eq!(verdict, Verdict::Valid);
+}
+
+#[tokio::test]
+async fn real_dsc_ecdsa_brainpoolp256r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha256',
+    // 'ecdsa_sha256_brainpoolP256r1_256', 'FRA', '000101', '300101') ->
+    // createCircuitInputGenerator().generateDscInputs(doc,
+    // serialized_csca_tree), mirroring circuits/tests/dsc/test_cases.ts's
+    // fullSigAlgs brainpoolP256r1/SHA-256 row (alg 21). Circuit name
+    // confirmed via doc.getDscCircuitName() as
+    // dsc_sha256_ecdsa_brainpoolP256r1 -- this crate's one required DSC
+    // brainpool fixture, per this task's brief.
+    let Some(inputs) = read_fixture("dsc_sha256_ecdsa_brainpoolP256r1.json") else {
+        return;
+    };
+    let p = params::lookup("dsc_sha256_ecdsa_brainpoolP256r1").expect("known circuit");
+    let verdict = tokio::task::spawn_blocking(move || dsc::verify(&inputs, &p))
+        .await
+        .expect("verifier must not panic");
+    assert_eq!(verdict, Verdict::Valid);
 }
