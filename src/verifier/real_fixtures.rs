@@ -51,26 +51,101 @@ fn read_fixture(name: &str) -> Option<serde_json::Value> {
 /// This is the one place absence is loud instead.
 #[test]
 fn all_real_fixtures_are_present() {
-    for name in [
-        "register_passport.json",
-        "register_id.json",
-        "register_aadhaar.json",
-        "register_kyc.json",
-        "register_pss.json",
-        "register_pss_sha384.json",
-        "register_pss_sha512.json",
-        "register_pss_sha256_salt64.json",
-        "register_ecdsa_secp224r1.json",
-        "register_ecdsa_secp256r1.json",
-        "register_ecdsa_secp384r1.json",
-        "register_ecdsa_secp521r1.json",
-        "register_ecdsa_secp256r1_sha1.json",
-        "register_ecdsa_secp384r1_sha256.json",
-    ] {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name);
+    // Keyed off FIXTURES so a fixture can never be listed for tampering but
+    // missing from the presence check, or vice versa. Also asserts the count,
+    // so a fixture checked into tests/fixtures/ without a FIXTURES row is
+    // caught here rather than silently going untested.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for (name, _, _) in FIXTURES {
+        let path = dir.join(name);
         assert!(path.exists(), "checked-in fixture missing: {}", path.display());
+    }
+    let on_disk = std::fs::read_dir(&dir)
+        .expect("fixtures directory")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .count();
+    assert_eq!(
+        on_disk,
+        FIXTURES.len(),
+        "tests/fixtures/ holds {on_disk} .json files but FIXTURES lists {} -- \
+         every fixture needs a row so the tamper test covers it",
+        FIXTURES.len()
+    );
+}
+
+
+/// Every checked-in fixture, paired with the circuit whose params it is
+/// verified under, and the JSON field carrying its signature.
+///
+/// This table exists so the tamper test below covers *every* fixture rather
+/// than the two that happen to have a hand-written mutation test. Add a row
+/// whenever a fixture is added; `all_real_fixtures_are_present` and
+/// `every_fixture_stops_verifying_when_its_signature_is_tampered` both key off
+/// it, so a fixture that is checked in but not listed is caught by the count
+/// assertion rather than silently going uncovered.
+const FIXTURES: &[(&str, &str, &str)] = &[
+    ("register_aadhaar.json", "register_aadhaar", "signature"),
+    ("register_ecdsa_secp224r1.json", "register_sha256_sha224_sha224_ecdsa_secp224r1", "signature_passport"),
+    ("register_ecdsa_secp256r1.json", "register_sha256_sha256_sha256_ecdsa_secp256r1", "signature_passport"),
+    ("register_ecdsa_secp256r1_sha1.json", "register_sha1_sha1_sha1_ecdsa_secp256r1", "signature_passport"),
+    ("register_ecdsa_secp384r1.json", "register_sha384_sha384_sha384_ecdsa_secp384r1", "signature_passport"),
+    ("register_ecdsa_secp384r1_sha256.json", "register_sha256_sha256_sha256_ecdsa_secp384r1", "signature_passport"),
+    ("register_ecdsa_secp521r1.json", "register_sha512_sha512_sha512_ecdsa_secp521r1", "signature_passport"),
+    ("register_id.json", "register_id_sha1_sha256_sha256_rsa_65537_4096", "signature_passport"),
+    ("register_kyc.json", "register_kyc", "s"),
+    ("register_passport.json", "register_sha256_sha256_sha256_rsa_3_4096", "signature_passport"),
+    ("register_pss.json", "register_sha256_sha256_sha256_rsapss_65537_32_2048", "signature_passport"),
+    ("register_pss_sha256_salt64.json", "register_sha256_sha256_sha256_rsapss_65537_64_2048", "signature_passport"),
+    ("register_pss_sha384.json", "register_sha384_sha384_sha384_rsapss_65537_48_2048", "signature_passport"),
+    ("register_pss_sha512.json", "register_sha512_sha512_sha512_rsapss_65537_64_2048", "signature_passport"),
+];
+
+/// Corrupting the signature must stop every fixture from verifying.
+///
+/// Without this, a fixture test asserting `Valid` proves only that the verifier
+/// returned `Valid` — not that it looked at the signature at all. A verifier
+/// that ignored the signature entirely would pass all fourteen `*_is_valid`
+/// tests. Two fixtures had hand-written mutation tests; this covers the rest,
+/// and covers every fixture added later for free.
+///
+/// The assertion is `Invalid`, not merely "not `Valid`": a tampered limb of
+/// "1" still parses, so a `Skipped` here would mean the signature failed to
+/// *read* rather than failed to *verify*, which is a different and weaker
+/// property than the one being claimed.
+#[test]
+fn every_fixture_stops_verifying_when_its_signature_is_tampered() {
+    for (file, circuit, sig_field) in FIXTURES {
+        let Some(mut inputs) = read_fixture(file) else {
+            continue;
+        };
+        let p = params::lookup(circuit).unwrap_or_else(|| panic!("no params row for {circuit}"));
+
+        let field = inputs
+            .get_mut(*sig_field)
+            .unwrap_or_else(|| panic!("{file} has no field {sig_field}"));
+        match field {
+            serde_json::Value::Array(limbs) => {
+                let first = limbs.first_mut().expect("signature has no limbs");
+                *first = serde_json::Value::String(tampered(first));
+            }
+            other => *other = serde_json::Value::String(tampered(other)),
+        }
+
+        let verdict = super::dispatch(circuit, &inputs, &p);
+        assert!(
+            matches!(verdict, Verdict::Invalid(_)),
+            "{file}: tampering {sig_field} must yield Invalid, got {verdict:?}"
+        );
+    }
+}
+
+/// A decimal string that differs from `v` whatever `v` currently holds.
+fn tampered(v: &serde_json::Value) -> String {
+    if v.as_str() == Some("1") {
+        "2".to_string()
+    } else {
+        "1".to_string()
     }
 }
 

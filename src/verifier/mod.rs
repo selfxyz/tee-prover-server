@@ -65,6 +65,22 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
         return Verdict::Skipped(format!("no circuit parameters known for circuit {circuit_name}"));
     };
 
+    run_guarded(|| dispatch(circuit_name, &inputs, &p)).await
+}
+
+/// Routes already-parsed inputs to the family verifier.
+///
+/// Split out of `verify_inputs` so tests can exercise the real routing against
+/// in-memory inputs. `verify_inputs` reads `input.json` from a uuid-named
+/// temp directory, so a test that wanted to check routing would otherwise have
+/// to either stage files on disk or reimplement this match — and a
+/// reimplemented match drifts from the one production uses, which is exactly
+/// the kind of divergence these verifiers exist to avoid.
+pub(crate) fn dispatch(
+    circuit_name: &str,
+    inputs: &serde_json::Value,
+    p: &params::CircuitParams,
+) -> Verdict {
     // Aadhaar and KYC are exact-name circuit families with their own verifiers,
     // but both also start with "register" — the same prefix as the RSA
     // passport / EU-ID circuits handled below. They MUST be matched here,
@@ -73,17 +89,17 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
     // reviewer caught in the parameter lookup's register_id_-before-register_
     // ordering).
     if circuit_name == "register_aadhaar" {
-        return run_guarded(|| aadhaar::verify(&inputs, &p)).await;
+        return aadhaar::verify(inputs, p);
     }
     if circuit_name == "register_kyc" {
-        return run_guarded(|| kyc::verify(&inputs, &p)).await;
+        return kyc::verify(inputs, p);
     }
 
     // Only genuine RSA passport / EU-ID circuits reach here: register_* and
     // register_id_* (register_id_* is itself a subset of the "register"
     // prefix, so a single prefix check covers both).
     if circuit_name.starts_with("register") {
-        return run_guarded(|| passport::verify(&inputs, &p)).await;
+        return passport::verify(inputs, p);
     }
 
     Verdict::Skipped(format!("no verifier wired for circuit {circuit_name}"))
