@@ -632,7 +632,12 @@ assert.equal(
 // reason, per this task's brief.
 const DG1_LINK_PHRASE = 'dg1 hash does not match';
 const ECONTENT_LINK_PHRASE = 'eContent hash does not match';
-const CERT_LINK_PHRASE = 'does not match the certificate';
+// A tampered key limb now fails the byte-window comparison
+// (keyMatchesWindow, checked first -- mirrors dsc.rs's ordering) before it
+// ever reaches the certificate-based comparison, so the reason names the
+// window, not "the certificate". Both raw_dsc and raw_csca share this
+// prefix, so one constant covers both families.
+const CERT_LINK_PHRASE = 'does not match the bytes in raw_';
 const SIGNATURE_PHRASES = ['RSA signature does not verify', 'PSS signature does not verify', 'ECDSA signature does not verify', 'Aadhaar signature does not verify'];
 
 function assertReasonNamesOnly(reason, allowedPhrase, label) {
@@ -807,6 +812,35 @@ describe('verify -- tampering the certificate-embedded key limb is invalid, nami
       assertReasonNamesOnly(result.reason, CERT_LINK_PHRASE, row.file);
     });
   }
+});
+
+describe("verify -- a genuine key at the WRONG declared offset is invalid, not valid (the certificate-only check would have missed this)", () => {
+  // The scenario this closes: pubKey_dsc/csca_pubKey are left untouched --
+  // still the real key, still matching the parsed certificate -- but the
+  // declared offset is shifted a few bytes within bounds. keyMatchesCert
+  // alone (certificate-based, never reads offset/size) would have said
+  // Valid here; keyMatchesWindow (byte-window comparison against the
+  // STATED offset, mirroring dsc.rs) is what actually ties the key to its
+  // claimed location and must say Invalid.
+  test("register family: shifting dsc_pubKey_offset by 8 bytes (still in-bounds) is invalid", () => {
+    const fixture = loadFixture("register_passport.json");
+    const tampered = structuredClone(fixture);
+    const shifted = Number([].concat(fixture.dsc_pubKey_offset)[0]) + 8;
+    tampered.dsc_pubKey_offset = [String(shifted)];
+    const result = verify("register_sha256_sha256_sha256_rsa_3_4096", tampered);
+    assert.equal(result.verdict, "invalid", `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /does not match the bytes in raw_dsc/);
+  });
+
+  test("DSC family: shifting csca_pubKey_offset by 8 bytes (still in-bounds) is invalid", () => {
+    const fixture = loadFixture("dsc_sha256_rsa_65537_4096.json");
+    const tampered = structuredClone(fixture);
+    const shifted = Number(fixture.csca_pubKey_offset) + 8;
+    tampered.csca_pubKey_offset = String(shifted);
+    const result = verify("dsc_sha256_rsa_65537_4096", tampered);
+    assert.equal(result.verdict, "invalid", `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /does not match the bytes in raw_csca/);
+  });
 });
 
 describe('verify -- skip paths', () => {

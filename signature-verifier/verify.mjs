@@ -18,12 +18,26 @@
 // same discipline applies to every function Task 2 adds below: a malformed
 // field is a verdict (`skipped`), never an exception.
 //
-// Semantics do not change in this plan: the circuit is still the authority.
-// `Skipped` still means "cannot be certain, so forward to proving"; `Invalid`
-// is reserved for an affirmative cryptographic or structural failure this
-// module can actually stand behind. This file deliberately does NOT add the
-// PSS leftmost-bit check or turn an off-curve key into a rejection -- see
-// `verifyRsaPss` and this file's report for why.
+// Semantics do not change in this plan, with ONE recorded, sanctioned
+// exception: the circuit is still the authority, `Skipped` still means
+// "cannot be certain, so forward to proving", and `Invalid` is reserved for
+// an affirmative cryptographic or structural failure this module can
+// actually stand behind -- EXCEPT that RSA-PSS verification (`verifyRsaPss`)
+// deliberately DOES add the RFC 8017 leftmost-bit check via native
+// `crypto.verify`/OpenSSL, which the circuit itself does not enforce (it
+// clears that bit rather than checking it). This is a narrow, intentional
+// tightening (ruling 7), not an oversight: empirically, every real PSS
+// signature already has that bit clear (RFC 8017 step 12 guarantees this for
+// any conformant signer), so the only input this can newly reject is one a
+// non-conformant signer produced -- see `verifyRsaPss`'s doc comment for the
+// full reasoning and the evidence test (`verify.test.mjs`'s "RSA-PSS uses
+// native crypto.verify" suite) that pins the empirical claim the decision
+// rests on. A reader tempted to "fix" this by reintroducing a hand-rolled
+// BigInt/MGF1 PSS decode should read that doc comment first -- doing so
+// would undo a deliberate simplification while believing it restores
+// correctness. Every other check in this file, including not turning an
+// off-curve ECDSA key into a rejection, still follows the "do not be
+// stricter than the circuit" rule without exception.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -580,6 +594,83 @@ function offsetInRangeSkip(offset, size, bound) {
   }
   const end = offset + size;
   return end < OFFSET_LIMIT && end <= bound;
+}
+
+/**
+ * Compares `suppliedLimbs` byte-for-byte against `rawBuf[offset .. offset +
+ * size]` DIRECTLY -- mirroring `dsc.circom:171-192`'s `CheckPubkeyPosition` +
+ * `CheckPubkeysEqual` (and `dsc.rs`'s own byte-window comparison) verbatim,
+ * not derived from the parsed certificate at all.
+ *
+ * This is independent of, and in addition to, `keyMatchesCert`'s
+ * certificate-based comparison below -- the two are NOT redundant. A key
+ * that genuinely matches the parsed certificate but sits at the wrong
+ * DECLARED offset would pass a certificate-only check yet fail this one:
+ * `keyMatchesCert` never reads `offset`/`size` at all, so nothing before
+ * this function actually ties the supplied key to its *stated location* in
+ * `raw_dsc`/`raw_csca`. Without this check, the offset/size fields are
+ * bounds-checked (`offsetInRangeSkip`, above) but otherwise inert.
+ *
+ * @param {ReadonlyArray<string>} suppliedLimbs
+ * @param {number} n limb width in bits.
+ * @param {number} k limb count (RSA modulus limbs, or half the ECDSA count).
+ * @param {'rsa'|'ecdsa'} scheme
+ * @param {Buffer} rawBuf the full raw_dsc/raw_csca buffer.
+ * @param {number} offset
+ * @param {number} size
+ * @param {string} keyField field name, for the reason string (e.g. `pubKey_dsc`).
+ * @param {string} rawField field name, for the reason string (e.g. `raw_dsc`).
+ * @param {string} offsetField field name, for the reason string (e.g. `dsc_pubKey_offset`).
+ * @returns {{ok:true} | {ok:false, skip:boolean, reason:string}}
+ */
+function keyMatchesWindow(suppliedLimbs, n, k, scheme, rawBuf, offset, size, keyField, rawField, offsetField) {
+  const window = rawBuf.subarray(offset, offset + size);
+  const sizeField = offsetField.replace(/_offset$/, '_actual_size');
+  if (scheme === 'ecdsa') {
+    if (size % 2 !== 0) {
+      return { ok: false, skip: true, reason: `${sizeField} is odd; an ECDSA x||y split must be even` };
+    }
+    if (suppliedLimbs.length !== 2 * k) {
+      return { ok: false, skip: true, reason: `${keyField} has ${suppliedLimbs.length} limbs, expected 2*k=${2 * k}` };
+    }
+    const half = size / 2;
+    const x = limbsToBigInt(suppliedLimbs.slice(0, k), n);
+    const y = limbsToBigInt(suppliedLimbs.slice(k, 2 * k), n);
+    if (x === null || y === null) {
+      return { ok: false, skip: true, reason: `${keyField}'s x/y half does not reassemble into a valid integer` };
+    }
+    const xBytes = bigIntToFixedBytes(x, half);
+    const yBytes = bigIntToFixedBytes(y, half);
+    if (!xBytes || !yBytes) {
+      return {
+        ok: false,
+        skip: false,
+        reason: `${keyField} does not match ${rawField}: a coordinate is wider than half of ${sizeField}`,
+      };
+    }
+    if (Buffer.compare(xBytes, window.subarray(0, half)) !== 0 || Buffer.compare(yBytes, window.subarray(half)) !== 0) {
+      return { ok: false, skip: false, reason: `${keyField} does not match the bytes in ${rawField} at ${offsetField}` };
+    }
+    return { ok: true };
+  }
+  // rsa / rsapss -- the window is the bare modulus, no exponent involved
+  // (same convention as keyMatchesCert's 'rsa' scheme).
+  const modulus = limbsToBigInt(suppliedLimbs, n);
+  if (modulus === null) {
+    return { ok: false, skip: true, reason: `${keyField} does not reassemble into a valid integer` };
+  }
+  const modulusBytes = bigIntToFixedBytes(modulus, size);
+  if (!modulusBytes) {
+    return {
+      ok: false,
+      skip: false,
+      reason: `${keyField} does not match ${rawField}: it is wider than ${sizeField}`,
+    };
+  }
+  if (Buffer.compare(modulusBytes, window) !== 0) {
+    return { ok: false, skip: false, reason: `${keyField} does not match the bytes in ${rawField} at ${offsetField}` };
+  }
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------
@@ -1192,19 +1283,37 @@ function verifyRegisterFamily(inputs, p) {
   if (rawDscActualLength > rawDsc.length) {
     return skipped('raw_dsc is shorter than raw_dsc_actual_length declares');
   }
+  const keyScheme = p.scheme === 'ecdsa' ? 'ecdsa' : 'rsa';
+  // Byte-window comparison against raw_dsc at the STATED offset, mirroring
+  // dsc.circom's CheckPubkeyPosition+CheckPubkeysEqual (and dsc.rs's own
+  // byte comparison) directly -- independent of certificate parsing. See
+  // keyMatchesWindow's doc comment for why this is not redundant with the
+  // certificate-based check below: without it, a genuine key that matches
+  // the parsed certificate but sits at the wrong declared offset would pass.
+  const windowResult = keyMatchesWindow(
+    pubkeyLimbs,
+    p.n,
+    p.k,
+    keyScheme,
+    rawDsc,
+    dscPubKeyOffset,
+    dscPubKeyActualSize,
+    'pubKey_dsc',
+    'raw_dsc',
+    'dsc_pubKey_offset',
+  );
+  if (!windowResult.ok) {
+    return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
+  }
   const dscTbs = rawDsc.subarray(0, rawDscActualLength);
   const dscCert = certPublicKey(wrapAsCertificate(dscTbs));
   if (!dscCert) {
     return skipped('raw_dsc does not parse as a readable certificate');
   }
-  const keyScheme = p.scheme === 'ecdsa' ? 'ecdsa' : 'rsa';
-  // Mirrors passport.rs's/dsc.rs's explicit `pubkey_limbs.len() != 2 * k`
-  // ECDSA guard (Skipped, distinct from a value that reassembles but
-  // mismatches). RSA/RSA-PSS has no analogous check in the Rust reference
-  // either (see this file's report), so none is added here.
-  if (keyScheme === 'ecdsa' && pubkeyLimbs.length !== 2 * p.k) {
-    return skipped(`pubKey_dsc has ${pubkeyLimbs.length} limbs, expected 2*k=${2 * p.k}`);
-  }
+  // Certificate-based comparison, kept alongside the window comparison
+  // above (not replaced by it): this is what Task 1/Task 2 already
+  // established, and it is what lets `verifySignatureLink` below use a real
+  // `KeyObject` (`dscCert.key`) rather than a key rebuilt from limbs.
   if (!keyMatchesCert(pubkeyLimbs, p.n, p.k, dscCert, keyScheme)) {
     return invalid('pubKey_dsc does not match the certificate embedded in raw_dsc at dsc_pubKey_offset');
   }
@@ -1302,15 +1411,35 @@ function verifyDscFamily(inputs, p) {
   }
 
   // --- link 1: csca_pubKey must equal the key embedded in raw_csca's certificate ---
+  const keyScheme = p.scheme === 'ecdsa' ? 'ecdsa' : 'rsa';
+  // Byte-window comparison against raw_csca at the STATED offset, mirroring
+  // dsc.circom:171-192's CheckPubkeyPosition+CheckPubkeysEqual (and dsc.rs's
+  // own byte comparison, dsc.rs:198-262) directly -- independent of
+  // certificate parsing. See keyMatchesWindow's doc comment for why this is
+  // not redundant with the certificate-based check below.
+  const windowResult = keyMatchesWindow(
+    pubkeyLimbs,
+    p.n,
+    p.k,
+    keyScheme,
+    rawCsca,
+    cscaPubkeyOffset,
+    cscaPubkeyActualSize,
+    'csca_pubKey',
+    'raw_csca',
+    'csca_pubKey_offset',
+  );
+  if (!windowResult.ok) {
+    return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
+  }
   const cscaTbs = rawCsca.subarray(0, rawCscaActualLength);
   const cscaCert = certPublicKey(wrapAsCertificate(cscaTbs));
   if (!cscaCert) {
     return skipped('raw_csca does not parse as a readable certificate');
   }
-  const keyScheme = p.scheme === 'ecdsa' ? 'ecdsa' : 'rsa';
-  if (p.scheme === 'ecdsa' && pubkeyLimbs.length !== 2 * p.k) {
-    return skipped(`csca_pubKey has ${pubkeyLimbs.length} limbs, expected 2*k=${2 * p.k}`);
-  }
+  // Certificate-based comparison, kept alongside the window comparison
+  // above (not replaced by it) -- see verifyRegisterFamily's identical
+  // comment on why both are needed.
   if (!keyMatchesCert(pubkeyLimbs, p.n, p.k, cscaCert, keyScheme)) {
     return invalid('csca_pubKey does not match the certificate embedded in raw_csca at csca_pubKey_offset');
   }
