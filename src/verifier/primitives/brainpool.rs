@@ -524,6 +524,128 @@ mod tests {
         );
     }
 
+    /// The 4 remaining (curve, hash) pairings the review flagged as live but
+    /// untested end-to-end: algs 30 (brainpoolP224r1/sha224), 36
+    /// (brainpoolP256r1/sha1), 37 (brainpoolP384r1/sha256), and 38
+    /// (brainpoolP512r1/sha384) -- see
+    /// `every_brainpool_row_s_sig_hash_maps_to_the_expected_wire_hash_name`
+    /// above for the other 16 rows that reduce to one of these 8 pairings
+    /// (or the 4 already covered by `a_valid_signature_verifies_against_the_
+    /// real_sidecar` and the real-fixture tests: 21/27/22/29). Each vector
+    /// below is generated exactly the same way as `X_HEX`/`Y_HEX`/`R_HEX`/
+    /// `S_HEX` above -- OpenSSL CLI (`ecparam -genkey`, `dgst -<hash>
+    /// -sign`), reusing the identical `(algorithmId, curve, hash)` pairing
+    /// table checked into `brainpool-verifier/verify.test.mjs`'s
+    /// `CIRCUIT_CURVE_HASH_PAIRS` (lines 213-220) rather than inventing a
+    /// different set of pairings to test -- and independently confirmed
+    /// against the real `verify.mjs` (both the vector itself, and that
+    /// flipping a nibble of `s` turns the same vector into `{"valid":false}`,
+    /// not an error) before being hardcoded here. This calls the real
+    /// sidecar, not a stub, so it also proves the composition end to end:
+    /// `params.rs`'s `sig_hash` for these rows, through `hash_name`, through
+    /// the actual OpenSSL `crypto.verify()` call.
+    #[tokio::test]
+    async fn each_remaining_curve_hash_pairing_verifies_against_the_real_sidecar() {
+        struct Vector {
+            algorithm_id: u32,
+            curve: BrainpoolCurve,
+            hash_bits: u32,
+            x: &'static str,
+            y: &'static str,
+            r: &'static str,
+            s: &'static str,
+        }
+        let vectors = [
+            Vector {
+                algorithm_id: 30,
+                curve: BrainpoolCurve::P224r1,
+                hash_bits: 224,
+                x: "07ec01ae3598b636f2e00c7cac8e839add6a7b0bb0ebc76a308814217",
+                y: "095245315785515b058d9464fe794962bc56573fff465ca01e4814c05",
+                r: "07ccbcb5ae965cddfdb555b1f8a35519e9d25016c6bf7b1a817698b96",
+                s: "0821ff2c10595c8f66e04684ff55f3ed0bd01c1602ee7f609b7e2bd75",
+            },
+            Vector {
+                algorithm_id: 36,
+                curve: BrainpoolCurve::P256r1,
+                hash_bits: 160,
+                x: "2e2738cf6741d8df025e21d77d822caa31b08ed6dd481a11a83606059c6fe0a3",
+                y: "a451bfe6d770fc2d54101050467bcdb8fc5a87175f9f163f56230560df2354c5",
+                r: "54efd9537fe1f17345515650a05c7f9d7015d488125761be5c57f24c8acecc0d",
+                s: "6f8ba219284058d0ed19aee9aeca86879b4d93fb8ac8cc379dabfec7fc13ac71",
+            },
+            Vector {
+                algorithm_id: 37,
+                curve: BrainpoolCurve::P384r1,
+                hash_bits: 256,
+                x: "361bda69977ff16f7961623a7103a34c785d8ce8046f321f3e62127757840e73cee834a8e1df56e9a2fbcaecd1d3ddd6",
+                y: "77ef6d3a86d939a0c99b12aa0b467a4b66775976f2b6489f5adfce629fa6d62257e567bf260a773273cd65064c30da09",
+                r: "603b35f024b322d2db4b1f37c88af5a2eb9fc659318056d9c2b97cc2f8cdde7745d63ac16115c25bce3c02d15d7aace5",
+                s: "1b153adbd76c8cca3194994b9bb848ca3235492e2ea2c99990a02354d71c0560903f3c210441973f92dbb3f3a7c4be94",
+            },
+            Vector {
+                algorithm_id: 38,
+                curve: BrainpoolCurve::P512r1,
+                hash_bits: 384,
+                x: "141ad2d23d4a367406576e01a3e0952ed6b7ee2741c1659dc1f681383a5f2832f150e884a8b2cff95fa143bb67e9e48852a261b14659441e6a58399f187ebd66",
+                y: "9ba608825613a791c86506088998050404286275ae780dcd558c75cedf19eb631af6f1213f4b0daa391617509c715762fe413632bc028bf7cf710b66b21bd7d4",
+                r: "45b00db6ceb89474b109937238ef28f00efaa270a0d7384956de3beaf41ac4cfc64ec7b92fd058678bfb4ff9d35db72c85c2feb2875f4a2241bff1e4325ad050",
+                s: "943388b92ad3056796471483fe204534c665ac043ed6f3d607fc2d3e1a1d2e94ffd1a68bdf0e7762c6de8bbb33e76aa889724e93b93e05c6c625ca4747ca60d7",
+            },
+        ];
+
+        for v in vectors {
+            let x = BigUint::parse_bytes(v.x.as_bytes(), 16).expect("valid hex");
+            let y = BigUint::parse_bytes(v.y.as_bytes(), 16).expect("valid hex");
+            let r = BigUint::parse_bytes(v.r.as_bytes(), 16).expect("valid hex");
+            let s = BigUint::parse_bytes(v.s.as_bytes(), 16).expect("valid hex");
+
+            let result = verify_brainpool_with(
+                &real_sidecar_path(),
+                TEST_TIMEOUT,
+                v.curve,
+                &x,
+                &y,
+                &r,
+                &s,
+                MESSAGE,
+                v.hash_bits,
+            )
+            .await;
+            assert_eq!(
+                result,
+                Ok(()),
+                "alg {}: expected a valid signature to verify",
+                v.algorithm_id
+            );
+
+            // Tampering must still turn into Failed (Invalid), never
+            // Structural (Skipped) -- same governing-asymmetry check as
+            // a_tampered_signature_is_failed_against_the_real_sidecar above,
+            // for each of these 4 pairings.
+            let mut s_tampered = s.clone();
+            s_tampered += BigUint::from(1u32);
+            let err = verify_brainpool_with(
+                &real_sidecar_path(),
+                TEST_TIMEOUT,
+                v.curve,
+                &x,
+                &y,
+                &r,
+                &s_tampered,
+                MESSAGE,
+                v.hash_bits,
+            )
+            .await
+            .expect_err("a tampered signature must not verify");
+            assert!(
+                matches!(err, EcdsaError::Failed(_)),
+                "alg {}: expected Failed, got {err:?}",
+                v.algorithm_id
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_missing_script_is_structural() {
         let (x, y, r, s) = valid_vector();
@@ -715,6 +837,77 @@ mod tests {
         assert_eq!(hash_name(384), Some("sha384"));
         assert_eq!(hash_name(512), Some("sha512"));
         assert_eq!(hash_name(999), None);
+    }
+
+    /// The composition `params::lookup(name).sig_hash -> hash_name -> wire`
+    /// for every one of the 20 live brainpool circuits (14 register/
+    /// register_id + 6 DSC -- `params.rs`'s `ECDSA_BRAINPOOL_LIMBS` and
+    /// `DSC_ECDSA_BRAINPOOL_LIMBS`). Fixture coverage before this only
+    /// exercised 4 of the 8 distinct (curve, hash) pairings the table below
+    /// spans (algs 21, 22, 27, 29); this test does not need a real sidecar
+    /// call to catch a wrong `sig_hash` on a row -- it only needs `params.rs`
+    /// and `hash_name` to agree on what wire hash name each row implies -- so
+    /// it covers all 20 names, not just the 8 rows the sidecar test below
+    /// adds. A mismatch here is exactly the shape of bug described in the
+    /// review: a wrong `sig_hash` makes OpenSSL hash with the wrong digest,
+    /// which returns a clean `{"valid":false}` and produces `Invalid` for
+    /// every document of that circuit -- a false reject.
+    #[test]
+    fn every_brainpool_row_s_sig_hash_maps_to_the_expected_wire_hash_name() {
+        use crate::verifier::params;
+
+        // (circuit name, expected wire hash name) -- expected names taken
+        // from `verify.test.mjs`'s CIRCUIT_CURVE_HASH_PAIRS table (the same
+        // 8 (curve, hash) pairs), applied to every name that carries each
+        // pairing, not just the one row per pairing that table lists.
+        let rows: &[(&str, &str)] = &[
+            // register / register_id -- alg 27: brainpoolP224r1 / sha1
+            ("register_sha1_sha1_sha1_ecdsa_brainpoolP224r1", "sha1"),
+            ("register_id_sha1_sha1_sha1_ecdsa_brainpoolP224r1", "sha1"),
+            // alg 30: brainpoolP224r1 / sha224
+            ("register_sha224_sha224_sha224_ecdsa_brainpoolP224r1", "sha224"),
+            ("register_id_sha224_sha224_sha224_ecdsa_brainpoolP224r1", "sha224"),
+            // alg 21: brainpoolP256r1 / sha256
+            ("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1", "sha256"),
+            ("register_id_sha256_sha256_sha256_ecdsa_brainpoolP256r1", "sha256"),
+            // alg 37: brainpoolP384r1 / sha256
+            ("register_sha256_sha256_sha256_ecdsa_brainpoolP384r1", "sha256"),
+            ("register_id_sha256_sha256_sha256_ecdsa_brainpoolP384r1", "sha256"),
+            // alg 22: brainpoolP384r1 / sha384
+            ("register_sha384_sha384_sha384_ecdsa_brainpoolP384r1", "sha384"),
+            ("register_id_sha384_sha384_sha384_ecdsa_brainpoolP384r1", "sha384"),
+            // alg 38: brainpoolP512r1 / sha384
+            ("register_sha384_sha384_sha384_ecdsa_brainpoolP512r1", "sha384"),
+            ("register_id_sha384_sha384_sha384_ecdsa_brainpoolP512r1", "sha384"),
+            // alg 29: brainpoolP512r1 / sha512
+            ("register_sha512_sha512_sha512_ecdsa_brainpoolP512r1", "sha512"),
+            ("register_id_sha512_sha512_sha512_ecdsa_brainpoolP512r1", "sha512"),
+            // dsc -- alg 36: brainpoolP256r1 / sha1
+            ("dsc_sha1_ecdsa_brainpoolP256r1", "sha1"),
+            // alg 21: brainpoolP256r1 / sha256
+            ("dsc_sha256_ecdsa_brainpoolP256r1", "sha256"),
+            // alg 37: brainpoolP384r1 / sha256
+            ("dsc_sha256_ecdsa_brainpoolP384r1", "sha256"),
+            // alg 22: brainpoolP384r1 / sha384
+            ("dsc_sha384_ecdsa_brainpoolP384r1", "sha384"),
+            // alg 38: brainpoolP512r1 / sha384
+            ("dsc_sha384_ecdsa_brainpoolP512r1", "sha384"),
+            // alg 29: brainpoolP512r1 / sha512
+            ("dsc_sha512_ecdsa_brainpoolP512r1", "sha512"),
+        ];
+        assert_eq!(rows.len(), 20, "must cover all 20 live brainpool circuits, not a subset");
+
+        for (name, expected_wire_hash) in rows {
+            let p = params::lookup(name).unwrap_or_else(|| panic!("no CircuitParams for {name}"));
+            assert!(
+                matches!(p.scheme, params::Scheme::EcdsaBrainpool { .. }),
+                "{name}: expected Scheme::EcdsaBrainpool, got {:?}",
+                p.scheme
+            );
+            let got = hash_name(p.sig_hash)
+                .unwrap_or_else(|| panic!("{name}: sig_hash {} has no wire hash name", p.sig_hash));
+            assert_eq!(got, *expected_wire_hash, "{name}: wire hash name for sig_hash {}", p.sig_hash);
+        }
     }
 
     #[tokio::test]
