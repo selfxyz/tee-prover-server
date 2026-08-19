@@ -168,10 +168,17 @@ pub fn precheck_rejection(
     verdict: &Verdict,
     mode: crate::args::PrecheckMode,
 ) -> Option<String> {
-    if circuit_name == KYC_CIRCUIT_NAME {
-        return None;
-    }
-
+    // `register_kyc` deliberately gets NO exemption here, despite an earlier
+    // draft of this plan specifying one. The exemption was reasoned from
+    // "verify.mjs declines KYC, so under enforcement that decline would reject
+    // every KYC request" -- but `dispatch` routes `register_kyc` to the native
+    // `kyc::verify`, which genuinely verifies it and returns a real verdict.
+    // The JS declining it is an internal routing detail, invisible here.
+    //
+    // Exempting it would have been actively worse than doing nothing: a KYC
+    // request with a genuinely bad signature would proceed to witness
+    // generation and be caught later instead of rejected now, trading an early
+    // rejection for a wasted proof.
     use crate::args::PrecheckMode;
     match (mode, verdict) {
         (PrecheckMode::Shadow, _) => None,
@@ -375,7 +382,7 @@ mod tests {
     }
 
     // precheck_rejection: one test per cell of the enforcement table, plus
-    // the KYC exemption and shadow's record-but-forward property.
+    // KYC (deliberately NOT exempt) and shadow's record-but-forward property.
     mod precheck_rejection_tests {
         use super::*;
         use crate::args::PrecheckMode;
@@ -435,21 +442,52 @@ mod tests {
         /// sidecar recognises" -- would have no arm for register_kyc at all
         /// and would silently reject it (or silently exempt some future
         /// unrecognised circuit); asserting this against Invalid and
-        /// Skipped verdicts under enforce is what actually pins the
-        /// exemption, since a Valid verdict would pass either way.
+        /// `register_kyc` is treated like any other circuit, and this pins that
+        /// rather than the exemption an earlier draft of the plan called for.
+        ///
+        /// `kyc::verify` genuinely verifies EdDSA-over-BabyJubJub and returns a
+        /// real verdict, so an `Invalid` from it is an affirmative signature
+        /// failure and must reject under enforce exactly as any other would. The
+        /// exemption was reasoned from the JS declining KYC, which is an internal
+        /// routing detail `dispatch` resolves before a verdict is ever produced.
         #[test]
-        fn kyc_proceeds_under_enforce_regardless_of_verdict() {
-            for v in [
-                Verdict::Valid,
-                Verdict::Invalid("bad eddsa signature".to_string()),
-                Verdict::Skipped("missing data_padded".to_string()),
-            ] {
-                assert_eq!(
-                    precheck_rejection(KYC_CIRCUIT_NAME, &v, PrecheckMode::Enforce),
-                    None,
-                    "register_kyc must proceed under enforce for verdict {v:?}"
-                );
-            }
+        fn kyc_is_not_exempt_under_enforce() {
+            assert_eq!(
+                precheck_rejection(KYC_CIRCUIT_NAME, &Verdict::Valid, PrecheckMode::Enforce),
+                None,
+                "a valid KYC verdict must proceed"
+            );
+            assert!(
+                precheck_rejection(
+                    KYC_CIRCUIT_NAME,
+                    &Verdict::Invalid("bad eddsa signature".to_string()),
+                    PrecheckMode::Enforce
+                )
+                .is_some(),
+                "an affirmative KYC signature failure must reject under enforce, not proceed to proving"
+            );
+            assert!(
+                precheck_rejection(
+                    KYC_CIRCUIT_NAME,
+                    &Verdict::Skipped("missing data_padded".to_string()),
+                    PrecheckMode::Enforce
+                )
+                .is_some(),
+                "an unverifiable KYC input must reject under enforce"
+            );
+        }
+
+        /// Shadow must forward KYC too -- the mode, not the circuit, decides.
+        #[test]
+        fn kyc_forwards_under_shadow() {
+            assert_eq!(
+                precheck_rejection(
+                    KYC_CIRCUIT_NAME,
+                    &Verdict::Invalid("bad eddsa signature".to_string()),
+                    PrecheckMode::Shadow
+                ),
+                None
+            );
         }
     }
 }
