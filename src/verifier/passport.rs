@@ -250,7 +250,11 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
                 return Verdict::Skipped("signature_passport's s half does not reassemble into a valid integer".to_string());
             };
             if let Err(reason) = ecdsa::verify_ecdsa(curve, &x, &y, &r, &s, &sig_digest) {
-                return Verdict::Invalid(format!("ECDSA signature does not verify: {reason}"));
+                // `reason` is already self-describing -- verify_ecdsa prefixes
+                // its own failures ("ECDSA signature does not verify: ...",
+                // "public key is not on the curve: ...", "signature scalar out
+                // of range: ..."). Wrapping it again produced a doubled prefix.
+                return Verdict::Invalid(reason);
             }
         }
         // Guarded out at the top of this function -- unreachable here.
