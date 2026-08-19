@@ -64,6 +64,8 @@ fn all_real_fixtures_are_present() {
         "register_ecdsa_secp256r1.json",
         "register_ecdsa_secp384r1.json",
         "register_ecdsa_secp521r1.json",
+        "register_ecdsa_secp256r1_sha1.json",
+        "register_ecdsa_secp384r1_sha256.json",
     ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
@@ -290,6 +292,38 @@ fn real_ecdsa_secp521r1_fixture_is_valid() {
         return;
     };
     let p = params::lookup("register_sha512_sha512_sha512_ecdsa_secp521r1").expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_ecdsa_secp256r1_sha1_fixture_is_valid() {
+    // Fix-wave item 2: alg 7, the narrower-digest row -- SHA-1 (20 bytes)
+    // under secp256r1's 32-byte field, exercising RustCrypto's bits2field
+    // left-pad path (no other fixture here has hash width < field width).
+    // Captured via genAndInitMockPassportData('sha1', 'sha1',
+    // 'ecdsa_sha1_secp256r1_256', 'FRA', '000101', '300101'), mirroring
+    // test_cases.ts's algorithm 7 row (the sole non-brainpool secp256r1/sha1
+    // row). Circuit name confirmed via doc.getRegisterCircuitName() as
+    // register_sha1_sha1_sha1_ecdsa_secp256r1.
+    let Some(inputs) = read_fixture("register_ecdsa_secp256r1_sha1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha1_sha1_sha1_ecdsa_secp256r1").expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_ecdsa_secp384r1_sha256_fixture_is_valid() {
+    // Fix-wave item 2: alg 23, the other narrower-digest row -- SHA-256 (32
+    // bytes) under secp384r1's 48-byte field. Captured via
+    // genAndInitMockPassportData('sha256', 'sha256',
+    // 'ecdsa_sha256_secp384r1_384', 'FRA', '000101', '300101'), mirroring
+    // test_cases.ts's algorithm 23 row. Circuit name confirmed as
+    // register_sha256_sha256_sha256_ecdsa_secp384r1.
+    let Some(inputs) = read_fixture("register_ecdsa_secp384r1_sha256.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha256_sha256_sha256_ecdsa_secp384r1").expect("known circuit");
     assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
 }
 

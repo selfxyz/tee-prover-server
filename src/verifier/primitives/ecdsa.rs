@@ -237,6 +237,12 @@ fn sha512(data: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+fn sha1(data: &[u8]) -> Vec<u8> {
+    use sha1::Digest as _;
+    sha1::Sha1::digest(data).to_vec()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use num_bigint::BigUint;
@@ -354,6 +360,55 @@ mod tests {
         use p384::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
         let sk = SigningKey::from_slice(&[0x37u8; 48]).unwrap();
         let m_hash = sha384(b"signed attributes").to_vec();
+        let (sig, _): (p384::ecdsa::Signature, _) = sk.sign_prehash(&m_hash).unwrap();
+        let pt = sk.verifying_key().to_encoded_point(false);
+        assert_eq!(
+            verify_ecdsa(
+                Curve::Secp384r1,
+                &BigUint::from_bytes_be(pt.x().unwrap()),
+                &BigUint::from_bytes_be(pt.y().unwrap()),
+                &BigUint::from_bytes_be(&sig.r().to_bytes()),
+                &BigUint::from_bytes_be(&sig.s().to_bytes()),
+                &m_hash,
+            ),
+            Ok(())
+        );
+    }
+
+    // The two live rows below feed a digest narrower than the curve's field,
+    // which routes through RustCrypto's `bits2field` left-pad path (`prehash.
+    // len() < FieldBytesSize / 2` is the only case it errors on) -- no
+    // fixture or other test exercised this before this fix wave's item 2.
+    // Both are comfortably inside the safe range today (20 >= 16, 32 >= 24),
+    // but nothing proved that before these two tests.
+
+    #[test]
+    fn a_sha1_prehash_verifies_under_p256_alg_7() {
+        // alg 7: SHA-1 (20 bytes) under secp256r1's 32-byte field.
+        use p256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
+        let sk = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let m_hash = sha1(b"signed attributes");
+        let (sig, _): (p256::ecdsa::Signature, _) = sk.sign_prehash(&m_hash).unwrap();
+        let pt = sk.verifying_key().to_encoded_point(false);
+        assert_eq!(
+            verify_ecdsa(
+                Curve::Secp256r1,
+                &BigUint::from_bytes_be(pt.x().unwrap()),
+                &BigUint::from_bytes_be(pt.y().unwrap()),
+                &BigUint::from_bytes_be(&sig.r().to_bytes()),
+                &BigUint::from_bytes_be(&sig.s().to_bytes()),
+                &m_hash,
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_sha256_prehash_verifies_under_p384_alg_23() {
+        // alg 23: SHA-256 (32 bytes) under secp384r1's 48-byte field.
+        use p384::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
+        let sk = SigningKey::from_slice(&[0x37u8; 48]).unwrap();
+        let m_hash = sha256(b"signed attributes");
         let (sig, _): (p384::ecdsa::Signature, _) = sk.sign_prehash(&m_hash).unwrap();
         let pt = sk.verifying_key().to_encoded_point(false);
         assert_eq!(
