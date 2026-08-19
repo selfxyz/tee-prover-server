@@ -1259,14 +1259,19 @@ function verifyRsaPkcs1v15(cert, hashBits, message, sigLimbs, n) {
  * highest-risk hand-rolled code in this file (BigInt modpow + MGF1) in
  * favour of a battle-tested primitive.
  *
- * **This is a narrow, deliberate tightening relative to `rsapss.rs`, not a
- * bug**: a hypothetical non-conformant signer that left the leftmost bit
- * set would satisfy the circuit (and `rsapss.rs`) but would now be rejected
- * here (`Invalid`, via `crypto.verify` returning `false`) rather than
- * accepted. See `pssEmLeftmostBitIsZero` in the test suite, which pins the
- * empirical evidence this decision rests on rather than just the reasoning:
- * if a real fixture is ever captured where that bit is set, this decision
- * needs revisiting, and that test is what will notice.
+ * **This is not a narrow exception carved out of an otherwise
+ * circuit-matching module -- under the premise this file now operates
+ * under (the TEE, not the circuit, is authoritative; a false accept is a
+ * forged credential), RFC-strictness is the rule everywhere this module
+ * diverges from the circuit, not a one-off tightening that needs its own
+ * special justification.** A hypothetical non-conformant signer that left
+ * the leftmost bit set would satisfy the circuit (and `rsapss.rs`) but is
+ * correctly rejected here (`Invalid`, via `crypto.verify` returning
+ * `false`) rather than accepted. See `pssEmLeftmostBitIsZero` in the test
+ * suite, which pins the empirical evidence this decision rests on rather
+ * than just the reasoning: if a real fixture is ever captured where that
+ * bit is set, this decision needs revisiting, and that test is what will
+ * notice.
  */
 function verifyRsaPss(cert, hashBits, message, sigLimbs, n, saltLen) {
   const hashName = SHA_NAME[hashBits];

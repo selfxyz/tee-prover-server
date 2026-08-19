@@ -1,10 +1,20 @@
 //! Native pre-check of a document's signature, from the same circuit inputs the
 //! prover is about to consume.
 //!
-//! The governing asymmetry: a false reject takes down proving for a valid
-//! document, while a false accept costs nothing because the circuit still
-//! verifies the signature properly. So this module skips whenever it cannot be
-//! certain, and only an affirmative failure rejects.
+//! The governing asymmetry, corrected under Plan B (`docs/superpowers/specs/
+//! 2026-08-19-tee-signature-authority-design.md`): the circuit's own
+//! signature check has a security bug and is retained only as defence in
+//! depth, so a false accept here is a forged credential, not a free outcome
+//! -- while a false reject is still a production outage. Neither is free.
+//! Where the two conflict, this module rejects. It skips only when it
+//! genuinely cannot be certain, since `Skipped` is what the fail-closed
+//! rollout (shadow -> enforce-on-known -> enforce) ultimately turns into a
+//! rejection too, once skip-rate evidence supports it per circuit family --
+//! see the design doc's "Fail-closed, and how it ships" section. A stale
+//! version of this comment previously argued the opposite (the pre-Plan-B
+//! premise, "a false accept costs nothing"); a stale comment already argued
+//! for reintroducing deleted code once in this project, so this one is
+//! being corrected now rather than left to cause the same failure again.
 //!
 //! Plan A, Task 4: `dispatch` now has exactly two branches. `register_kyc`
 //! (EdDSA over BabyJubJub + Poseidon2, no `node:crypto` representation) is
