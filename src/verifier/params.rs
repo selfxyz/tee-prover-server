@@ -19,24 +19,34 @@
 //! whole design exists to avoid. `table_matches_the_monorepo_instance_files` below
 //! guards against drift when the sibling monorepo is checked out.
 //!
-//! Scope for this table is deliberately narrow: RSA PKCS#1 v1.5 passport
-//! (`register_*`) and EU-ID (`register_id_*`) circuits, plus the fixed
-//! `register_aadhaar` and `register_kyc` instances. RSAPSS and ECDSA are left out
-//! entirely on purpose — `lookup` returns `None` for them and callers skip. A later
-//! plan adds them.
+//! Scope for this table is deliberately narrow: RSA PKCS#1 v1.5 and RSASSA-PSS
+//! passport (`register_*`) and EU-ID (`register_id_*`) circuits, plus the fixed
+//! `register_aadhaar` and `register_kyc` instances. ECDSA is left out entirely on
+//! purpose — `lookup` returns `None` for it and callers skip. A later plan adds it.
+//!
+//! For RSASSA-PSS rows, `salt_len` and `bits` (the minimum RSA key length) are
+//! properties of the circuit's `signatureAlgorithm` ID, not of the circuit
+//! name, per `signatureVerifier.circom`'s
+//! `SALT_LEN = 64 if alg == 46 else getHashLength(alg) / 8` and
+//! `KEY_LENGTH = getMinKeyLength(alg)`. Algorithm 46 (Denmark) is SHA-256 with
+//! a 64-byte salt — the exception that proves the `hash/8` rule is not the
+//! whole story. The circuit name happens to also embed matching numbers for
+//! all 15 PSS rows today (see `PSS_SALT_AND_KEY_LENGTH` below); that is a
+//! property of today's data, not something this code derives from.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scheme {
     Rsa { e: u64, bits: u32 },
-    // RsaPss and Ecdsa are not constructed yet: `lookup` never returns them
-    // because Plan 1 (this plan) only populates the table for RSA PKCS#1
-    // v1.5 circuits, by design (see this file's module doc). They exist now
-    // so Plan 2 (RSAPSS) and Plan 3/4 (ECDSA NIST/brainpool) — both already
-    // scoped in the design's coverage ramp — add a verifier without first
-    // reshaping this enum. Remove this attribute once either plan lands and
-    // starts constructing its variant.
-    #[allow(dead_code)]
+    // Constructed by `lookup` for the 15 RSASSA-PSS circuits (Plan 2). `bits`
+    // is the minimum RSA key length (`getMinKeyLength`), not necessarily the
+    // circuit's own name suffix — see this file's module doc.
     RsaPss { e: u64, salt_len: usize, bits: u32 },
+    // Ecdsa is not constructed yet: `lookup` never returns it because this
+    // table only covers RSA PKCS#1 v1.5 and RSASSA-PSS circuits so far, by
+    // design (see this file's module doc). It exists now so Plan 3/4 (ECDSA
+    // NIST/brainpool) — already scoped in the design's coverage ramp — adds a
+    // verifier without first reshaping this enum. Remove this attribute once
+    // that plan lands and starts constructing the variant.
     #[allow(dead_code)]
     Ecdsa { curve: String },
     EdDsaBabyJubJub,
@@ -87,6 +97,45 @@ const RSA_LIMBS: &[(&str, u32, u32)] = &[
     ("register_id_sha512_sha512_sha512_rsa_65537_4096", 120, 35),
 ];
 
+/// `(name, salt_len bytes, key_bits)` for the 15 RSASSA-PSS passport and EU-ID
+/// circuits. `salt_len` and `key_bits` are transcribed by applying
+/// `signatureVerifier.circom`'s two rules —
+/// `SALT_LEN = 64 if id == 46 else getHashLength(id) / 8` and
+/// `KEY_LENGTH = getMinKeyLength(id)` — to each circuit's `signatureAlgorithm`
+/// ID (the 3rd `REGISTER`/`REGISTER_ID` argument in its instance file), reading
+/// `getHashLength` and `getMinKeyLength` from
+/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom`. They
+/// are NOT read from the numbers embedded in the circuit name itself (the
+/// `_32_`/`_64_`/`_48_` salt-length component and the trailing `_2048`/
+/// `_3072`/`_4096` key-length component) — even though, for all 15 rows below,
+/// the name's numbers happen to agree with these. That agreement is a
+/// property of today's data, not a rule this table relies on: algorithm 46
+/// (Denmark) is SHA-256 with a 64-byte salt, breaking the otherwise-universal
+/// `hash/8` rule, which is exactly why this table exists instead of computing
+/// `salt_len` from the name. `dg_hash`/`econtent_hash`/`sig_hash` still come
+/// from the name's first three components, same convention as `RSA_LIMBS`
+/// above; `(n, k)` is `(120, 35)` for all 15, same as every RSA PKCS#1 v1.5
+/// row, so `lookup` uses that literal directly rather than repeating it here.
+const PSS_SALT_AND_KEY_LENGTH: &[(&str, usize, u32)] = &[
+    // register/instances/*.circom
+    ("register_sha256_sha256_sha256_rsapss_65537_32_2048", 32, 2048), // id 4: rsapss_sha256_65537_2048
+    ("register_sha512_sha512_sha256_rsapss_65537_32_2048", 32, 2048), // id 4: rsapss_sha256_65537_2048
+    ("register_sha256_sha256_sha256_rsapss_65537_32_4096", 32, 4096), // id 12: rsapss_sha256_65537_4096
+    ("register_sha256_sha256_sha256_rsapss_65537_32_3072", 32, 3072), // id 19: rsapss_sha256_65537_3072
+    ("register_sha512_sha512_sha512_rsapss_65537_64_2048", 64, 2048), // id 42: rsapss_sha512_65537_2048
+    ("register_sha256_sha256_sha256_rsapss_3_32_2048", 32, 2048), // id 43: rsapss_sha256_3_2048
+    ("register_sha384_sha384_sha384_rsapss_65537_48_2048", 48, 2048), // id 45: rsapss_sha384_65537_2048
+    ("register_sha256_sha256_sha256_rsapss_65537_64_2048", 64, 2048), // id 46: rsapss_sha256_65537_2048 salt 64
+    // register_id/instances/*.circom
+    ("register_id_sha256_sha256_sha256_rsapss_65537_32_2048", 32, 2048), // id 4: rsapss_sha256_65537_2048
+    ("register_id_sha512_sha512_sha256_rsapss_65537_32_2048", 32, 2048), // id 4: rsapss_sha256_65537_2048
+    ("register_id_sha256_sha256_sha256_rsapss_65537_32_3072", 32, 3072), // id 19: rsapss_sha256_65537_3072
+    ("register_id_sha512_sha512_sha512_rsapss_65537_64_2048", 64, 2048), // id 42: rsapss_sha512_65537_2048
+    ("register_id_sha256_sha256_sha256_rsapss_3_32_2048", 32, 2048), // id 43: rsapss_sha256_3_2048
+    ("register_id_sha384_sha384_sha384_rsapss_65537_48_2048", 48, 2048), // id 45: rsapss_sha384_65537_2048
+    ("register_id_sha256_sha256_sha256_rsapss_65537_64_2048", 64, 2048), // id 46: rsapss_sha256_65537_2048 salt 64
+];
+
 /// `(signatureAlgorithm ID, hash_bits, exponent)`, transcribed from
 /// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom`: its
 /// top-of-file "ID to Signature Algorithm" comment table (which names the
@@ -97,9 +146,14 @@ const RSA_LIMBS: &[(&str, u32, u32)] = &[
 /// as the `signatureAlgorithm` (3rd) argument across the 14 `REGISTER`/
 /// `REGISTER_ID` instance files this crate's `RSA_LIMBS` table covers, plus
 /// the handful of neighbouring RSA IDs from the same table that read
-/// cleanly. RSAPSS and ECDSA IDs are omitted entirely — out of scope for
-/// this plan, and `lookup` already returns `None` for those circuit names,
-/// so the drift test below never needs an entry for them.
+/// cleanly, plus the 7 RSASSA-PSS IDs (4, 12, 19, 42, 43, 45, 46) that appear
+/// across the 15 `PSS_SALT_AND_KEY_LENGTH` instance files. Exponents for the
+/// exotic RSA PKCS#1 v1.5 IDs (47-51) are carried by the algorithm id itself
+/// and are not reconstructible from `getExponentBits`, unlike every PSS id
+/// here (3 and 65537 both are) — do not "simplify" this table into a formula.
+/// ECDSA IDs are omitted entirely — out of scope so far, and `lookup` already
+/// returns `None` for those circuit names, so the drift test below never
+/// needs an entry for them.
 ///
 /// Used only by the `#[cfg(test)]` drift guard below, hence `cfg_attr`
 /// rather than a bare `#[allow(dead_code)]`: a non-test build genuinely has
@@ -110,15 +164,22 @@ const SIGNATURE_ALGORITHM_TABLE: &[(u32, u32, u64)] = &[
     // (id, hash_bits, exponent)
     (1, 256, 65537),   // rsa_sha256_65537_2048
     (3, 160, 65537),   // rsa_sha1_65537_2048
+    (4, 256, 65537),   // rsapss_sha256_65537_2048
     (10, 256, 65537),  // rsa_sha256_65537_4096
     (11, 160, 65537),  // rsa_sha1_65537_4096
+    (12, 256, 65537),  // rsapss_sha256_65537_4096
     (13, 256, 3),      // rsa_sha256_3_2048
     (14, 256, 65537),  // rsa_sha256_65537_3072
     (15, 512, 65537),  // rsa_sha512_65537_4096
+    (19, 256, 65537),  // rsapss_sha256_65537_3072
     (31, 512, 65537),  // rsa_sha512_65537_2048
     (32, 256, 3),      // rsa_sha256_3_4096
     (33, 160, 3),      // rsa_sha1_3_4096
     (34, 384, 65537),  // rsa_sha384_65537_4096
+    (42, 512, 65537),  // rsapss_sha512_65537_2048
+    (43, 256, 3),      // rsapss_sha256_3_2048
+    (45, 384, 65537),  // rsapss_sha384_65537_2048
+    (46, 256, 65537),  // rsapss_sha256_65537_2048 salt 64
     (47, 160, 64321),  // rsa_sha1_64321_4096
     (48, 256, 130689), // rsa_sha256_130689_4096
     (49, 256, 122125), // rsa_sha256_122125_4096
@@ -134,6 +195,39 @@ fn signature_algorithm_hash_and_exponent(id: u32) -> Option<(u32, u64)> {
         .iter()
         .find(|(entry_id, _, _)| *entry_id == id)
         .map(|(_, hash_bits, exponent)| (*hash_bits, *exponent))
+}
+
+/// `(signatureAlgorithm ID, minimum key length in bits)`, transcribed from
+/// `getMinKeyLength(signatureAlgorithm)` in
+/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom`.
+/// Limited to the 7 RSASSA-PSS IDs the drift guard below needs (the same 7
+/// covered by `SIGNATURE_ALGORITHM_TABLE`'s PSS rows) — unlike RSA PKCS#1
+/// v1.5, where the circuit's own name suffix already carries a key length
+/// that's cross-checked elsewhere, PSS's `bits` field is this value
+/// specifically (see `PSS_SALT_AND_KEY_LENGTH`'s doc comment), so this table
+/// exists to let the drift guard recompute it independently.
+///
+/// Used only by the `#[cfg(test)]` drift guard below, hence `cfg_attr` rather
+/// than a bare `#[allow(dead_code)]`.
+#[cfg_attr(not(test), allow(dead_code))]
+const MIN_KEY_LENGTH_TABLE: &[(u32, u32)] = &[
+    (4, 2048),  // rsapss_sha256_65537_2048
+    (12, 4096), // rsapss_sha256_65537_4096
+    (19, 3072), // rsapss_sha256_65537_3072
+    (42, 2048), // rsapss_sha512_65537_2048
+    (43, 2048), // rsapss_sha256_3_2048
+    (45, 2048), // rsapss_sha384_65537_2048
+    (46, 2048), // rsapss_sha256_65537_2048 salt 64
+];
+
+/// Looks up `getMinKeyLength`'s result for a `signatureAlgorithm` ID from the
+/// table above. Used only by the `#[cfg(test)]` drift guard below.
+#[cfg_attr(not(test), allow(dead_code))]
+fn min_key_length(id: u32) -> Option<u32> {
+    MIN_KEY_LENGTH_TABLE
+        .iter()
+        .find(|(entry_id, _)| *entry_id == id)
+        .map(|(_, bits)| *bits)
 }
 
 pub fn lookup(name: &str) -> Option<CircuitParams> {
@@ -200,8 +294,36 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
     let econtent_hash = sha_bits(parts[1])?;
     let sig_hash = sha_bits(parts[2])?;
 
-    // Only RSA PKCS#1 v1.5 is in scope for this table. RSAPSS and ECDSA circuits
-    // return None here and skip — a later plan adds them.
+    // RSASSA-PSS: `salt_len` and `bits` come from PSS_SALT_AND_KEY_LENGTH
+    // (id-derived, per this file's module doc), never from parts[5]/parts[6]
+    // below even though those numbers happen to agree for all 15 rows today.
+    if parts[3] == "rsapss" {
+        if parts.len() != 7 {
+            return None;
+        }
+        let e: u64 = parts[4].parse().ok()?;
+        // parts[5] (salt) and parts[6] (bits) are the name's own embedded
+        // numbers and are intentionally unused here — see PSS_SALT_AND_
+        // KEY_LENGTH's doc comment.
+
+        let (salt_len, bits) = PSS_SALT_AND_KEY_LENGTH
+            .iter()
+            .find(|(entry_name, _, _)| *entry_name == name)
+            .map(|(_, salt_len, bits)| (*salt_len, *bits))?;
+
+        return Some(CircuitParams {
+            dg_hash,
+            econtent_hash,
+            sig_hash,
+            scheme: Scheme::RsaPss { e, salt_len, bits },
+            n: 120,
+            k: 35,
+        });
+    }
+
+    // Only RSA PKCS#1 v1.5 and RSASSA-PSS (above) are in scope for this
+    // table. ECDSA circuits return None here and skip — a later plan adds
+    // them.
     if parts[3] != "rsa" {
         return None;
     }
@@ -331,6 +453,51 @@ mod tests {
         assert!(lookup("definitely_not_a_circuit").is_none());
     }
 
+    #[test]
+    fn pss_rows_match_the_circuit_derived_salt_and_key_length() {
+        // (name, alg, hash_bits, salt_len, key_bits, e)
+        let expect = [
+            ("register_sha256_sha256_sha256_rsapss_65537_32_2048", 4, 256, 32, 2048, 65537),
+            ("register_sha512_sha512_sha256_rsapss_65537_32_2048", 4, 256, 32, 2048, 65537),
+            ("register_id_sha256_sha256_sha256_rsapss_65537_32_2048", 4, 256, 32, 2048, 65537),
+            ("register_id_sha512_sha512_sha256_rsapss_65537_32_2048", 4, 256, 32, 2048, 65537),
+            ("register_sha256_sha256_sha256_rsapss_65537_32_4096", 12, 256, 32, 4096, 65537),
+            ("register_sha256_sha256_sha256_rsapss_65537_32_3072", 19, 256, 32, 3072, 65537),
+            ("register_id_sha256_sha256_sha256_rsapss_65537_32_3072", 19, 256, 32, 3072, 65537),
+            ("register_sha512_sha512_sha512_rsapss_65537_64_2048", 42, 512, 64, 2048, 65537),
+            ("register_id_sha512_sha512_sha512_rsapss_65537_64_2048", 42, 512, 64, 2048, 65537),
+            ("register_sha256_sha256_sha256_rsapss_3_32_2048", 43, 256, 32, 2048, 3),
+            ("register_id_sha256_sha256_sha256_rsapss_3_32_2048", 43, 256, 32, 2048, 3),
+            ("register_sha384_sha384_sha384_rsapss_65537_48_2048", 45, 384, 48, 2048, 65537),
+            ("register_id_sha384_sha384_sha384_rsapss_65537_48_2048", 45, 384, 48, 2048, 65537),
+            ("register_sha256_sha256_sha256_rsapss_65537_64_2048", 46, 256, 64, 2048, 65537),
+            ("register_id_sha256_sha256_sha256_rsapss_65537_64_2048", 46, 256, 64, 2048, 65537),
+        ];
+        assert_eq!(expect.len(), 15);
+        for (name, _alg, hash_bits, salt_len, key_bits, e) in expect {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            assert_eq!(p.sig_hash, hash_bits, "sig_hash for {name}");
+            match p.scheme {
+                Scheme::RsaPss { e: got_e, salt_len: got_salt, bits } => {
+                    assert_eq!(got_e, e, "exponent for {name}");
+                    assert_eq!(got_salt, salt_len, "salt for {name}");
+                    assert_eq!(bits, key_bits, "key bits for {name}");
+                }
+                other => panic!("{name} is not RsaPss: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn alg_46_is_the_salt_rule_exception_and_is_pinned() {
+        // sha256 with a 64-byte salt. If this ever reads 32, the salt is being
+        // derived from the hash length instead of the algorithm id, and every
+        // Danish passport would be falsely rejected.
+        let p = lookup("register_sha256_sha256_sha256_rsapss_65537_64_2048").unwrap();
+        assert!(matches!(p.scheme, Scheme::RsaPss { salt_len: 64, .. }));
+        assert_eq!(p.sig_hash, 256);
+    }
+
     /// The drift guard. Parses the sibling monorepo's instance files and asserts our
     /// table agrees on (n, k) for every circuit we claim to support. Skips with a
     /// message when the monorepo is not checked out, so CI here never requires it.
@@ -421,18 +588,70 @@ mod tests {
                          {sig_algo_id} (from the instance file) implies {}",
                         ours.sig_hash, expected_sig_hash
                     );
-                    let Scheme::Rsa { e: ours_e, .. } = ours.scheme else {
-                        panic!(
-                            "{stem}: table's scheme is not Rsa, but the instance file's \
-                             signatureAlgorithm id {sig_algo_id} is an RSA PKCS#1v15 id"
-                        );
-                    };
-                    assert_eq!(
-                        ours_e, expected_exponent,
-                        "RSA exponent drift for {stem}: table says e={ours_e}, but \
-                         signatureAlgorithm id {sig_algo_id} (from the instance file) implies \
-                         e={expected_exponent}"
-                    );
+                    match ours.scheme {
+                        Scheme::Rsa { e: ours_e, .. } => {
+                            assert_eq!(
+                                ours_e, expected_exponent,
+                                "RSA exponent drift for {stem}: table says e={ours_e}, but \
+                                 signatureAlgorithm id {sig_algo_id} (from the instance file) \
+                                 implies e={expected_exponent}"
+                            );
+                        }
+                        Scheme::RsaPss {
+                            e: ours_e,
+                            salt_len: ours_salt_len,
+                            bits: ours_bits,
+                        } => {
+                            assert_eq!(
+                                ours_e, expected_exponent,
+                                "RSASSA-PSS exponent drift for {stem}: table says \
+                                 e={ours_e}, but signatureAlgorithm id {sig_algo_id} (from \
+                                 the instance file) implies e={expected_exponent}"
+                            );
+
+                            // SALT_LEN = 64 if alg == 46 else getHashLength(alg) / 8
+                            // (signatureVerifier.circom:95). Algorithm 46 is the
+                            // exception this whole guard exists to pin: SHA-256
+                            // with a 64-byte salt, not the 32 the hash/8 rule
+                            // would otherwise imply.
+                            let expected_salt_len: usize = if sig_algo_id == 46 {
+                                64
+                            } else {
+                                (expected_sig_hash / 8) as usize
+                            };
+                            assert_eq!(
+                                ours_salt_len, expected_salt_len,
+                                "salt_len drift for {stem}: table says salt_len={ours_salt_len}, \
+                                 but signatureAlgorithm id {sig_algo_id} (from the instance \
+                                 file) implies salt_len={expected_salt_len} via SALT_LEN = 64 \
+                                 if alg == 46 else getHashLength(alg) / 8"
+                            );
+
+                            // KEY_LENGTH = getMinKeyLength(alg) (signatureVerifier.circom:94).
+                            let expected_key_bits =
+                                min_key_length(sig_algo_id).unwrap_or_else(|| {
+                                    panic!(
+                                        "{stem}: no entry in MIN_KEY_LENGTH_TABLE for \
+                                         signatureAlgorithm id {sig_algo_id} (instance file's \
+                                         3rd REGISTER arg) — add it by reading \
+                                         getMinKeyLength in signatureAlgorithm.circom, do not \
+                                         guess"
+                                    )
+                                });
+                            assert_eq!(
+                                ours_bits, expected_key_bits,
+                                "key_bits (KEY_LENGTH) drift for {stem}: table says \
+                                 bits={ours_bits}, but signatureAlgorithm id {sig_algo_id} \
+                                 (from the instance file) implies \
+                                 bits={expected_key_bits} via getMinKeyLength"
+                            );
+                        }
+                        other => panic!(
+                            "{stem}: table's scheme is {other:?}, but the instance file's \
+                             signatureAlgorithm id {sig_algo_id} is an RSA PKCS#1v15 or \
+                             RSASSA-PSS id"
+                        ),
+                    }
                 }
 
                 checked += 1;
@@ -441,9 +660,10 @@ mod tests {
         // Exact count, not just > 0: a future parser change that silently matched
         // only one file should fail loudly here, not slip through a bare non-zero check.
         assert_eq!(
-            checked, 15,
-            "expected to check 15 circuits (14 REGISTER/REGISTER_ID RSA instances + \
-             register_aadhaar) but checked {checked} — table or instance coverage drifted"
+            checked, 30,
+            "expected to check 30 circuits (14 REGISTER/REGISTER_ID RSA instances + \
+             register_aadhaar + 15 REGISTER/REGISTER_ID RSASSA-PSS instances) but checked \
+             {checked} — table or instance coverage drifted"
         );
     }
 }
