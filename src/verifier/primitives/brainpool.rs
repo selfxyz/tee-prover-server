@@ -200,11 +200,23 @@ fn hash_name(hash_bits: u32) -> Option<&'static str> {
 /// The sidecar's response shape: `{"valid":true|false}` or `{"error":...}`.
 /// `untagged` tries each variant in declaration order against the same JSON
 /// value, so this one `enum` covers both without a wrapper struct.
+///
+/// `Error` is declared first, deliberately: serde's untagged deserializer
+/// tries variants top-to-bottom and commits to the first one whose fields
+/// all match, so a malformed payload that happens to carry both keys --
+/// e.g. `{"valid":false,"error":"spawn broke"}`, which the checked-in
+/// `verify.mjs` never emits, but nothing in this type stopped it either --
+/// would previously have matched `Result` first and silently become
+/// `Ok(false)`/`EcdsaError::Failed` (a false reject) instead of `Structural`.
+/// With `Error` first, that same payload matches `Error` instead, and only a
+/// payload with `valid` and no `error` key can ever reach `Result`. See
+/// `an_error_and_valid_payload_is_structural_not_a_verdict` below, which
+/// pins this ordering behaviourally rather than trusting the doc comment.
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 enum SidecarResponse {
-    Result { valid: bool },
     Error { error: String },
+    Result { valid: bool },
 }
 
 /// Parses the sidecar's stdout. `Ok(true)`/`Ok(false)` for an actual
@@ -641,6 +653,24 @@ mod tests {
         assert!(
             matches!(err, EcdsaError::Structural(_)),
             "expected Structural, got {err:?}"
+        );
+    }
+
+    /// Pins the `SidecarResponse` variant order directly: a payload carrying
+    /// both `valid` and `error` -- which the checked-in `verify.mjs` never
+    /// emits, but nothing in the type itself ruled out before this reorder
+    /// -- must parse as `Error`, not silently match `Result` first and
+    /// become an `Ok(false)`/`Invalid` false reject. Exercises
+    /// `parse_response` directly rather than through a stub script, since
+    /// this is about serde's untagged-enum resolution order, not the
+    /// sidecar-unavailable machinery around it.
+    #[test]
+    fn an_error_and_valid_payload_is_structural_not_a_verdict() {
+        let err = parse_response(br#"{"valid":false,"error":"spawn broke"}"#)
+            .expect_err("a payload carrying both keys must not be treated as a clean verdict");
+        assert!(
+            matches!(err, EcdsaError::Structural(_)),
+            "expected Structural (the Error variant winning), got {err:?}"
         );
     }
 
