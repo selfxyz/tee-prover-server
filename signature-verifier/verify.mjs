@@ -979,14 +979,24 @@ function digestBuffer(bits, msg) {
 
 // ---------------------------------------------------------------------
 // Offset/bounds checks, mirroring passportVerifier.circom:53-66 (register
-// family, violation => Invalid) and dsc.circom:110-127 (DSC family and the
-// dsc_pubKey_offset link below, violation => Skipped). See dsc.rs's
-// `offset_in_range` doc comment for why the DSC-shaped check is Skipped
-// rather than Invalid: unlike the register family's padded lengths (which
-// `recoverMessage` independently corroborates against the very buffer they
-// bound), an offset/size pair here has no independent corroboration, so it
-// sits with the "uncertain" class, not the two checks this module can
-// affirmatively stand behind.
+// family's dg1_hash_offset/signed_attr_econtent_hash_offset, violation =>
+// Invalid) and dsc.circom:110-127 (DSC family's csca_pubKey_offset, and the
+// register family's own added dsc_pubKey_offset link below -- both also
+// violation => Invalid).
+//
+// Corrected (this plan's Task 3): an earlier version of this module treated
+// the dsc.circom-shaped check as Skipped, on the theory that an offset/size
+// pair has no independent corroboration the way the register family's
+// padded lengths do (recoverMessage cross-checks those against the buffer
+// they bound). That theory doesn't survive reading the circuit: verified
+// against dsc.circom:111-127 and register.circom:102-123, BOTH shapes are
+// hard-asserted -- `Num2Bits(12)` range checks on the offset, the size, and
+// their sum, followed by `csca_pubKey_offset_in_range === 1` (an unsatisfied
+// `=== 1` constraint means the circuit itself cannot produce a proof for
+// this input). A violation here is therefore an affirmative structural
+// failure the circuit would refuse to prove, not a coverage gap -- treating
+// it as Skipped was looser than both the RFC and the circuit, and inflated
+// the very skip-rate metric that gates enforcement.
 // ---------------------------------------------------------------------
 
 const OFFSET_BITS = 12;
@@ -1013,11 +1023,13 @@ function checkOffsetRangeInvalid(offset, hashLen, paddedLength, field) {
 
 /**
  * Checks `offset`/`size` each fit in 12 bits and `offset + size <= bound`.
- * Mirrors dsc.rs's `offset_in_range`.
+ * Mirrors dsc.rs's `offset_in_range` arithmetic, but -- unlike that function's
+ * name -- a violation is `Invalid` here, not `Skipped`: see this section's
+ * module doc for the circuit citations backing that.
  *
  * @returns {boolean}
  */
-function offsetInRangeSkip(offset, size, bound) {
+function offsetInRange(offset, size, bound) {
   if (offset >= OFFSET_LIMIT || size >= OFFSET_LIMIT) {
     return false;
   }
@@ -1038,7 +1050,7 @@ function offsetInRangeSkip(offset, size, bound) {
  * `keyMatchesCert` never reads `offset`/`size` at all, so nothing before
  * this function actually ties the supplied key to its *stated location* in
  * `raw_dsc`/`raw_csca`. Without this check, the offset/size fields are
- * bounds-checked (`offsetInRangeSkip`, above) but otherwise inert.
+ * bounds-checked (`offsetInRange`, above) but otherwise inert.
  *
  * @param {ReadonlyArray<string>} suppliedLimbs
  * @param {number} n limb width in bits.
@@ -1719,8 +1731,11 @@ function verifyRegisterFamily(inputs, p) {
   // --- link 3: pubKey_dsc must equal the key embedded in raw_dsc's certificate ---
   // (see this function's doc comment for why this link exists here even
   // though passport.rs itself does not check it)
-  if (!offsetInRangeSkip(dscPubKeyOffset, dscPubKeyActualSize, rawDscActualLength)) {
-    return skipped(
+  // register.circom:102-123 hard-asserts this range (Num2Bits(12) plus
+  // `dsc_pubKey_offset_in_range === 1`) -- an unsatisfiable constraint, so
+  // this is Invalid, not Skipped. See this section's module doc.
+  if (!offsetInRange(dscPubKeyOffset, dscPubKeyActualSize, rawDscActualLength)) {
+    return invalid(
       `dsc_pubKey_offset (${dscPubKeyOffset}) + dsc_pubKey_actual_size (${dscPubKeyActualSize}) is out of range for raw_dsc_actual_length (${rawDscActualLength})`,
     );
   }
@@ -1872,11 +1887,11 @@ function verifyDscFamily(inputs, p) {
     return skipped('missing or malformed field: signature');
   }
 
-  // --- offset bounds, dsc.circom:110-127: violation => Skipped (see this
-  // section's module doc on why this is Skipped, not Invalid, unlike the
-  // register family's dg1/eContent offsets) ---
-  if (!offsetInRangeSkip(cscaPubkeyOffset, cscaPubkeyActualSize, rawCscaActualLength)) {
-    return skipped(
+  // --- offset bounds, dsc.circom:110-127: hard-asserted (Num2Bits(12) plus
+  // `csca_pubKey_offset_in_range === 1`), so a violation is Invalid, not
+  // Skipped -- see this section's module doc. ---
+  if (!offsetInRange(cscaPubkeyOffset, cscaPubkeyActualSize, rawCscaActualLength)) {
+    return invalid(
       `csca_pubKey_offset (${cscaPubkeyOffset}) + csca_pubKey_actual_size (${cscaPubkeyActualSize}) is out of range for raw_csca_actual_length (${rawCscaActualLength})`,
     );
   }

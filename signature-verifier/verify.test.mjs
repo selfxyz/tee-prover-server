@@ -688,6 +688,7 @@ describe('keyMatchesCert -- id-RSASSA-PSS SPKI certificates', () => {
     assert.equal(keyMatchesCert(wrongLimbs, 120, 35, cert, 'rsa'), false);
   });
 });
+
 describe('limbsToBigInt rejects what chunks.rs rejects', () => {
   // chunks.rs's bigint_from_limbs returns None for n == 0 and for any limb
   // outside [0, 2^n). Accepting them would accumulate overlapping bits and
@@ -1088,20 +1089,27 @@ describe('verify -- skip paths', () => {
     assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('an out-of-range csca_pubKey_offset is skipped, not invalid (DSC family, dsc.circom:110-127)', () => {
+  test('an out-of-range csca_pubKey_offset is invalid, not skipped (DSC family, dsc.circom:110-127 hard-asserts this range)', () => {
+    // dsc.circom:111-127 Num2Bits(12)s the offset, the size, and their sum,
+    // then asserts `csca_pubKey_offset_in_range === 1` -- an unsatisfiable
+    // constraint for an out-of-range offset, so the circuit itself could
+    // never produce a proof for this input. Treating it as Skipped (an
+    // earlier version of this module did) was looser than both the RFC and
+    // the circuit, and inflated the skip-rate metric the fail-closed
+    // rollout depends on to gate enforcement.
     const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
     const tampered = structuredClone(fixture);
     tampered.csca_pubKey_offset = '100000';
     const result = verify('dsc_sha256_rsa_65537_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('an out-of-range dsc_pubKey_offset is skipped, not invalid (register family -- this module\'s own added link)', () => {
+  test('an out-of-range dsc_pubKey_offset is invalid, not skipped (register family -- this module\'s own added link, register.circom:102-123 hard-asserts this range)', () => {
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     tampered.dsc_pubKey_offset = ['100000'];
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 });
 
