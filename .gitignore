@@ -2,3 +2,4 @@
 /tmp*
 /circuits
 /relayer/node_modules
+/jwt-input-generator/node_modules

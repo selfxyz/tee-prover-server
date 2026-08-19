@@ -35,3 +35,12 @@ dsc_circuits=(
   "dsc_sha384_ecdsa_brainpoolP384r1:medium" 
   "dsc_sha384_ecdsa_secp384r1:medium"
 )
+
+# Circuits needed by every image variant regardless of PROOFTYPE/SIZE_FILTER.
+# These live in circuits/common and zkeys/common (no small/medium/large split)
+# instead of one of the size-filtered categories above, since sort_circuits.sh
+# and sort_zkeys.sh only ever operate on the register/disclose/dsc category
+# directories and never touch a sibling "common" directory.
+ALWAYS_CIRCUITS=(
+  "gcp_jwt_verifier"
+)

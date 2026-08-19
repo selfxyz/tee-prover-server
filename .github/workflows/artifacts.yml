@@ -98,6 +98,14 @@ jobs:
         if: ${{ inputs.tag == 'latest' }}
         run: |
           # unzip artifact.zip -d ./circuits/
+          # gcp_jwt_verifier_cpp ships in every image variant from circuits/common
+          # (see constants.sh's ALWAYS_CIRCUITS). No-op if gs://zk_circuits/output
+          # already nests it under common/; moves it into place if it lands flat
+          # at the circuits/ root instead.
+          mkdir -p circuits/common
+          if [ -d circuits/gcp_jwt_verifier_cpp ]; then
+            mv circuits/gcp_jwt_verifier_cpp circuits/common/
+          fi
           chmod +x sort_circuits.sh
           ./sort_circuits.sh
 
@@ -123,21 +131,51 @@ jobs:
           # unzip artifact.zip -d ./circuits/
           chmod +x sort_circuits.cherrypick.sh
           ./sort_circuits.cherrypick.sh
+          # Dockerfile.cherrypick COPYs ./circuits wholesale, so this layout is FLAT --
+          # the mirror image of the "Sort circuits" step above, which nests
+          # gcp_jwt_verifier_cpp under circuits/common for Dockerfile.tee's filtered
+          # copies. Anything left in a subdirectory would both miss the
+          # /circuits/<name>_cpp path the server looks in and make it treat the leftover
+          # directory as a circuit and panic at boot, so common/ is emptied, not left.
+          # No-op if gs://zk_circuits/output already delivers it flat.
+          if [ -d circuits/common ]; then
+            mv circuits/common/* circuits/ 2>/dev/null || true
+            rmdir circuits/common
+          fi
 
       - name: Reformat zkeys
         if: ${{ inputs.tag == 'latest' }}
         run: |
-          mkdir -p zkeys/register zkeys/disclose zkeys/dsc
+          mkdir -p zkeys/register zkeys/disclose zkeys/dsc zkeys/common
           mv zkeys/register_* zkeys/register/
           mv zkeys/vc_and_disclose*.zkey zkeys/disclose/
           mv zkeys/dsc_* zkeys/dsc/
+          # gcp_jwt_verifier.zkey (see constants.sh's ALWAYS_CIRCUITS) matches
+          # none of the prefixes above. No-op if it's already in zkeys/common;
+          # moves it into place if it's still flat from the download step.
+          if [ -f zkeys/gcp_jwt_verifier.zkey ]; then
+            mv zkeys/gcp_jwt_verifier.zkey zkeys/common/
+          fi
           chmod +x sort_zkeys.sh
           ./sort_zkeys.sh
 
+      # Two invocations because the ALWAYS_CIRCUITS layout differs per image family:
+      # Dockerfile.tee COPYs circuits/common + zkeys/common (its per-variant COPY is
+      # filtered by PROOFTYPE/SIZE_FILTER), while Dockerfile.cherrypick COPYs ./circuits
+      # and ./zkeys wholesale after sort_circuits.cherrypick.sh flattens them. Each build
+      # asserts the layout it will actually COPY from, so a missing attestation circuit
+      # fails here instead of partway through the image builds.
       - name: Check circuits
+        if: ${{ inputs.tag == 'latest' }}
         run: |
           chmod +x check_circuits.sh
           ./check_circuits.sh
+
+      - name: Check circuits (cherrypick)
+        if: ${{ inputs.tag != 'latest' }}
+        run: |
+          chmod +x check_circuits.sh
+          ./check_circuits.sh --flat
 
       - name: Init submodules
         run: |
