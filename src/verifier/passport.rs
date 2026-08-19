@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 use crate::verifier::chunks::{bigint_from_limbs, bytes_from_decimal_strings, field_as_strings, scalar_usize};
 use crate::verifier::params::{CircuitParams, Scheme};
 use crate::verifier::primitives::rsa::verify_pkcs1v15;
+use crate::verifier::primitives::rsapss;
 use crate::verifier::sha_padding::recover_message;
 use crate::verifier::Verdict;
 
@@ -75,9 +76,12 @@ fn slice_at<'a>(buf: &'a [u8], offset: usize, len: usize) -> Option<&'a [u8]> {
 }
 
 pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
-    let Scheme::Rsa { e, bits: _ } = &p.scheme else {
-        return Verdict::Skipped("passport::verify only handles the RSA PKCS#1v15 scheme".to_string());
-    };
+    if !matches!(p.scheme, Scheme::Rsa { .. } | Scheme::RsaPss { .. }) {
+        return Verdict::Skipped(format!(
+            "passport::verify only handles the RSA PKCS#1v15 and RSASSA-PSS schemes, got {:?}",
+            p.scheme
+        ));
+    }
 
     // --- 1. Parse every field. Any parse failure => Skipped. ---
     let Some(dg1_items) = field_as_strings(inputs, "dg1") else {
@@ -178,8 +182,26 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
     let Some(sig_digest) = digest(p.sig_hash, signed_attr_msg) else {
         return Verdict::Skipped(format!("unknown sig_hash width: {}", p.sig_hash));
     };
-    if !verify_pkcs1v15(&signature, &modulus, *e, &sig_digest, p.sig_hash) {
-        return Verdict::Invalid("signature does not verify under pubKey_dsc".to_string());
+    match &p.scheme {
+        Scheme::Rsa { e, .. } => {
+            if !verify_pkcs1v15(&signature, &modulus, *e, &sig_digest, p.sig_hash) {
+                return Verdict::Invalid("signature does not verify under pubKey_dsc".to_string());
+            }
+        }
+        Scheme::RsaPss { e, salt_len, bits } => {
+            let hash = match p.sig_hash {
+                160 => rsapss::PssHash::Sha1,
+                256 => rsapss::PssHash::Sha256,
+                384 => rsapss::PssHash::Sha384,
+                512 => rsapss::PssHash::Sha512,
+                other => return Verdict::Skipped(format!("unsupported PSS hash width {other}")),
+            };
+            if let Err(reason) = rsapss::verify_pss(&signature, &modulus, *e, &sig_digest, hash, *salt_len, *bits) {
+                return Verdict::Invalid(format!("PSS signature does not verify: {reason}"));
+            }
+        }
+        // Guarded out at the top of this function -- unreachable here.
+        _ => return Verdict::Skipped("passport::verify only handles the RSA PKCS#1v15 and RSASSA-PSS schemes".to_string()),
     }
 
     Verdict::Valid

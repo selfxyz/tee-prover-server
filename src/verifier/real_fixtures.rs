@@ -56,6 +56,7 @@ fn all_real_fixtures_are_present() {
         "register_id.json",
         "register_aadhaar.json",
         "register_kyc.json",
+        "register_pss.json",
     ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
@@ -108,6 +109,46 @@ fn real_aadhaar_fixture_is_valid() {
     );
     let p = params::lookup("register_aadhaar").expect("known circuit");
     assert_eq!(aadhaar::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_pss_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha256',
+    // 'rsapss_sha256_65537_2048_32', 'FRA', '000101', '300101') ->
+    // generator.generateRegisterInputs(..., { useTestPadding: true }), the
+    // same path circuits/tests/register/register.test.ts's RSAPSS rows
+    // exercise. Circuit name confirmed via doc.getRegisterCircuitName() as
+    // register_sha256_sha256_sha256_rsapss_65537_32_2048.
+    let Some(inputs) = read_fixture("register_pss.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha256_sha256_sha256_rsapss_65537_32_2048")
+        .expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_pss_fixture_with_a_corrupted_signature_limb_is_invalid_for_the_pss_check() {
+    // Corrupts only `signature_passport` -- dg1, eContent, and signed_attr
+    // are untouched, so links 1 and 2 still pass. The reason must therefore
+    // name the PSS signature check itself, not a dg1/eContent/signed_attr
+    // chain link -- a mutation that failed for the wrong reason would prove
+    // nothing (see this module's doc comment on wire-format mismatches).
+    let Some(mut inputs) = read_fixture("register_pss.json") else {
+        return;
+    };
+    let arr = inputs["signature_passport"].as_array_mut().unwrap();
+    arr[0] = serde_json::Value::String("1".to_string());
+    let p = params::lookup("register_sha256_sha256_sha256_rsapss_65537_32_2048")
+        .expect("known circuit");
+    let v = passport::verify(&inputs, &p);
+    let Verdict::Invalid(reason) = &v else {
+        panic!("corrupting signature_passport must be Invalid, got {v:?}");
+    };
+    assert!(
+        reason.contains("PSS"),
+        "the reason must name the PSS signature check, not a chain link, got: {reason}"
+    );
 }
 
 #[test]

@@ -2,20 +2,16 @@
 //! semantics where it diverges from the RFC. See this module's tests and the
 //! plan's "circuit's PSS semantics" section.
 //!
-//! Nothing here is called from production code yet -- this plan's Task 2
-//! wires `verify_pss` into `params.rs`'s scheme table and Task 3 into
-//! `passport.rs`'s dispatch. Until then, every item below is exercised only
-//! by this file's own `#[cfg(test)]` module, so each carries
-//! `#[cfg_attr(not(test), allow(dead_code))]` rather than a bare
-//! `#[allow(dead_code)]` -- see `params.rs`'s `SIGNATURE_ALGORITHM_TABLE` for
-//! the same convention. That's deliberate: a bare `allow` would also
-//! silently tolerate this primitive becoming untested, not just unused by
-//! production.
+//! `verify_pss` is called from production code: `passport.rs`'s dispatch for
+//! `Scheme::RsaPss` (Plan 2's Task 3), reached via the 15 PSS rows `params.rs`
+//! constructs (Task 2). It previously carried
+//! `#[cfg_attr(not(test), allow(dead_code))]` on `PssHash`, `mgf1`, and
+//! `verify_pss` while only this file's own tests exercised them -- that
+//! attribute is gone now that a production caller exists.
 
 use num_bigint::BigUint;
 use sha1::Digest as _;
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PssHash {
     Sha1,
@@ -24,7 +20,6 @@ pub enum PssHash {
     Sha512,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl PssHash {
     pub fn len(self) -> usize {
         match self {
@@ -47,7 +42,6 @@ impl PssHash {
 
 /// RFC 8017 §B.2.1: repeatedly hash `seed || counter` (counter as a 4-byte
 /// big-endian block), concatenate, and truncate to `out_len`.
-#[cfg_attr(not(test), allow(dead_code))]
 fn mgf1(seed: &[u8], out_len: usize, hash: PssHash) -> Vec<u8> {
     let mut out = Vec::with_capacity(out_len + hash.len());
     let mut counter: u32 = 0;
@@ -64,7 +58,6 @@ fn mgf1(seed: &[u8], out_len: usize, hash: PssHash) -> Vec<u8> {
 
 /// Verifies an RSASSA-PSS signature per RFC 8017 §9.1.2, with one deliberate
 /// divergence: see the leftmost-bit comment below.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_pss(
     signature: &BigUint,
     modulus: &BigUint,
@@ -359,10 +352,10 @@ mod tests {
 
     #[test]
     fn hash_length_matches_the_hash_family() {
-        // Also what keeps all four `PssHash` variants genuinely constructed
-        // under `cfg_attr(not(test), allow(dead_code))`: without this, only
-        // `Sha256` is ever named by this file's tests, and `Sha1`/`Sha384`/
-        // `Sha512` would trip the dead-code lint in test builds.
+        // Also what keeps all four `PssHash` variants exercised by this
+        // file's own tests: without this, only `Sha256` is ever named here
+        // (the production caller in `passport.rs` covers the rest via the
+        // 15-row PSS parameter table instead).
         assert_eq!(PssHash::Sha1.len(), 20);
         assert_eq!(PssHash::Sha256.len(), 32);
         assert_eq!(PssHash::Sha384.len(), 48);
