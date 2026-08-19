@@ -51,6 +51,18 @@
 // for an affirmative cryptographic or structural failure this module can
 // actually stand behind. What changed is which failures qualify as
 // affirmative -- the RFC's definition, not the circuit's, going forward.
+//
+// Plan B, Task 2 applied that same discipline to every "missing or
+// malformed field" / "contains a non-byte value" / "is shorter than X
+// declares" check below: each names a fixed-size circuit signal that either
+// cannot be populated at all from the given input, or cannot satisfy the
+// signal's own byte-range constraint -- an affirmative structural failure,
+// not uncertainty, so these report `Invalid`. A handful of superficially
+// similar checks (the four SHA-padding-shape checks; an RSA-scheme, as
+// opposed to RSA-PSS-scheme, modulus that fails to reassemble; three
+// Aadhaar-specific width checks) remain `Skipped` deliberately: this
+// module's report for that task explains, case by case, why no comparable
+// certainty was available for those.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -1062,23 +1074,45 @@ function offsetInRange(offset, size, bound) {
  * @param {string} keyField field name, for the reason string (e.g. `pubKey_dsc`).
  * @param {string} rawField field name, for the reason string (e.g. `raw_dsc`).
  * @param {string} offsetField field name, for the reason string (e.g. `dsc_pubKey_offset`).
+ * @param {boolean} modulusRangeChecked whether the RSA-scheme certificate this
+ *   window is read from is signed by an RSA-PSS circuit -- `validate.circom`'s
+ *   `ValidateRsaPss` range-checks BOTH `signature[i]` and `pubkey[i]` against
+ *   `CHUNK_SIZE` bits, where the plain-PKCS#1v1.5 verifiers
+ *   (`verifyRsa65537Pkcs1v1_5.circom` and siblings) only range-check
+ *   `signature[i]`, leaving the modulus chunks themselves unconstrained. Only
+ *   changes which verdict a modulus that fails to reassemble gets; unused for
+ *   `scheme === 'ecdsa'`, where the equivalent range check
+ *   (`ecdsaVerifier.circom`'s `Num2Bits(n)` over `pubKey_x`/`pubKey_y`) always
+ *   applies regardless of scheme.
  * @returns {{ok:true} | {ok:false, skip:boolean, reason:string}}
  */
-function keyMatchesWindow(suppliedLimbs, n, k, scheme, rawBuf, offset, size, keyField, rawField, offsetField) {
+function keyMatchesWindow(suppliedLimbs, n, k, scheme, rawBuf, offset, size, keyField, rawField, offsetField, modulusRangeChecked) {
   const window = rawBuf.subarray(offset, offset + size);
   const sizeField = offsetField.replace(/_offset$/, '_actual_size');
   if (scheme === 'ecdsa') {
     if (size % 2 !== 0) {
-      return { ok: false, skip: true, reason: `${sizeField} is odd; an ECDSA x||y split must be even` };
+      // ecdsaVerifier.circom's CheckPubkeyPosition constrains a certificate's
+      // key-length field to one of a fixed set of per-curve byte widths (all
+      // even, one x/y coordinate each) -- see checkPubkeyPosition.circom's
+      // `key_length_ok === 1` against signatureAlgorithm.circom's
+      // `prefixIndexToECDSAKeyLength` table. An odd size cannot equal any of
+      // them.
+      return { ok: false, skip: false, reason: `${sizeField} is odd; an ECDSA x||y split must be even` };
     }
     if (suppliedLimbs.length !== 2 * k) {
-      return { ok: false, skip: true, reason: `${keyField} has ${suppliedLimbs.length} limbs, expected 2*k=${2 * k}` };
+      // pubKey_dsc/csca_pubKey is a fixed-size `kScaled` signal array in the
+      // circuit (register.circom:87, dsc.circom:66); a JSON array with a
+      // different element count cannot populate it at all.
+      return { ok: false, skip: false, reason: `${keyField} has ${suppliedLimbs.length} limbs, expected 2*k=${2 * k}` };
     }
     const half = size / 2;
     const x = limbsToBigInt(suppliedLimbs.slice(0, k), n);
     const y = limbsToBigInt(suppliedLimbs.slice(k, 2 * k), n);
     if (x === null || y === null) {
-      return { ok: false, skip: true, reason: `${keyField}'s x/y half does not reassemble into a valid integer` };
+      // ecdsaVerifier.circom range-checks every pubKey_x/pubKey_y chunk with
+      // Num2Bits(n) (ecdsaVerifier.circom:68-69,73-74); an out-of-range or
+      // non-decimal limb cannot satisfy that constraint.
+      return { ok: false, skip: false, reason: `${keyField}'s x/y half does not reassemble into a valid integer` };
     }
     const xBytes = bigIntToFixedBytes(x, half);
     const yBytes = bigIntToFixedBytes(y, half);
@@ -1098,7 +1132,14 @@ function keyMatchesWindow(suppliedLimbs, n, k, scheme, rawBuf, offset, size, key
   // (same convention as keyMatchesCert's 'rsa' scheme).
   const modulus = limbsToBigInt(suppliedLimbs, n);
   if (modulus === null) {
-    return { ok: false, skip: true, reason: `${keyField} does not reassemble into a valid integer` };
+    // validate.circom's ValidateRsaPss range-checks pubkey[i] with
+    // Num2Bits(CHUNK_SIZE) alongside signature[i] (validate.circom:22-27), so
+    // an out-of-range or non-decimal modulus limb cannot satisfy an RSA-PSS
+    // circuit's constraints either. The plain PKCS#1v1.5 verifiers
+    // (verifyRsa65537Pkcs1v1_5.circom and siblings) range-check only the
+    // signature, leaving this modulus-reassembly case unconfirmed for that
+    // scheme -- so it stays a skip there rather than a guessed reject.
+    return { ok: false, skip: !modulusRangeChecked, reason: `${keyField} does not reassemble into a valid integer` };
   }
   const modulusBytes = bigIntToFixedBytes(modulus, size);
   if (!modulusBytes) {
@@ -1206,7 +1247,7 @@ function verifyRsaPkcs1v15(cert, hashBits, message, sigLimbs, n) {
   }
   const sig = limbsToBigInt(sigLimbs, n);
   if (sig === null) {
-    return { ok: false, skip: true, reason: 'signature does not reassemble into a valid integer' };
+    return { ok: false, skip: false, reason: 'signature does not reassemble into a valid integer' };
   }
   const modulusBits = cert.key.asymmetricKeyDetails && cert.key.asymmetricKeyDetails.modulusLength;
   if (!modulusBits) {
@@ -1215,7 +1256,7 @@ function verifyRsaPkcs1v15(cert, hashBits, message, sigLimbs, n) {
   const modulusBytes = Math.ceil(modulusBits / 8);
   const sigBytes = bigIntToFixedBytes(sig, modulusBytes);
   if (!sigBytes) {
-    return { ok: false, skip: true, reason: 'signature is wider than the certificate modulus' };
+    return { ok: false, skip: false, reason: 'signature is wider than the certificate modulus' };
   }
   let ok;
   try {
@@ -1280,7 +1321,7 @@ function verifyRsaPss(cert, hashBits, message, sigLimbs, n, saltLen) {
   }
   const sig = limbsToBigInt(sigLimbs, n);
   if (sig === null) {
-    return { ok: false, skip: true, reason: 'signature does not reassemble into a valid integer' };
+    return { ok: false, skip: false, reason: 'signature does not reassemble into a valid integer' };
   }
   const modulusBits = cert.key.asymmetricKeyDetails && cert.key.asymmetricKeyDetails.modulusLength;
   if (!modulusBits) {
@@ -1289,7 +1330,7 @@ function verifyRsaPss(cert, hashBits, message, sigLimbs, n, saltLen) {
   const modulusBytes = Math.ceil(modulusBits / 8);
   const sigBytes = bigIntToFixedBytes(sig, modulusBytes);
   if (!sigBytes) {
-    return { ok: false, skip: true, reason: 'signature is wider than the certificate modulus' };
+    return { ok: false, skip: false, reason: 'signature is wider than the certificate modulus' };
   }
   let ok;
   try {
@@ -1331,7 +1372,7 @@ function verifyEcdsa(cert, hashBits, message, rLimbs, sLimbs, n) {
   const r = limbsToBigInt(rLimbs, n);
   const s = limbsToBigInt(sLimbs, n);
   if (r === null || s === null) {
-    return { ok: false, skip: true, reason: 'signature does not reassemble into a valid integer' };
+    return { ok: false, skip: false, reason: 'signature does not reassemble into a valid integer' };
   }
   let spkiDer;
   try {
@@ -1393,9 +1434,12 @@ function verifySignatureLink(scheme, cert, hashBits, message, sigLimbs, n, k, sa
   }
   if (scheme === 'ecdsa') {
     if (sigLimbs.length !== 2 * k) {
+      // signature_passport/signature is a fixed-size `kScaled` signal array
+      // in the circuit, same reasoning as keyMatchesWindow's identical
+      // ECDSA limb-count check above.
       return {
         ok: false,
-        skip: true,
+        skip: false,
         reason: `signature has ${sigLimbs.length} limbs, expected 2*k=${2 * k}`,
       };
     }
@@ -1615,75 +1659,75 @@ export function parseCircuitName(name) {
 function verifyRegisterFamily(inputs, p) {
   const dg1Strs = fieldAsStrings(inputs.dg1);
   if (!dg1Strs) {
-    return skipped('missing or malformed field: dg1');
+    return invalid('missing or malformed field: dg1');
   }
   const dg1 = bytesFromDecimalStrings(dg1Strs);
   if (!dg1) {
-    return skipped('dg1 contains a non-byte value');
+    return invalid('dg1 contains a non-byte value');
   }
   const dg1HashOffset = scalarUsize(inputs.dg1_hash_offset);
   if (dg1HashOffset === null) {
-    return skipped('missing or malformed field: dg1_hash_offset');
+    return invalid('missing or malformed field: dg1_hash_offset');
   }
 
   const econtentStrs = fieldAsStrings(inputs.eContent);
   if (!econtentStrs) {
-    return skipped('missing or malformed field: eContent');
+    return invalid('missing or malformed field: eContent');
   }
   const econtent = bytesFromDecimalStrings(econtentStrs);
   if (!econtent) {
-    return skipped('eContent contains a non-byte value');
+    return invalid('eContent contains a non-byte value');
   }
   const econtentPaddedLength = scalarUsize(inputs.eContent_padded_length);
   if (econtentPaddedLength === null) {
-    return skipped('missing or malformed field: eContent_padded_length');
+    return invalid('missing or malformed field: eContent_padded_length');
   }
 
   const signedAttrStrs = fieldAsStrings(inputs.signed_attr);
   if (!signedAttrStrs) {
-    return skipped('missing or malformed field: signed_attr');
+    return invalid('missing or malformed field: signed_attr');
   }
   const signedAttr = bytesFromDecimalStrings(signedAttrStrs);
   if (!signedAttr) {
-    return skipped('signed_attr contains a non-byte value');
+    return invalid('signed_attr contains a non-byte value');
   }
   const signedAttrPaddedLength = scalarUsize(inputs.signed_attr_padded_length);
   if (signedAttrPaddedLength === null) {
-    return skipped('missing or malformed field: signed_attr_padded_length');
+    return invalid('missing or malformed field: signed_attr_padded_length');
   }
   const saEcontentHashOffset = scalarUsize(inputs.signed_attr_econtent_hash_offset);
   if (saEcontentHashOffset === null) {
-    return skipped('missing or malformed field: signed_attr_econtent_hash_offset');
+    return invalid('missing or malformed field: signed_attr_econtent_hash_offset');
   }
 
   const pubkeyLimbs = fieldAsStrings(inputs.pubKey_dsc);
   if (!pubkeyLimbs) {
-    return skipped('missing or malformed field: pubKey_dsc');
+    return invalid('missing or malformed field: pubKey_dsc');
   }
   const sigLimbs = fieldAsStrings(inputs.signature_passport);
   if (!sigLimbs) {
-    return skipped('missing or malformed field: signature_passport');
+    return invalid('missing or malformed field: signature_passport');
   }
 
   const rawDscStrs = fieldAsStrings(inputs.raw_dsc);
   if (!rawDscStrs) {
-    return skipped('missing or malformed field: raw_dsc');
+    return invalid('missing or malformed field: raw_dsc');
   }
   const rawDsc = bytesFromDecimalStrings(rawDscStrs);
   if (!rawDsc) {
-    return skipped('raw_dsc contains a non-byte value');
+    return invalid('raw_dsc contains a non-byte value');
   }
   const rawDscActualLength = scalarUsize(inputs.raw_dsc_actual_length);
   if (rawDscActualLength === null) {
-    return skipped('missing or malformed field: raw_dsc_actual_length');
+    return invalid('missing or malformed field: raw_dsc_actual_length');
   }
   const dscPubKeyOffset = scalarUsize(inputs.dsc_pubKey_offset);
   if (dscPubKeyOffset === null) {
-    return skipped('missing or malformed field: dsc_pubKey_offset');
+    return invalid('missing or malformed field: dsc_pubKey_offset');
   }
   const dscPubKeyActualSize = scalarUsize(inputs.dsc_pubKey_actual_size);
   if (dscPubKeyActualSize === null) {
-    return skipped('missing or malformed field: dsc_pubKey_actual_size');
+    return invalid('missing or malformed field: dsc_pubKey_actual_size');
   }
 
   // --- offset bounds, passportVerifier.circom:53-66: violation => Invalid ---
@@ -1709,7 +1753,7 @@ function verifyRegisterFamily(inputs, p) {
     return skipped(`unknown dg_hash width: ${p.dgHash}`);
   }
   if (dg1HashOffset + dgHashLen > econtent.length) {
-    return skipped('eContent is shorter than dg1_hash_offset + dg_hash/8 declares');
+    return invalid('eContent is shorter than dg1_hash_offset + dg_hash/8 declares');
   }
   const econtentWindow = econtent.subarray(dg1HashOffset, dg1HashOffset + dgHashLen);
   if (Buffer.compare(dg1Digest, econtentWindow) !== 0) {
@@ -1726,7 +1770,7 @@ function verifyRegisterFamily(inputs, p) {
     return skipped(`unknown econtent_hash width: ${p.econtentHash}`);
   }
   if (saEcontentHashOffset + ecHashLen > signedAttr.length) {
-    return skipped('signed_attr is shorter than signed_attr_econtent_hash_offset + econtent_hash/8 declares');
+    return invalid('signed_attr is shorter than signed_attr_econtent_hash_offset + econtent_hash/8 declares');
   }
   const signedAttrWindow = signedAttr.subarray(saEcontentHashOffset, saEcontentHashOffset + ecHashLen);
   if (Buffer.compare(econtentDigest, signedAttrWindow) !== 0) {
@@ -1745,7 +1789,7 @@ function verifyRegisterFamily(inputs, p) {
     );
   }
   if (rawDscActualLength > rawDsc.length) {
-    return skipped('raw_dsc is shorter than raw_dsc_actual_length declares');
+    return invalid('raw_dsc is shorter than raw_dsc_actual_length declares');
   }
   const keyScheme = p.scheme === 'ecdsa' ? 'ecdsa' : 'rsa';
   // Byte-window comparison against raw_dsc at the STATED offset, mirroring
@@ -1765,6 +1809,7 @@ function verifyRegisterFamily(inputs, p) {
     'pubKey_dsc',
     'raw_dsc',
     'dsc_pubKey_offset',
+    p.scheme === 'rsapss',
   );
   if (!windowResult.ok) {
     return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
@@ -1851,45 +1896,45 @@ function verifyRegisterFamily(inputs, p) {
 function verifyDscFamily(inputs, p) {
   const rawCscaStrs = fieldAsStrings(inputs.raw_csca);
   if (!rawCscaStrs) {
-    return skipped('missing or malformed field: raw_csca');
+    return invalid('missing or malformed field: raw_csca');
   }
   const rawCsca = bytesFromDecimalStrings(rawCscaStrs);
   if (!rawCsca) {
-    return skipped('raw_csca contains a non-byte value');
+    return invalid('raw_csca contains a non-byte value');
   }
   const rawCscaActualLength = scalarUsize(inputs.raw_csca_actual_length);
   if (rawCscaActualLength === null) {
-    return skipped('missing or malformed field: raw_csca_actual_length');
+    return invalid('missing or malformed field: raw_csca_actual_length');
   }
   const cscaPubkeyOffset = scalarUsize(inputs.csca_pubKey_offset);
   if (cscaPubkeyOffset === null) {
-    return skipped('missing or malformed field: csca_pubKey_offset');
+    return invalid('missing or malformed field: csca_pubKey_offset');
   }
   const cscaPubkeyActualSize = scalarUsize(inputs.csca_pubKey_actual_size);
   if (cscaPubkeyActualSize === null) {
-    return skipped('missing or malformed field: csca_pubKey_actual_size');
+    return invalid('missing or malformed field: csca_pubKey_actual_size');
   }
 
   const rawDscStrs = fieldAsStrings(inputs.raw_dsc);
   if (!rawDscStrs) {
-    return skipped('missing or malformed field: raw_dsc');
+    return invalid('missing or malformed field: raw_dsc');
   }
   const rawDsc = bytesFromDecimalStrings(rawDscStrs);
   if (!rawDsc) {
-    return skipped('raw_dsc contains a non-byte value');
+    return invalid('raw_dsc contains a non-byte value');
   }
   const rawDscPaddedLength = scalarUsize(inputs.raw_dsc_padded_length);
   if (rawDscPaddedLength === null) {
-    return skipped('missing or malformed field: raw_dsc_padded_length');
+    return invalid('missing or malformed field: raw_dsc_padded_length');
   }
 
   const pubkeyLimbs = fieldAsStrings(inputs.csca_pubKey);
   if (!pubkeyLimbs) {
-    return skipped('missing or malformed field: csca_pubKey');
+    return invalid('missing or malformed field: csca_pubKey');
   }
   const sigLimbs = fieldAsStrings(inputs.signature);
   if (!sigLimbs) {
-    return skipped('missing or malformed field: signature');
+    return invalid('missing or malformed field: signature');
   }
 
   // --- offset bounds, dsc.circom:110-127: hard-asserted (Num2Bits(12) plus
@@ -1901,7 +1946,7 @@ function verifyDscFamily(inputs, p) {
     );
   }
   if (rawCscaActualLength > rawCsca.length) {
-    return skipped('raw_csca is shorter than raw_csca_actual_length declares');
+    return invalid('raw_csca is shorter than raw_csca_actual_length declares');
   }
 
   // --- link 1: csca_pubKey must equal the key embedded in raw_csca's certificate ---
@@ -1922,6 +1967,7 @@ function verifyDscFamily(inputs, p) {
     'csca_pubKey',
     'raw_csca',
     'csca_pubKey_offset',
+    p.scheme === 'rsapss',
   );
   if (!windowResult.ok) {
     return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
@@ -1981,20 +2027,20 @@ function verifyDscFamily(inputs, p) {
 function verifyAadhaar(inputs, p) {
   const qrStrs = fieldAsStrings(inputs.qrDataPadded);
   if (!qrStrs) {
-    return skipped('missing or malformed field: qrDataPadded');
+    return invalid('missing or malformed field: qrDataPadded');
   }
   const qrPadded = bytesFromDecimalStrings(qrStrs);
   if (!qrPadded) {
-    return skipped('qrDataPadded contains a non-byte value');
+    return invalid('qrDataPadded contains a non-byte value');
   }
   const qrPaddedLen = scalarUsize(inputs.qrDataPaddedLength);
   if (qrPaddedLen === null) {
-    return skipped('missing or malformed field: qrDataPaddedLength');
+    return invalid('missing or malformed field: qrDataPaddedLength');
   }
 
   const pubkeyLimbs = fieldAsStrings(inputs.pubKey);
   if (!pubkeyLimbs) {
-    return skipped('missing or malformed field: pubKey');
+    return invalid('missing or malformed field: pubKey');
   }
   const modulus = limbsToBigInt(pubkeyLimbs, p.n);
   if (modulus === null) {
@@ -2003,11 +2049,11 @@ function verifyAadhaar(inputs, p) {
 
   const sigLimbs = fieldAsStrings(inputs.signature);
   if (!sigLimbs) {
-    return skipped('missing or malformed field: signature');
+    return invalid('missing or malformed field: signature');
   }
   const signature = limbsToBigInt(sigLimbs, p.n);
   if (signature === null) {
-    return skipped('signature does not reassemble into a valid integer');
+    return invalid('signature does not reassemble into a valid integer');
   }
 
   const qrMsg = recoverMessage(qrPadded, qrPaddedLen);

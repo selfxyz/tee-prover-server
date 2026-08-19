@@ -204,8 +204,14 @@ mod tests {
     #[tokio::test]
     async fn a_readable_input_file_gets_past_the_read_step() {
         // Proves the read actually happens: with a real (if empty) file
-        // present, the sidecar is reached and skips for ITS OWN reason (a
-        // missing field), not because Rust's own file read failed.
+        // present, the sidecar is reached and fails for ITS OWN reason (a
+        // missing field), not because Rust's own file read failed. Plan B,
+        // Task 2 reclassified a missing circuit-input field from Skipped to
+        // Invalid in the JS verifier (a fixed-size circuit signal with no
+        // value cannot produce a witness at all), so the verdict this test
+        // observes changed from Skipped to Invalid along with it -- the
+        // thing this test actually pins (the reason must not blame the
+        // file) is unaffected either way.
         let uuid = uuid::Uuid::new_v4();
         let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
         tokio::fs::create_dir_all(&dir).await.unwrap();
@@ -215,11 +221,11 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
 
         match v {
-            Verdict::Skipped(reason) => assert!(
+            Verdict::Invalid(reason) => assert!(
                 !reason.contains("input.json"),
                 "the file was readable, so the reason must not blame the file: {reason}"
             ),
-            other => panic!("expected Skipped at this stage, got {other:?}"),
+            other => panic!("expected Invalid at this stage, got {other:?}"),
         }
     }
 

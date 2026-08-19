@@ -1017,20 +1017,26 @@ describe('verify -- skip paths', () => {
     assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]).verdict, 'skipped');
   });
 
-  test('a missing field is skipped, not invalid (register family)', () => {
+  test('a missing field is invalid, not skipped (register family)', () => {
+    // Plan B, Task 2: pubKey_dsc is a fixed-size signal array in the circuit
+    // (register.circom:87); a JSON payload missing it entirely cannot even
+    // produce a witness, which is a stronger rejection than a failed
+    // constraint, not a coverage gap.
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     delete tampered.pubKey_dsc;
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
-    assert.equal(result.verdict, 'skipped');
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('a missing field is skipped, not invalid (DSC family)', () => {
+  test('a missing field is invalid, not skipped (DSC family)', () => {
+    // Same reasoning as the register-family case above: csca_pubKey is a
+    // fixed-size signal array (dsc.circom:65).
     const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
     const tampered = structuredClone(fixture);
     delete tampered.csca_pubKey;
     const result = verify('dsc_sha256_rsa_65537_4096', tampered);
-    assert.equal(result.verdict, 'skipped');
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
   test('malformed eContent padding is skipped, not invalid (register family)', () => {
@@ -1110,6 +1116,344 @@ describe('verify -- skip paths', () => {
     tampered.dsc_pubKey_offset = ['100000'];
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
     assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+  });
+});
+
+// =======================================================================
+// Plan B, Task 2: malformed input is invalid, not skipped.
+//
+// The premise: `Skipped` used to mean two different things -- "cannot be
+// certain" and "this input is broken" -- and nearly every site below was
+// the second, reported as the first. Each of these mutations produces an
+// input the sibling monorepo's own circuit could never turn into a proof
+// (a missing/wrong-count fixed-size signal, a byte-range violation, an
+// offset/size relationship the circuit also range-checks, or a limb that
+// cannot satisfy the circuit's own Num2Bits/BigLessThan constraints) -- see
+// this task's report for the exact circuit citation backing each case.
+// Where a case is NOT here (RSA-scheme modulus reassembly, the four
+// SHA-padding-shape checks, three Aadhaar-specific width checks), that is
+// deliberate: this task's report explains why those stay Skipped rather
+// than being promoted on a guess.
+// =======================================================================
+
+function outOfRangeLimb() {
+  // >= 2^120 (the widest `n` any RSA/RSA-PSS circuit here uses) and
+  // >= 2^121 (Aadhaar's `n`) alike -- comfortably out of range for every
+  // scheme's limb width, so `limbsToBigInt` returns null regardless of
+  // which field it lands in.
+  return (1n << 400n).toString();
+}
+
+describe('verify -- Plan B Task 2: byte-range violations are invalid, not skipped', () => {
+  test('dg1 contains a non-byte value is invalid (register family, passportVerifier.circom:68 BytesToBitsArray -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const dg1 = [...tampered.dg1];
+    dg1[0] = '256';
+    tampered.dg1 = dg1;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /dg1 contains a non-byte value/);
+  });
+
+  test('eContent contains a non-byte value is invalid (register family, passportVerifier.circom:79 ShaBytesDynamic -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const econtent = [...tampered.eContent];
+    econtent[econtent.length - 1] = '999';
+    tampered.eContent = econtent;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /eContent contains a non-byte value/);
+  });
+
+  test('signed_attr contains a non-byte value is invalid (register family, passportVerifier.circom:89 ShaBytesDynamic -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const sa = [...tampered.signed_attr];
+    sa[sa.length - 1] = '999';
+    tampered.signed_attr = sa;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signed_attr contains a non-byte value/);
+  });
+
+  test('raw_dsc contains a non-byte value is invalid (register family, register.circom:100 explicit AssertBytes)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const rawDsc = [...tampered.raw_dsc];
+    rawDsc[rawDsc.length - 1] = '300';
+    tampered.raw_dsc = rawDsc;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_dsc contains a non-byte value/);
+  });
+
+  test('raw_csca contains a non-byte value is invalid (DSC family, dsc.circom:73 explicit AssertBytes)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    const rawCsca = [...tampered.raw_csca];
+    rawCsca[rawCsca.length - 1] = '300';
+    tampered.raw_csca = rawCsca;
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_csca contains a non-byte value/);
+  });
+
+  test('raw_dsc contains a non-byte value is invalid (DSC family, dsc.circom:203 PackBytesAndPoseidon -> AssertBytes)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    const rawDsc = [...tampered.raw_dsc];
+    rawDsc[rawDsc.length - 1] = '300';
+    tampered.raw_dsc = rawDsc;
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_dsc contains a non-byte value/);
+  });
+
+  test('qrDataPadded contains a non-byte value is invalid (Aadhaar, register_aadhaar.circom:46 Sha256Bytes -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const qr = [...tampered.qrDataPadded];
+    qr[qr.length - 1] = '400';
+    tampered.qrDataPadded = qr;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /qrDataPadded contains a non-byte value/);
+  });
+});
+
+describe('verify -- Plan B Task 2: a missing or wrong-count fixed-size field is invalid, not skipped', () => {
+  test('a missing field is invalid (Aadhaar family)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    delete tampered.pubKey;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /missing or malformed field: pubKey/);
+  });
+
+  test('a wrong-count pubKey_dsc (ECDSA) is invalid, not skipped (fixed-size kScaled signal array)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    tampered.pubKey_dsc = tampered.pubKey_dsc.slice(0, -1);
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /expected 2\*k=/);
+  });
+
+  test('a wrong-count signature_passport (ECDSA) is invalid, not skipped (fixed-size kScaled signal array)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    tampered.signature_passport = tampered.signature_passport.slice(0, -1);
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature has \d+ limbs, expected 2\*k=/);
+  });
+});
+
+describe('verify -- Plan B Task 2: a fixed-size array shorter than its own declared length is invalid, not skipped', () => {
+  test('eContent shorter than dg1_hash_offset + dg_hash/8 declares is invalid (register family)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    // dg1_hash_offset=70, dg_hash=256 bits -> window ends at byte 102;
+    // truncate eContent to 100 bytes so the (already in-range) offset+len
+    // exceeds the array actually supplied.
+    tampered.eContent = tampered.eContent.slice(0, 100);
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /eContent is shorter than dg1_hash_offset/);
+  });
+
+  test('raw_csca shorter than raw_csca_actual_length declares is invalid (DSC family)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    tampered.raw_csca = tampered.raw_csca.slice(0, 10);
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_csca is shorter than raw_csca_actual_length declares/);
+  });
+});
+
+describe('verify -- Plan B Task 2: ECDSA-scheme limb reassembly and shape failures are invalid (ecdsaVerifier.circom Num2Bits(n), checkPubkeyPosition.circom key_length_ok)', () => {
+  test('an odd dsc_pubKey_actual_size is invalid, not skipped (register family ECDSA -- checkPubkeyPosition.circom:73-77 + signatureAlgorithm.circom:548-551, every valid ECDSA key length is even)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    assert.deepEqual(tampered.dsc_pubKey_actual_size, ['64']);
+    tampered.dsc_pubKey_actual_size = ['63'];
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /is odd; an ECDSA x\|\|y split must be even/);
+  });
+
+  test('an odd csca_pubKey_actual_size is invalid, not skipped (DSC family ECDSA)', () => {
+    const fixture = loadFixture('dsc_sha256_ecdsa_secp521r1.json');
+    const tampered = structuredClone(fixture);
+    assert.equal(tampered.csca_pubKey_actual_size, '132');
+    tampered.csca_pubKey_actual_size = '131';
+    const result = verify('dsc_sha256_ecdsa_secp521r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /is odd; an ECDSA x\|\|y split must be even/);
+  });
+
+  test('pubKey_dsc x/y half out of range is invalid, not skipped (register family ECDSA -- ecdsaVerifier.circom:68-69,73-74)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey_dsc];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey_dsc = limbs;
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /x\/y half does not reassemble into a valid integer/);
+  });
+
+  test('signature_passport (r/s) out of range is invalid, not skipped (register family ECDSA -- ecdsaVerifier.circom:66-67,71-72)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+});
+
+describe('verify -- Plan B Task 2: RSA-PSS-scheme limb reassembly is invalid (validate.circom Num2Bits(CHUNK_SIZE) on BOTH signature[i] and pubkey[i])', () => {
+  test('pubKey_dsc modulus out of range is invalid for RSA-PSS, not skipped (register family -- validate.circom:22-27)', () => {
+    const fixture = loadFixture('register_pss.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey_dsc];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey_dsc = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsapss_65537_32_2048', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /pubKey_dsc does not reassemble into a valid integer/);
+  });
+
+  test('signature_passport out of range is invalid for RSA-PSS, not skipped (register family -- validate.circom:22-27)', () => {
+    const fixture = loadFixture('register_pss.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsapss_65537_32_2048', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+
+  test('a signature reassembling wider than the certificate modulus is invalid for RSA-PSS (validate.circom:41-44 BigLessThan(signature, pubkey) === 1)', () => {
+    const fixture = loadFixture('register_pss.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[limbs.length - 1] = '100000000000000000000000000000000000'; // in-range per-limb, but pushes the reassembled integer far past the 2048-bit modulus
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsapss_65537_32_2048', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature is wider than the certificate modulus/);
+  });
+});
+
+describe('verify -- Plan B Task 2: plain-RSA-scheme SIGNATURE reassembly is invalid (verifyRsa65537Pkcs1v1_5.circom:33-34 Num2Bits(CHUNK_SIZE) on signature[i] only)', () => {
+  test('signature_passport out of range is invalid for plain RSA, not skipped (register family)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+
+  test('a signature reassembling wider than the certificate modulus is invalid for plain RSA (BigLessThan(signature, modulus) === 1)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[limbs.length - 1] = '100000000000000000000000000000000000';
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature is wider than the certificate modulus/);
+  });
+
+  test('signature out of range is invalid for Aadhaar (register_aadhaar.circom -> SignatureVerifier(1,n,k) -> VerifyRsa65537Pkcs1v1_5, signature only)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+});
+
+describe('verify -- Plan B Task 2: left as skipped -- no confirmed circuit citation, so no promotion on a guess (see this task\'s report)', () => {
+  test('pubKey_dsc modulus out of range STAYS skipped for plain RSA (register family -- only the signature, not the modulus, is range-checked by verifyRsa65537Pkcs1v1_5.circom)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey_dsc];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey_dsc = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /pubKey_dsc does not reassemble into a valid integer/);
+  });
+
+  test('pubKey out of range STAYS skipped for Aadhaar (same reasoning -- Aadhaar dispatches through the same plain-PKCS1v1.5 verifier, modulus unchecked)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /pubKey does not reassemble into a valid integer/);
+  });
+
+  test('pubKey reassembling wider than the fixed 2048-bit Aadhaar modulus STAYS skipped (no confirmed circuit assertion of that exact bound)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey];
+    // n=121, k=17: the top limb (index 16) is scaled by 2^(121*16)=2^1936.
+    // 2^113 is still a valid in-range limb (< 2^121), but 2^113 * 2^1936 =
+    // 2^2049 needs 257 bytes -- one more than the fixed 256-byte modulus.
+    limbs[limbs.length - 1] = (1n << 113n).toString();
+    tampered.pubKey = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /pubKey is wider than the expected 2048-bit Aadhaar modulus/);
+  });
+
+  test('signature reassembling wider than the fixed 2048-bit Aadhaar modulus STAYS skipped', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature];
+    limbs[limbs.length - 1] = (1n << 113n).toString();
+    tampered.signature = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature is wider than the expected 2048-bit Aadhaar modulus/);
+  });
+
+  test('malformed signed_attr padding STAYS skipped (register family, link 4 -- see report: only block-alignment is a confirmed circuit constraint, not the marker/zero-run/bit-length shape)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const original = Number([].concat(fixture.signed_attr_padded_length)[0]);
+    tampered.signed_attr_padded_length = [String(original + 1)]; // no longer a multiple of 64
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signed_attr padding is malformed/);
+  });
+
+  test('malformed qrDataPadded padding STAYS skipped (Aadhaar, same Sha256Bytes/Sha256General mechanics as the other padding checks)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    tampered.qrDataPaddedLength = Number(fixture.qrDataPaddedLength) + 1;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /qrDataPadded padding is malformed/);
   });
 });
 
