@@ -4,13 +4,18 @@
 //!
 //! Nothing here is called from production code yet -- this plan's Task 2
 //! wires `verify_pss` into `params.rs`'s scheme table and Task 3 into
-//! `passport.rs`'s dispatch. The `#[allow(dead_code)]` attributes below come
-//! off once those tasks land, same as `Scheme::RsaPss` in `params.rs`.
+//! `passport.rs`'s dispatch. Until then, every item below is exercised only
+//! by this file's own `#[cfg(test)]` module, so each carries
+//! `#[cfg_attr(not(test), allow(dead_code))]` rather than a bare
+//! `#[allow(dead_code)]` -- see `params.rs`'s `SIGNATURE_ALGORITHM_TABLE` for
+//! the same convention. That's deliberate: a bare `allow` would also
+//! silently tolerate this primitive becoming untested, not just unused by
+//! production.
 
 use num_bigint::BigUint;
 use sha1::Digest as _;
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PssHash {
     Sha1,
@@ -19,7 +24,7 @@ pub enum PssHash {
     Sha512,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 impl PssHash {
     pub fn len(self) -> usize {
         match self {
@@ -42,7 +47,7 @@ impl PssHash {
 
 /// RFC 8017 §B.2.1: repeatedly hash `seed || counter` (counter as a 4-byte
 /// big-endian block), concatenate, and truncate to `out_len`.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn mgf1(seed: &[u8], out_len: usize, hash: PssHash) -> Vec<u8> {
     let mut out = Vec::with_capacity(out_len + hash.len());
     let mut counter: u32 = 0;
@@ -59,7 +64,7 @@ fn mgf1(seed: &[u8], out_len: usize, hash: PssHash) -> Vec<u8> {
 
 /// Verifies an RSASSA-PSS signature per RFC 8017 §9.1.2, with one deliberate
 /// divergence: see the leftmost-bit comment below.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_pss(
     signature: &BigUint,
     modulus: &BigUint,
@@ -81,7 +86,18 @@ pub fn verify_pss(
             m_hash.len()
         ));
     }
-    if em_len < h_len + salt_len + 2 {
+    // Checked rather than a bare `h_len + salt_len + 2`: `salt_len` is a
+    // caller-supplied parameter, and a pathological value must not be able
+    // to wrap this addition and slip a too-short EM past the guard below --
+    // that would surface later as a panic on `db[..zero_len]` instead of a
+    // clean `Err`.
+    let min_len = h_len
+        .checked_add(salt_len)
+        .and_then(|v| v.checked_add(2))
+        .ok_or_else(|| {
+            format!("hash length {h_len} + salt length {salt_len} overflows usize")
+        })?;
+    if em_len < min_len {
         return Err(format!(
             "EM length {em_len} too short for hash {h_len} + salt {salt_len}"
         ));
@@ -117,7 +133,15 @@ pub fn verify_pss(
         *first &= 0x7f;
     }
 
-    let zero_len = db_len - salt_len - 1;
+    // Checked for the same reason as `min_len` above: `db_len - salt_len - 1`
+    // would panic on underflow rather than reject if `salt_len` were ever
+    // larger than `db_len`. Unreachable today given the `min_len` guard
+    // above (which already ensures `db_len >= salt_len + 1`), but kept
+    // checked so it stays panic-free even if that invariant ever changes.
+    let zero_len = db_len
+        .checked_sub(salt_len)
+        .and_then(|v| v.checked_sub(1))
+        .ok_or_else(|| format!("DB length {db_len} is too short for salt length {salt_len}"))?;
     if db[..zero_len].iter().any(|b| *b != 0) {
         return Err("DB padding is not all zero".into());
     }
@@ -174,6 +198,18 @@ mod tests_support {
     /// test vector rather than something chosen to satisfy that bound, this
     /// searches nearby salts (varying only the last byte, so `salt_len` is
     /// unaffected) for one where forcing the bit still leaves EM < n.
+    ///
+    /// Two conditions gate acceptance of a search candidate, not one:
+    /// `EM' < n` (established above) and, separately, that the bit this test
+    /// exists to exercise is genuinely set on the value `verify_pss` will
+    /// recover. Forcing `masked[0] |= 0x80` here does not mean the verifier
+    /// recovers a set bit: `verify_pss` computes `db = masked_db XOR mask`,
+    /// so the recovered bit is `1 XOR mask[0]`'s own top bit -- 0 whenever
+    /// that top bit happens to be 1. Accepting on `EM' < n` alone would let
+    /// the search return a candidate where the recovered bit was already 0,
+    /// which would still pass `verify_pss` but would prove nothing about the
+    /// clear-not-check divergence -- a vacuous pass that degrades silently
+    /// if the key or hash ever changes.
     pub fn sign_pss_with_high_bit_set(
         m_hash: &[u8],
         salt: &[u8],
@@ -199,15 +235,28 @@ mod tests_support {
             let mask = mgf1(&h, db_len, PssHash::Sha256);
             let mut masked: Vec<u8> = db.iter().zip(mask.iter()).map(|(a, b)| a ^ b).collect();
             masked[0] |= 0x80;
+            // What `verify_pss` will recover for this byte, before its own
+            // clearing step -- must actually have the top bit set, or this
+            // candidate does not exercise the divergence under test.
+            let Some(&masked0) = masked.first() else {
+                continue;
+            };
+            let Some(&mask0) = mask.first() else {
+                continue;
+            };
+            let recovered_top_bit_set = (masked0 ^ mask0) & 0x80 != 0;
             let mut em = masked;
             em.extend_from_slice(&h);
             em.push(0xbc);
             let em_int = BigUint::from_bytes_be(&em);
-            if &em_int < n {
+            if recovered_top_bit_set && &em_int < n {
                 return em_int.modpow(d, n);
             }
         }
-        unreachable!("no candidate salt produced an EM below the modulus in 65536 attempts");
+        unreachable!(
+            "no candidate salt produced both EM < n and a genuinely-set recovered top bit \
+             in 65536 attempts"
+        );
     }
 }
 
@@ -279,6 +328,20 @@ mod tests {
     }
 
     #[test]
+    fn an_overflowing_salt_length_fails_without_panicking() {
+        // salt_len = usize::MAX overflows `h_len.checked_add(salt_len)`
+        // immediately, before signature verification ever reaches modpow or
+        // any of the length-derived indexing below it. `sig` is deliberately
+        // not a real PSS signature -- 1 < n is all that's needed to clear
+        // the modulus check and reach the guard under test.
+        let (n, _d) = tests_support::test_key();
+        let sig = BigUint::from(1u32);
+        let err = verify_pss(&sig, &n, 65537, &[0u8; 32], PssHash::Sha256, usize::MAX, 1024)
+            .unwrap_err();
+        assert!(err.contains("overflows usize"), "wrong reason: {err}");
+    }
+
+    #[test]
     fn the_leftmost_bit_is_cleared_not_checked() {
         // The circuit forces db[0] to zero (rsapss65537.circom:162-168) rather
         // than rejecting when it is set. A verifier that rejects here would
@@ -292,6 +355,18 @@ mod tests {
             verify_pss(&sig, &n, 65537, &m_hash, PssHash::Sha256, 32, 1024),
             Ok(())
         );
+    }
+
+    #[test]
+    fn hash_length_matches_the_hash_family() {
+        // Also what keeps all four `PssHash` variants genuinely constructed
+        // under `cfg_attr(not(test), allow(dead_code))`: without this, only
+        // `Sha256` is ever named by this file's tests, and `Sha1`/`Sha384`/
+        // `Sha512` would trip the dead-code lint in test builds.
+        assert_eq!(PssHash::Sha1.len(), 20);
+        assert_eq!(PssHash::Sha256.len(), 32);
+        assert_eq!(PssHash::Sha384.len(), 48);
+        assert_eq!(PssHash::Sha512.len(), 64);
     }
 
     #[test]
