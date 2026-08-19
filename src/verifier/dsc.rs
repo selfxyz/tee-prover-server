@@ -356,6 +356,20 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
                 return Verdict::Skipped(format!("unknown brainpool curve name: {curve}"));
             };
             let k = p.k as usize;
+            // Defence in depth, not the only thing standing between this and
+            // a panic: the shared link-1 arm above (`pubkey_limbs.len() !=
+            // 2 * k` at the top of this match) already validated this same
+            // `pubkey_limbs`/`k` pair before link 2 ever runs. A panic here
+            // would degrade to `Skipped` either way (see `run_guarded`), but
+            // a local check removes the dependency on that distant
+            // invariant rather than relying on it silently.
+            if pubkey_limbs.len() != 2 * k {
+                return Verdict::Skipped(format!(
+                    "csca_pubKey has {} limbs, expected 2*k={}",
+                    pubkey_limbs.len(),
+                    2 * k
+                ));
+            }
             let Some(x) = bigint_from_limbs(&pubkey_limbs[0..k], p.n) else {
                 return Verdict::Skipped("csca_pubKey's x half does not reassemble into a valid integer".to_string());
             };

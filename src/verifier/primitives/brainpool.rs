@@ -162,6 +162,16 @@ fn resolved_sidecar_script() -> String {
 /// valid, different (and shorter) one, which is exactly the false-reject
 /// shape this module exists to avoid; see `ecdsa.rs`'s `coord_bytes` for the
 /// same reasoning applied to the NIST curves.
+///
+/// This function is used for `r`/`s` as well as `x`/`y`, and always pads to
+/// `curve.field_bytes()` -- the *field* width. The `ieee-p1363` signature
+/// encoding `verify.mjs` requests from OpenSSL (`dsaEncoding: 'ieee-p1363'`)
+/// is defined in terms of each component's *order* width, not the field's.
+/// For brainpoolP224r1/P256r1/P384r1/P512r1 specifically, RFC 5639's
+/// published domain parameters give every one of these four curves a prime
+/// order the same bit length as its field prime, so the two widths coincide
+/// byte-for-byte here -- this is load-bearing for padding `r`/`s` correctly,
+/// not a coincidence this code relies on by accident.
 fn hex_field(v: &BigUint, width: usize) -> Result<String, EcdsaError> {
     let raw = v.to_bytes_be();
     if raw.len() > width {
