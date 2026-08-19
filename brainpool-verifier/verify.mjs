@@ -26,6 +26,14 @@ import { createPublicKey, verify as cryptoVerify } from 'node:crypto';
 // empirically from OpenSSL 3.5.5 output (see task-1-brief.md's "Validated
 // before planning" section) -- use verbatim, do not re-derive, no ASN.1
 // encoder needed because this prefix is constant per curve.
+
+// Hash names accepted on the wire, passed straight through to
+// crypto.verify() as its OpenSSL digest name. The 20 brainpool circuits span
+// all five widths (sha1/sha224 with brainpoolP224r1, sha1/sha256 with
+// P256r1, sha256/sha384 with P384r1, sha384/sha512 with P512r1) -- there is
+// no single hash this sidecar can assume. An unrecognized name is a
+// structural problem, so it still yields {"error":...}, never {"valid":false}.
+const SUPPORTED_HASHES = new Set(['sha1', 'sha224', 'sha256', 'sha384', 'sha512']);
 const CURVES = {
   brainpoolP224r1: {
     fieldBytes: 28,
@@ -88,7 +96,7 @@ function verifyRequest(raw) {
     return { error: `unknown curve: ${JSON.stringify(curve)}` };
   }
 
-  if (hash !== 'sha256') {
+  if (!SUPPORTED_HASHES.has(hash)) {
     return { error: `unsupported hash: ${JSON.stringify(hash)}` };
   }
 

@@ -134,13 +134,13 @@ function derIntegerToFieldHex(bytes, fieldBytes) {
   return Buffer.from(b).toString('hex').padStart(fieldBytes * 2, '0');
 }
 
-function opensslSign(keyPath, messageHex, fieldBytes, dir) {
+function opensslSign(keyPath, messageHex, fieldBytes, dir, hash = 'sha256') {
   const msgPath = join(dir, 'msg.bin');
   writeFileSync(msgPath, Buffer.from(messageHex, 'hex'));
   const sigPath = join(dir, 'sig.der');
   const r = spawnSync('openssl', [
     'dgst',
-    '-sha256',
+    `-${hash}`,
     '-sign',
     keyPath,
     '-out',
@@ -196,6 +196,58 @@ for (const [curve, fieldBytes] of Object.entries(CURVES)) {
       s: flipLastNibble(s),
       message: MESSAGE_HEX,
       hash: 'sha256',
+    });
+
+    assert.deepEqual(out, { valid: false });
+  });
+}
+
+// The 20 brainpool circuits span all five hash widths, paired with specific
+// curves per the algorithm-id table below (from the coordinator's fix-round
+// note). Only 2 of these 8 (curve, hash) pairs are SHA-256 -- a verifier
+// that only ever saw SHA-256 vectors would look healthy while silently
+// never verifying about three quarters of the real circuits. Each row gets
+// its own known-good OpenSSL vector, not just one per distinct hash, because
+// the curve/hash pairing itself is what the circuits pin.
+const CIRCUIT_CURVE_HASH_PAIRS = [
+  { algorithmId: 27, curve: 'brainpoolP224r1', hash: 'sha1' },
+  { algorithmId: 30, curve: 'brainpoolP224r1', hash: 'sha224' },
+  { algorithmId: 36, curve: 'brainpoolP256r1', hash: 'sha1' },
+  { algorithmId: 21, curve: 'brainpoolP256r1', hash: 'sha256' },
+  { algorithmId: 37, curve: 'brainpoolP384r1', hash: 'sha256' },
+  { algorithmId: 22, curve: 'brainpoolP384r1', hash: 'sha384' },
+  { algorithmId: 38, curve: 'brainpoolP512r1', hash: 'sha384' },
+  { algorithmId: 29, curve: 'brainpoolP512r1', hash: 'sha512' },
+];
+
+for (const { algorithmId, curve, hash } of CIRCUIT_CURVE_HASH_PAIRS) {
+  const fieldBytes = CURVES[curve];
+
+  test(`alg ${algorithmId} (${curve}/${hash}): OpenSSL-produced signature verifies true`, () => {
+    const dir = tmpDir();
+    const keyPath = opensslKeygen(curve, dir);
+    const { x, y } = opensslPublicXY(keyPath, fieldBytes, dir);
+    const { r, s } = opensslSign(keyPath, MESSAGE_HEX, fieldBytes, dir, hash);
+
+    const out = runVerify({ curve, x, y, r, s, message: MESSAGE_HEX, hash });
+
+    assert.deepEqual(out, { valid: true });
+  });
+
+  test(`alg ${algorithmId} (${curve}/${hash}): tampered signature verifies false (not error)`, () => {
+    const dir = tmpDir();
+    const keyPath = opensslKeygen(curve, dir);
+    const { x, y } = opensslPublicXY(keyPath, fieldBytes, dir);
+    const { r, s } = opensslSign(keyPath, MESSAGE_HEX, fieldBytes, dir, hash);
+
+    const out = runVerify({
+      curve,
+      x,
+      y,
+      r,
+      s: flipLastNibble(s),
+      message: MESSAGE_HEX,
+      hash,
     });
 
     assert.deepEqual(out, { valid: false });
