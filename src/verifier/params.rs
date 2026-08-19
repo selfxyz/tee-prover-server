@@ -19,10 +19,11 @@
 //! whole design exists to avoid. `table_matches_the_monorepo_instance_files` below
 //! guards against drift when the sibling monorepo is checked out.
 //!
-//! Scope for this table is deliberately narrow: RSA PKCS#1 v1.5 and RSASSA-PSS
-//! passport (`register_*`) and EU-ID (`register_id_*`) circuits, plus the fixed
-//! `register_aadhaar` and `register_kyc` instances. ECDSA is left out entirely on
-//! purpose — `lookup` returns `None` for it and callers skip. A later plan adds it.
+//! Scope for this table is deliberately narrow: RSA PKCS#1 v1.5, RSASSA-PSS, and
+//! ECDSA (NIST curves only) passport (`register_*`) and EU-ID (`register_id_*`)
+//! circuits, plus the fixed `register_aadhaar` and `register_kyc` instances.
+//! Brainpool-curve ECDSA circuits are left out entirely on purpose — `lookup`
+//! returns `None` for them and callers skip. A later plan may add them.
 //!
 //! For RSASSA-PSS rows, `salt_len` and `bits` (the minimum RSA key length) are
 //! properties of the circuit's `signatureAlgorithm` ID, not of the circuit
@@ -41,13 +42,13 @@ pub enum Scheme {
     // is the minimum RSA key length (`getMinKeyLength`), not necessarily the
     // circuit's own name suffix — see this file's module doc.
     RsaPss { e: u64, salt_len: usize, bits: u32 },
-    // Ecdsa is not constructed yet: `lookup` never returns it because this
-    // table only covers RSA PKCS#1 v1.5 and RSASSA-PSS circuits so far, by
-    // design (see this file's module doc). It exists now so Plan 3/4 (ECDSA
-    // NIST/brainpool) — already scoped in the design's coverage ramp — adds a
-    // verifier without first reshaping this enum. Remove this attribute once
-    // that plan lands and starts constructing the variant.
-    #[allow(dead_code)]
+    // Constructed by `lookup` for the 14 ECDSA NIST-curve circuits (Plan 3).
+    // Unlike RSA/PSS there is no exponent to carry — ECDSA's public key is a
+    // curve point, not a modulus/exponent pair — so this variant holds only
+    // the curve name, taken verbatim from the circuit name's own trailing
+    // component. Brainpool-curve circuits (also present in the same instance
+    // directories) are out of scope for this plan and still return `None`
+    // from `lookup`; a later plan may extend this table to cover them.
     Ecdsa { curve: String },
     EdDsaBabyJubJub,
 }
@@ -95,6 +96,42 @@ const RSA_LIMBS: &[(&str, u32, u32)] = &[
     ("register_id_sha256_sha256_sha256_rsa_65537_4096", 120, 35),
     ("register_id_sha512_sha512_sha256_rsa_65537_4096", 120, 35),
     ("register_id_sha512_sha512_sha512_rsa_65537_4096", 120, 35),
+];
+
+/// `(name, curve, n, k)` for the 14 ECDSA NIST-curve passport and EU-ID circuits,
+/// transcribed verbatim from `../self/circuits/circuits/{register,register_id}/
+/// instances/*_ecdsa_secp*.circom`'s `REGISTER`/`REGISTER_ID(DG_HASH, ECONTENT_HASH,
+/// signatureAlgorithm, n, k, ...)` 4th/5th arguments, cross-checked against
+/// `getHashLength`/`getKLengthFactor` in
+/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom`. `sig_hash`
+/// is not stored here — same convention as `RSA_LIMBS` above, it comes from the
+/// circuit name's own 3rd component via `sha_bits`. `n = 66` for secp521r1 is not a
+/// typo: those limbs are not byte-aligned, and `chunks::bigint_from_limbs` (base-
+/// `2^n`) handles it correctly; a byte-slicing shortcut would silently corrupt
+/// secp521r1 keys. Algorithm 44 (secp224r1) has four live circuits, not two:
+/// `sha256_sha224_sha224` and `sha256_sha256_sha224` differ in their eContent hash,
+/// and both exist for `register` and `register_id` — deduplicating by curve or
+/// algorithm id would drop two of them. Brainpool-curve instances live alongside
+/// these in the same directories but are deliberately absent: out of scope for this
+/// plan, so `lookup` returns `None` for them (the safe default — see this file's
+/// module doc on the false-reject/false-accept asymmetry).
+const ECDSA_LIMBS: &[(&str, &str, u32, u32)] = &[
+    // register/instances/*.circom
+    ("register_sha1_sha1_sha1_ecdsa_secp256r1", "secp256r1", 64, 4), // alg 7: ecdsa_sha1_secp256r1_256
+    ("register_sha256_sha256_sha256_ecdsa_secp256r1", "secp256r1", 64, 4), // alg 8: ecdsa_sha256_secp256r1_256
+    ("register_sha384_sha384_sha384_ecdsa_secp384r1", "secp384r1", 64, 6), // alg 9: ecdsa_sha384_secp384r1_384
+    ("register_sha256_sha256_sha256_ecdsa_secp384r1", "secp384r1", 64, 6), // alg 23: ecdsa_sha256_secp384r1_384
+    ("register_sha512_sha512_sha512_ecdsa_secp521r1", "secp521r1", 66, 8), // alg 41: ecdsa_sha512_secp521r1_521
+    ("register_sha256_sha224_sha224_ecdsa_secp224r1", "secp224r1", 32, 7), // alg 44: ecdsa_sha224_secp224r1_224 (dg sha256/econtent sha224)
+    ("register_sha256_sha256_sha224_ecdsa_secp224r1", "secp224r1", 32, 7), // alg 44: ecdsa_sha224_secp224r1_224 (dg sha256/econtent sha256)
+    // register_id/instances/*.circom
+    ("register_id_sha1_sha1_sha1_ecdsa_secp256r1", "secp256r1", 64, 4), // alg 7
+    ("register_id_sha256_sha256_sha256_ecdsa_secp256r1", "secp256r1", 64, 4), // alg 8
+    ("register_id_sha384_sha384_sha384_ecdsa_secp384r1", "secp384r1", 64, 6), // alg 9
+    ("register_id_sha256_sha256_sha256_ecdsa_secp384r1", "secp384r1", 64, 6), // alg 23
+    ("register_id_sha512_sha512_sha512_ecdsa_secp521r1", "secp521r1", 66, 8), // alg 41
+    ("register_id_sha256_sha224_sha224_ecdsa_secp224r1", "secp224r1", 32, 7), // alg 44 (dg sha256/econtent sha224)
+    ("register_id_sha256_sha256_sha224_ecdsa_secp224r1", "secp224r1", 32, 7), // alg 44 (dg sha256/econtent sha256)
 ];
 
 /// `(name, salt_len bytes, key_bits)` for the 15 RSASSA-PSS passport and EU-ID
@@ -230,6 +267,37 @@ fn min_key_length(id: u32) -> Option<u32> {
         .map(|(_, bits)| *bits)
 }
 
+/// `(signatureAlgorithm ID, hash_bits)`, transcribed from `getHashLength` in
+/// `../self/circuits/circuits/utils/passport/signatureAlgorithm.circom` for the 6
+/// ECDSA NIST-curve IDs that appear as the `signatureAlgorithm` (3rd) argument
+/// across the 14 `REGISTER`/`REGISTER_ID` instance files `ECDSA_LIMBS` covers.
+/// Kept separate from `SIGNATURE_ALGORITHM_TABLE` rather than merged into it:
+/// that table's shape is `(id, hash_bits, exponent)`, and ECDSA has no exponent
+/// to put there (see `Scheme::Ecdsa`'s doc comment) — inventing one would be
+/// meaningless, not just redundant.
+///
+/// Used only by the `#[cfg(test)]` drift guard below, hence `cfg_attr` rather
+/// than a bare `#[allow(dead_code)]`.
+#[cfg_attr(not(test), allow(dead_code))]
+const ECDSA_ALGORITHM_TABLE: &[(u32, u32)] = &[
+    (7, 160),  // ecdsa_sha1_secp256r1_256
+    (8, 256),  // ecdsa_sha256_secp256r1_256
+    (9, 384),  // ecdsa_sha384_secp384r1_384
+    (23, 256), // ecdsa_sha256_secp384r1_384
+    (41, 512), // ecdsa_sha512_secp521r1_521
+    (44, 224), // ecdsa_sha224_secp224r1_224
+];
+
+/// Looks up `getHashLength`'s result for an ECDSA `signatureAlgorithm` ID from the
+/// table above. Used only by the `#[cfg(test)]` drift guard below.
+#[cfg_attr(not(test), allow(dead_code))]
+fn ecdsa_algorithm_hash_bits(id: u32) -> Option<u32> {
+    ECDSA_ALGORITHM_TABLE
+        .iter()
+        .find(|(entry_id, _)| *entry_id == id)
+        .map(|(_, hash_bits)| *hash_bits)
+}
+
 pub fn lookup(name: &str) -> Option<CircuitParams> {
     // register_aadhaar.circom instantiates REGISTER_AADHAAR(121, 17, 512 * 3) — a
     // different template with a different argument order (n, k, maxDataLength).
@@ -321,9 +389,34 @@ pub fn lookup(name: &str) -> Option<CircuitParams> {
         });
     }
 
-    // Only RSA PKCS#1 v1.5 and RSASSA-PSS (above) are in scope for this
-    // table. ECDSA circuits return None here and skip — a later plan adds
-    // them.
+    // ECDSA (NIST curves): curve comes from the circuit name's own trailing
+    // component; (n, k) is transcribed in ECDSA_LIMBS (this file's module
+    // doc explains why there is no exponent to carry). Brainpool-curve names
+    // fall through this `find` unmatched and hit the `?`, returning `None` —
+    // the safe default for the out-of-scope case.
+    if parts[3] == "ecdsa" {
+        if parts.len() != 5 {
+            return None;
+        }
+        let (curve, n, k) = ECDSA_LIMBS
+            .iter()
+            .find(|(entry_name, _, _, _)| *entry_name == name)
+            .map(|(_, curve, n, k)| (*curve, *n, *k))?;
+
+        return Some(CircuitParams {
+            dg_hash,
+            econtent_hash,
+            sig_hash,
+            scheme: Scheme::Ecdsa {
+                curve: curve.to_string(),
+            },
+            n,
+            k,
+        });
+    }
+
+    // Only RSA PKCS#1 v1.5 is left; RSASSA-PSS and ECDSA (NIST curves) are
+    // handled above.
     if parts[3] != "rsa" {
         return None;
     }
@@ -498,6 +591,73 @@ mod tests {
         assert_eq!(p.sig_hash, 256);
     }
 
+    #[test]
+    fn ecdsa_rows_match_the_inventory_table() {
+        // (name, curve, n, k, sig_hash) -- see task-2-brief.md's inventory table.
+        let expect = [
+            ("register_sha1_sha1_sha1_ecdsa_secp256r1", "secp256r1", 64, 4, 160), // alg 7
+            ("register_id_sha1_sha1_sha1_ecdsa_secp256r1", "secp256r1", 64, 4, 160), // alg 7
+            ("register_sha256_sha256_sha256_ecdsa_secp256r1", "secp256r1", 64, 4, 256), // alg 8
+            ("register_id_sha256_sha256_sha256_ecdsa_secp256r1", "secp256r1", 64, 4, 256), // alg 8
+            ("register_sha384_sha384_sha384_ecdsa_secp384r1", "secp384r1", 64, 6, 384), // alg 9
+            ("register_id_sha384_sha384_sha384_ecdsa_secp384r1", "secp384r1", 64, 6, 384), // alg 9
+            ("register_sha256_sha256_sha256_ecdsa_secp384r1", "secp384r1", 64, 6, 256), // alg 23
+            ("register_id_sha256_sha256_sha256_ecdsa_secp384r1", "secp384r1", 64, 6, 256), // alg 23
+            ("register_sha512_sha512_sha512_ecdsa_secp521r1", "secp521r1", 66, 8, 512), // alg 41
+            ("register_id_sha512_sha512_sha512_ecdsa_secp521r1", "secp521r1", 66, 8, 512), // alg 41
+            ("register_sha256_sha224_sha224_ecdsa_secp224r1", "secp224r1", 32, 7, 224), // alg 44
+            ("register_sha256_sha256_sha224_ecdsa_secp224r1", "secp224r1", 32, 7, 224), // alg 44
+            ("register_id_sha256_sha224_sha224_ecdsa_secp224r1", "secp224r1", 32, 7, 224), // alg 44
+            ("register_id_sha256_sha256_sha224_ecdsa_secp224r1", "secp224r1", 32, 7, 224), // alg 44
+        ];
+        assert_eq!(expect.len(), 14);
+        for (name, curve, n, k, sig_hash) in expect {
+            let p = lookup(name).unwrap_or_else(|| panic!("no params for {name}"));
+            assert_eq!(p.sig_hash, sig_hash, "sig_hash for {name}");
+            assert_eq!((p.n, p.k), (n, k), "(n, k) for {name}");
+            match &p.scheme {
+                Scheme::Ecdsa { curve: got_curve } => {
+                    assert_eq!(got_curve, curve, "curve for {name}");
+                }
+                other => panic!("{name} is not Ecdsa: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn secp521r1_uses_non_byte_aligned_66_bit_limbs() {
+        // n = 66 is not a typo: secp521r1's 521-bit field does not divide evenly
+        // into byte-sized limbs. If this ever reads 64 (the "normal" NIST-curve
+        // limb size), chunks::bigint_from_limbs would silently misassemble the
+        // key/signature.
+        let p = lookup("register_sha512_sha512_sha512_ecdsa_secp521r1").unwrap();
+        assert_eq!((p.n, p.k), (66, 8));
+    }
+
+    #[test]
+    fn alg_44_has_four_distinct_circuits_not_two() {
+        // sha256_sha224_sha224 and sha256_sha256_sha224 differ in eContent hash and
+        // both exist for register and register_id -- deduplicating by curve or
+        // algorithm id would silently drop two live circuits.
+        for name in [
+            "register_sha256_sha224_sha224_ecdsa_secp224r1",
+            "register_sha256_sha256_sha224_ecdsa_secp224r1",
+            "register_id_sha256_sha224_sha224_ecdsa_secp224r1",
+            "register_id_sha256_sha256_sha224_ecdsa_secp224r1",
+        ] {
+            assert!(lookup(name).is_some(), "missing {name}");
+        }
+    }
+
+    #[test]
+    fn brainpool_ecdsa_circuits_are_still_out_of_scope() {
+        // Brainpool instance files exist alongside the NIST-curve ones this plan
+        // covers, but are deliberately not in ECDSA_LIMBS. Absent row -> None ->
+        // Skipped, the safe default per this file's module doc.
+        assert!(lookup("register_sha256_sha256_sha256_ecdsa_brainpoolP256r1").is_none());
+        assert!(lookup("register_id_sha256_sha256_sha256_ecdsa_brainpoolP256r1").is_none());
+    }
+
     /// The drift guard. Parses the sibling monorepo's instance files and asserts our
     /// table agrees on (n, k) for every circuit we claim to support. Skips with a
     /// message when the monorepo is not checked out, so CI here never requires it.
@@ -573,84 +733,129 @@ mod tests {
                         ours.econtent_hash, econtent_hash_arg
                     );
 
-                    let (expected_sig_hash, expected_exponent) =
-                        signature_algorithm_hash_and_exponent(sig_algo_id).unwrap_or_else(|| {
-                            panic!(
-                                "{stem}: no entry in SIGNATURE_ALGORITHM_TABLE for \
-                                 signatureAlgorithm id {sig_algo_id} (instance file's 3rd \
-                                 REGISTER arg) — add it by reading signatureAlgorithm.circom, \
-                                 do not guess"
-                            )
-                        });
-                    assert_eq!(
-                        ours.sig_hash, expected_sig_hash,
-                        "sig_hash drift for {stem}: table says {}, but signatureAlgorithm id \
-                         {sig_algo_id} (from the instance file) implies {}",
-                        ours.sig_hash, expected_sig_hash
-                    );
-                    match ours.scheme {
-                        Scheme::Rsa { e: ours_e, .. } => {
-                            assert_eq!(
-                                ours_e, expected_exponent,
-                                "RSA exponent drift for {stem}: table says e={ours_e}, but \
-                                 signatureAlgorithm id {sig_algo_id} (from the instance file) \
-                                 implies e={expected_exponent}"
-                            );
-                        }
-                        Scheme::RsaPss {
-                            e: ours_e,
-                            salt_len: ours_salt_len,
-                            bits: ours_bits,
-                        } => {
-                            assert_eq!(
-                                ours_e, expected_exponent,
-                                "RSASSA-PSS exponent drift for {stem}: table says \
-                                 e={ours_e}, but signatureAlgorithm id {sig_algo_id} (from \
-                                 the instance file) implies e={expected_exponent}"
-                            );
+                    // ECDSA has its own branch, checked first: it does not carry an
+                    // exponent, so it cannot go through
+                    // signature_algorithm_hash_and_exponent below (that table only
+                    // has RSA/PSS ids and would panic on an ECDSA id that's
+                    // legitimately absent from it).
+                    if let Scheme::Ecdsa { .. } = ours.scheme {
+                        let expected_sig_hash =
+                            ecdsa_algorithm_hash_bits(sig_algo_id).unwrap_or_else(|| {
+                                panic!(
+                                    "{stem}: no entry in ECDSA_ALGORITHM_TABLE for \
+                                     signatureAlgorithm id {sig_algo_id} (instance file's 3rd \
+                                     REGISTER arg) — add it by reading getHashLength in \
+                                     signatureAlgorithm.circom, do not guess"
+                                )
+                            });
+                        assert_eq!(
+                            ours.sig_hash, expected_sig_hash,
+                            "sig_hash drift for {stem}: table says {}, but signatureAlgorithm \
+                             id {sig_algo_id} (from the instance file) implies {} via \
+                             getHashLength",
+                            ours.sig_hash, expected_sig_hash
+                        );
 
-                            // SALT_LEN = 64 if alg == 46 else getHashLength(alg) / 8
-                            // (signatureVerifier.circom:95). Algorithm 46 is the
-                            // exception this whole guard exists to pin: SHA-256
-                            // with a 64-byte salt, not the 32 the hash/8 rule
-                            // would otherwise imply.
-                            let expected_salt_len: usize = if sig_algo_id == 46 {
-                                64
-                            } else {
-                                (expected_sig_hash / 8) as usize
-                            };
-                            assert_eq!(
-                                ours_salt_len, expected_salt_len,
-                                "salt_len drift for {stem}: table says salt_len={ours_salt_len}, \
-                                 but signatureAlgorithm id {sig_algo_id} (from the instance \
-                                 file) implies salt_len={expected_salt_len} via SALT_LEN = 64 \
-                                 if alg == 46 else getHashLength(alg) / 8"
-                            );
-
-                            // KEY_LENGTH = getMinKeyLength(alg) (signatureVerifier.circom:94).
-                            let expected_key_bits =
-                                min_key_length(sig_algo_id).unwrap_or_else(|| {
+                        // ecdsaVerifier.circom:27-41 truncates the digest when
+                        // HASH_LEN_BITS >= n*k and otherwise left-pads with zeros.
+                        // The native path only implements the left-pad case (it
+                        // agrees with RustCrypto's bits2field there); it does not
+                        // implement truncation. If a future instance violates this,
+                        // the native path would silently disagree with the circuit
+                        // and could falsely reject real documents — mark that
+                        // circuit Skipped, do not guess at truncation semantics.
+                        let nk = ours.n * ours.k;
+                        assert!(
+                            expected_sig_hash <= nk,
+                            "{stem}: HASH_LEN_BITS ({expected_sig_hash}) > n*k \
+                             ({}*{}={nk}) — ecdsaVerifier.circom would truncate the digest \
+                             here, and the native path does not implement truncation. Mark \
+                             this circuit Skipped in params.rs, do not guess.",
+                            ours.n, ours.k
+                        );
+                    } else {
+                        let (expected_sig_hash, expected_exponent) =
+                            signature_algorithm_hash_and_exponent(sig_algo_id).unwrap_or_else(
+                                || {
                                     panic!(
-                                        "{stem}: no entry in MIN_KEY_LENGTH_TABLE for \
+                                        "{stem}: no entry in SIGNATURE_ALGORITHM_TABLE for \
                                          signatureAlgorithm id {sig_algo_id} (instance file's \
                                          3rd REGISTER arg) — add it by reading \
-                                         getMinKeyLength in signatureAlgorithm.circom, do not \
-                                         guess"
+                                         signatureAlgorithm.circom, do not guess"
                                     )
-                                });
-                            assert_eq!(
-                                ours_bits, expected_key_bits,
-                                "key_bits (KEY_LENGTH) drift for {stem}: table says \
-                                 bits={ours_bits}, but signatureAlgorithm id {sig_algo_id} \
-                                 (from the instance file) implies \
-                                 bits={expected_key_bits} via getMinKeyLength"
+                                },
                             );
+                        assert_eq!(
+                            ours.sig_hash, expected_sig_hash,
+                            "sig_hash drift for {stem}: table says {}, but signatureAlgorithm id \
+                             {sig_algo_id} (from the instance file) implies {}",
+                            ours.sig_hash, expected_sig_hash
+                        );
+                        match ours.scheme {
+                            Scheme::Rsa { e: ours_e, .. } => {
+                                assert_eq!(
+                                    ours_e, expected_exponent,
+                                    "RSA exponent drift for {stem}: table says e={ours_e}, but \
+                                     signatureAlgorithm id {sig_algo_id} (from the instance file) \
+                                     implies e={expected_exponent}"
+                                );
+                            }
+                            Scheme::RsaPss {
+                                e: ours_e,
+                                salt_len: ours_salt_len,
+                                bits: ours_bits,
+                            } => {
+                                assert_eq!(
+                                    ours_e, expected_exponent,
+                                    "RSASSA-PSS exponent drift for {stem}: table says \
+                                     e={ours_e}, but signatureAlgorithm id {sig_algo_id} (from \
+                                     the instance file) implies e={expected_exponent}"
+                                );
+
+                                // SALT_LEN = 64 if alg == 46 else getHashLength(alg) / 8
+                                // (signatureVerifier.circom:95). Algorithm 46 is the
+                                // exception this whole guard exists to pin: SHA-256
+                                // with a 64-byte salt, not the 32 the hash/8 rule
+                                // would otherwise imply.
+                                let expected_salt_len: usize = if sig_algo_id == 46 {
+                                    64
+                                } else {
+                                    (expected_sig_hash / 8) as usize
+                                };
+                                assert_eq!(
+                                    ours_salt_len, expected_salt_len,
+                                    "salt_len drift for {stem}: table says \
+                                     salt_len={ours_salt_len}, but signatureAlgorithm id \
+                                     {sig_algo_id} (from the instance file) implies \
+                                     salt_len={expected_salt_len} via SALT_LEN = 64 if alg == 46 \
+                                     else getHashLength(alg) / 8"
+                                );
+
+                                // KEY_LENGTH = getMinKeyLength(alg) (signatureVerifier.circom:94).
+                                let expected_key_bits =
+                                    min_key_length(sig_algo_id).unwrap_or_else(|| {
+                                        panic!(
+                                            "{stem}: no entry in MIN_KEY_LENGTH_TABLE for \
+                                             signatureAlgorithm id {sig_algo_id} (instance file's \
+                                             3rd REGISTER arg) — add it by reading \
+                                             getMinKeyLength in signatureAlgorithm.circom, do not \
+                                             guess"
+                                        )
+                                    });
+                                assert_eq!(
+                                    ours_bits, expected_key_bits,
+                                    "key_bits (KEY_LENGTH) drift for {stem}: table says \
+                                     bits={ours_bits}, but signatureAlgorithm id {sig_algo_id} \
+                                     (from the instance file) implies \
+                                     bits={expected_key_bits} via getMinKeyLength"
+                                );
+                            }
+                            other => panic!(
+                                "{stem}: table's scheme is {other:?}, but the instance file's \
+                                 signatureAlgorithm id {sig_algo_id} is an RSA PKCS#1v15 or \
+                                 RSASSA-PSS id"
+                            ),
                         }
-                        other => panic!(
-                            "{stem}: table's scheme is {other:?}, but the instance file's \
-                             signatureAlgorithm id {sig_algo_id} is an RSA PKCS#1v15 or \
-                             RSASSA-PSS id"
-                        ),
                     }
                 }
 
@@ -660,10 +865,11 @@ mod tests {
         // Exact count, not just > 0: a future parser change that silently matched
         // only one file should fail loudly here, not slip through a bare non-zero check.
         assert_eq!(
-            checked, 30,
-            "expected to check 30 circuits (14 REGISTER/REGISTER_ID RSA instances + \
-             register_aadhaar + 15 REGISTER/REGISTER_ID RSASSA-PSS instances) but checked \
-             {checked} — table or instance coverage drifted"
+            checked, 44,
+            "expected to check 44 circuits (14 REGISTER/REGISTER_ID RSA instances + \
+             register_aadhaar + 15 REGISTER/REGISTER_ID RSASSA-PSS instances + 14 \
+             REGISTER/REGISTER_ID ECDSA NIST-curve instances) but checked {checked} — table or \
+             instance coverage drifted"
         );
     }
 }
