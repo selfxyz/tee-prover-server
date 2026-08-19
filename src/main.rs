@@ -41,6 +41,7 @@ async fn main() {
 
     let config = args::Config::parse();
     let server_url = config.server_address;
+    let precheck_mode = config.precheck_mode;
 
     let server = Server::builder().build(server_url).await.unwrap();
 
@@ -142,18 +143,26 @@ async fn main() {
                     dbg!(&e);
                 }
 
-                match verdict {
+                match &verdict {
                     crate::verifier::Verdict::Valid => {
                         println!("precheck valid for {circuit_name}");
                     }
                     crate::verifier::Verdict::Skipped(reason) => {
-                        println!("precheck skipped for {circuit_name}: {reason}");
+                        println!("precheck unavailable for {circuit_name}: {reason}");
                     }
                     crate::verifier::Verdict::Invalid(reason) => {
-                        println!("precheck rejected {circuit_name}: {reason}");
-                        cleanup(uuid, &pool_clone, format!("signature precheck failed: {reason}")).await;
-                        return;
+                        println!("precheck invalid for {circuit_name}: {reason}");
                     }
+                }
+
+                // Reject before witness generation: no proof is produced,
+                // therefore none is signed, which is how the verdict gates
+                // on-chain trust without touching the attestation work.
+                if let Some(reason) =
+                    crate::verifier::precheck_rejection(&circuit_name, &verdict, precheck_mode)
+                {
+                    cleanup(uuid, &pool_clone, reason).await;
+                    return;
                 }
 
                 if let Err(e) = witness_generator_clone.send(WitnessGenerator::new(

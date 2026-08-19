@@ -131,6 +131,60 @@ fn verdict_from_join(res: Result<Verdict, tokio::task::JoinError>) -> Verdict {
     }
 }
 
+/// The one circuit whose pre-check verdict never gates the request.
+///
+/// `register_kyc` is routed by `dispatch` (below) to the native `kyc::verify`
+/// rather than the sidecar, and unlike every circuit the sidecar covers,
+/// `register_kyc`'s own circuit already verifies its EdDSA-over-BabyJubJub
+/// signature soundly -- there is no authority to move into this pre-check
+/// for it. So `kyc::verify`'s result is the same optimization every
+/// pre-check verdict used to be before this module became the one place a
+/// forged document is actually caught: useful for an early rejection, not
+/// required for one. Gating on it would add no assurance the circuit does
+/// not already provide, while a false reject here would still cost a real
+/// request.
+const KYC_CIRCUIT_NAME: &str = "register_kyc";
+
+/// Whether `verdict` for `circuit_name` should block the request under
+/// `mode`, and if so, the reason to record on the resulting `Failed` row.
+///
+/// `None` means proceed to witness generation; `Some(reason)` means reject
+/// via `cleanup` before it, so no witness -- and therefore no proof, and
+/// therefore nothing to sign -- is ever produced for it.
+///
+/// The `register_kyc` check runs first and unconditionally, **not** as one
+/// arm of the `(mode, verdict)` match below. That ordering is the "positive
+/// statement" the exemption needs to be: a version of this function that
+/// instead built its `match` over "every circuit the sidecar recognises"
+/// and treated `register_kyc` as whatever falls out of not being on that
+/// list would risk exactly the failure this is written to avoid -- either
+/// silently rejecting every KYC request (if the fallthrough rejects) or
+/// silently exempting some future genuinely-unrecognised circuit (if the
+/// fallthrough forwards). Naming `register_kyc` explicitly, ahead of the
+/// mode logic, makes the exemption a fact about one named circuit rather
+/// than a side effect of how the rest of the match happens to be shaped.
+pub fn precheck_rejection(
+    circuit_name: &str,
+    verdict: &Verdict,
+    mode: crate::args::PrecheckMode,
+) -> Option<String> {
+    if circuit_name == KYC_CIRCUIT_NAME {
+        return None;
+    }
+
+    use crate::args::PrecheckMode;
+    match (mode, verdict) {
+        (PrecheckMode::Shadow, _) => None,
+        (PrecheckMode::Enforce, Verdict::Valid) => None,
+        (PrecheckMode::Enforce, Verdict::Invalid(reason)) => {
+            Some(format!("signature precheck failed: {reason}"))
+        }
+        (PrecheckMode::Enforce, Verdict::Skipped(reason)) => {
+            Some(format!("signature precheck unavailable: {reason}"))
+        }
+    }
+}
+
 /// Routes already-parsed inputs to the family verifier.
 ///
 /// Split out of `verify_inputs` so tests can exercise the real routing
@@ -317,6 +371,85 @@ mod tests {
         match v {
             Verdict::Skipped(_) | Verdict::Invalid(_) => {}
             Verdict::Valid => panic!("did not expect an empty, non-cryptographic input to verify as Valid"),
+        }
+    }
+
+    // precheck_rejection: one test per cell of the enforcement table, plus
+    // the KYC exemption and shadow's record-but-forward property.
+    mod precheck_rejection_tests {
+        use super::*;
+        use crate::args::PrecheckMode;
+
+        const NON_KYC_CIRCUIT: &str = "register_sha256_sha256_sha256_rsa_65537_4096";
+
+        #[test]
+        fn shadow_forwards_invalid() {
+            let v = Verdict::Invalid("bad signature".to_string());
+            assert_eq!(precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Shadow), None);
+        }
+
+        #[test]
+        fn shadow_forwards_unavailable() {
+            let v = Verdict::Skipped("sidecar timed out".to_string());
+            assert_eq!(precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Shadow), None);
+        }
+
+        #[test]
+        fn enforce_rejects_invalid() {
+            let v = Verdict::Invalid("bad signature".to_string());
+            let rejection = precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Enforce);
+            assert!(
+                rejection.is_some(),
+                "enforce must reject an invalid verdict"
+            );
+            assert!(rejection.unwrap().contains("bad signature"));
+        }
+
+        #[test]
+        fn enforce_rejects_unavailable() {
+            // "unavailable" is attacker-inducible (an attacker can induce a
+            // checker failure on their own request), which is exactly why
+            // it must not be grouped with anything that forwards under
+            // enforce.
+            let v = Verdict::Skipped("sidecar timed out".to_string());
+            let rejection = precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Enforce);
+            assert!(
+                rejection.is_some(),
+                "enforce must reject an unavailable (skipped) verdict"
+            );
+            assert!(rejection.unwrap().contains("sidecar timed out"));
+        }
+
+        #[test]
+        fn enforce_forwards_valid() {
+            assert_eq!(
+                precheck_rejection(NON_KYC_CIRCUIT, &Verdict::Valid, PrecheckMode::Enforce),
+                None
+            );
+        }
+
+        /// The KYC case, distinct from the four table cells: register_kyc's
+        /// own verdict (from kyc::verify, not the sidecar) must never gate
+        /// the request, in either mode. An exemption expressed as an
+        /// absence -- e.g. gating built only in terms of "circuits the
+        /// sidecar recognises" -- would have no arm for register_kyc at all
+        /// and would silently reject it (or silently exempt some future
+        /// unrecognised circuit); asserting this against Invalid and
+        /// Skipped verdicts under enforce is what actually pins the
+        /// exemption, since a Valid verdict would pass either way.
+        #[test]
+        fn kyc_proceeds_under_enforce_regardless_of_verdict() {
+            for v in [
+                Verdict::Valid,
+                Verdict::Invalid("bad eddsa signature".to_string()),
+                Verdict::Skipped("missing data_padded".to_string()),
+            ] {
+                assert_eq!(
+                    precheck_rejection(KYC_CIRCUIT_NAME, &v, PrecheckMode::Enforce),
+                    None,
+                    "register_kyc must proceed under enforce for verdict {v:?}"
+                );
+            }
         }
     }
 }
