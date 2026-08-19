@@ -181,6 +181,22 @@ The `proofs` table tracks proof lifecycle with PostgreSQL LISTEN/NOTIFY for real
 | ProofGenerated | 2 | Groth16 proof complete |
 | Failed | 3 | Error (reason stored) |
 
+Every row also carries the signature pre-check's own verdict, independent of `status`/`reason`:
+
+| `precheck_verdict` | Value | Description |
+|---|---|---|
+| Valid | 0 | Signature verified |
+| Invalid | 1 | An affirmative cryptographic or structural failure |
+| Unavailable | 2 | The check itself could not be completed (sidecar failure, or a residual certificate-parseability gap) |
+
+`precheck_verdict`/`precheck_reason` are nullable and written on every request that reaches the pre-check, whatever the outcome — including `valid` and including requests that go on to reject or succeed. A circuit that received no requests has no rows at all, which is what keeps "no traffic" distinguishable from "everything unavailable". Promotion/monitoring query:
+
+```sql
+SELECT circuit_name, precheck_verdict, count(*)
+FROM proofs WHERE created_at > now() - interval '7 days'
+GROUP BY 1, 2 ORDER BY 1;
+```
+
 Schema is defined in [`setup.sql`](./setup.sql).
 
 ## Tech Stack

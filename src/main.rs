@@ -12,7 +12,7 @@ use std::path;
 use std::sync::Arc;
 
 use clap::Parser;
-use db::{set_witness_generated, update_proof};
+use db::{record_precheck, set_witness_generated, update_proof};
 use generator::{proof_generator::ProofGenerator, witness_generator::WitnessGenerator};
 use google_cloud_secretmanager_v1::client::SecretManagerService;
 use jsonrpsee::server::Server;
@@ -132,6 +132,16 @@ async fn main() {
 
                 let verdict = crate::verifier::verify_inputs(uuid, &circuit_name).await;
                 crate::verifier::metrics::record(&verdict);
+
+                // Off the critical path by design: a DB error here must
+                // never turn a `valid` verdict into a failed request, so it
+                // is logged and the pipeline continues regardless of the
+                // result. This matters more under enforcement, where a DB
+                // blip would otherwise become a user-visible rejection.
+                if let Err(e) = record_precheck(uuid, &verdict, &pool_clone).await {
+                    dbg!(&e);
+                }
+
                 match verdict {
                     crate::verifier::Verdict::Valid => {
                         println!("precheck valid for {circuit_name}");
