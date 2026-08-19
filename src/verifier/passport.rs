@@ -1,4 +1,4 @@
-//! The RSA passport / EU-ID three-link verification chain, from
+//! The passport / EU-ID three-link verification chain, from
 //! `passportVerifier.circom:52-93`.
 //!
 //! A bare signature verify only proves the DSC signed *something* — not that
@@ -12,7 +12,10 @@
 //!    `signed_attr_econtent_hash_offset`.
 //! 3. `signature_passport` verifies over
 //!    `sha_sig(recover_message(signed_attr, signed_attr_padded_length))` under
-//!    `pubKey_dsc`.
+//!    `pubKey_dsc` -- RSA PKCS#1v15, RSASSA-PSS, or ECDSA over a NIST curve,
+//!    depending on the circuit's `Scheme` (see `params.rs`). Only the final
+//!    link's signature check differs by scheme; links 1 and 2 are identical
+//!    for all three.
 //!
 //! The governing asymmetry still applies: anything unparseable is `Skipped`.
 //! Only an affirmative failure — a present, parseable hash link that doesn't
@@ -24,6 +27,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::verifier::chunks::{bigint_from_limbs, bytes_from_decimal_strings, field_as_strings, scalar_usize};
 use crate::verifier::params::{CircuitParams, Scheme};
+use crate::verifier::primitives::ecdsa::{self, Curve};
 use crate::verifier::primitives::rsa::verify_pkcs1v15;
 use crate::verifier::primitives::rsapss;
 use crate::verifier::sha_padding::recover_message;
@@ -76,9 +80,9 @@ fn slice_at<'a>(buf: &'a [u8], offset: usize, len: usize) -> Option<&'a [u8]> {
 }
 
 pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
-    if !matches!(p.scheme, Scheme::Rsa { .. } | Scheme::RsaPss { .. }) {
+    if !matches!(p.scheme, Scheme::Rsa { .. } | Scheme::RsaPss { .. } | Scheme::Ecdsa { .. }) {
         return Verdict::Skipped(format!(
-            "passport::verify only handles the RSA PKCS#1v15 and RSASSA-PSS schemes, got {:?}",
+            "passport::verify only handles the RSA PKCS#1v15, RSASSA-PSS, and ECDSA schemes, got {:?}",
             p.scheme
         ));
     }
@@ -120,16 +124,14 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
     let Some(pubkey_limbs) = field_as_strings(inputs, "pubKey_dsc") else {
         return Verdict::Skipped("missing or malformed field: pubKey_dsc".to_string());
     };
-    let Some(modulus) = bigint_from_limbs(&pubkey_limbs, p.n) else {
-        return Verdict::Skipped("pubKey_dsc does not reassemble into a valid integer".to_string());
-    };
-
     let Some(sig_limbs) = field_as_strings(inputs, "signature_passport") else {
         return Verdict::Skipped("missing or malformed field: signature_passport".to_string());
     };
-    let Some(signature) = bigint_from_limbs(&sig_limbs, p.n) else {
-        return Verdict::Skipped("signature_passport does not reassemble into a valid integer".to_string());
-    };
+    // RSA and RSASSA-PSS carry a single `k`-limb big integer in each of
+    // `pubKey_dsc` (the modulus) and `signature_passport`. ECDSA instead
+    // carries `2k` limbs in each -- two coordinates / two scalars -- per
+    // `ecdsaVerifier.circom`'s `getKLengthFactor(alg) == 2`; that split
+    // happens below, per-scheme, rather than here.
 
     // --- 2. Range checks the circuit itself enforces. Violation => Invalid. ---
     let dg_hash_len = (p.dg_hash / 8) as usize;
@@ -184,11 +186,23 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
     };
     match &p.scheme {
         Scheme::Rsa { e, .. } => {
+            let Some(modulus) = bigint_from_limbs(&pubkey_limbs, p.n) else {
+                return Verdict::Skipped("pubKey_dsc does not reassemble into a valid integer".to_string());
+            };
+            let Some(signature) = bigint_from_limbs(&sig_limbs, p.n) else {
+                return Verdict::Skipped("signature_passport does not reassemble into a valid integer".to_string());
+            };
             if !verify_pkcs1v15(&signature, &modulus, *e, &sig_digest, p.sig_hash) {
                 return Verdict::Invalid("signature does not verify under pubKey_dsc".to_string());
             }
         }
         Scheme::RsaPss { e, salt_len, bits } => {
+            let Some(modulus) = bigint_from_limbs(&pubkey_limbs, p.n) else {
+                return Verdict::Skipped("pubKey_dsc does not reassemble into a valid integer".to_string());
+            };
+            let Some(signature) = bigint_from_limbs(&sig_limbs, p.n) else {
+                return Verdict::Skipped("signature_passport does not reassemble into a valid integer".to_string());
+            };
             let hash = match p.sig_hash {
                 160 => rsapss::PssHash::Sha1,
                 256 => rsapss::PssHash::Sha256,
@@ -200,8 +214,51 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
                 return Verdict::Invalid(format!("PSS signature does not verify: {reason}"));
             }
         }
+        Scheme::Ecdsa { curve } => {
+            let Some(curve) = Curve::from_name(curve) else {
+                return Verdict::Skipped(format!("unknown ECDSA curve name: {curve}"));
+            };
+            // `pubKey_dsc` = x || y (each `k` limbs); `signature_passport` =
+            // r || s (each `k` limbs) -- `ecdsaVerifier.circom:50-55`'s
+            // `getKLengthFactor(alg) == 2` split, little-endian base-`2^n`
+            // per half, exactly as `bigint_from_limbs` already reassembles.
+            let k = p.k as usize;
+            if pubkey_limbs.len() != 2 * k {
+                return Verdict::Skipped(format!(
+                    "pubKey_dsc has {} limbs, expected 2*k={}",
+                    pubkey_limbs.len(),
+                    2 * k
+                ));
+            }
+            if sig_limbs.len() != 2 * k {
+                return Verdict::Skipped(format!(
+                    "signature_passport has {} limbs, expected 2*k={}",
+                    sig_limbs.len(),
+                    2 * k
+                ));
+            }
+            let Some(x) = bigint_from_limbs(&pubkey_limbs[0..k], p.n) else {
+                return Verdict::Skipped("pubKey_dsc's x half does not reassemble into a valid integer".to_string());
+            };
+            let Some(y) = bigint_from_limbs(&pubkey_limbs[k..2 * k], p.n) else {
+                return Verdict::Skipped("pubKey_dsc's y half does not reassemble into a valid integer".to_string());
+            };
+            let Some(r) = bigint_from_limbs(&sig_limbs[0..k], p.n) else {
+                return Verdict::Skipped("signature_passport's r half does not reassemble into a valid integer".to_string());
+            };
+            let Some(s) = bigint_from_limbs(&sig_limbs[k..2 * k], p.n) else {
+                return Verdict::Skipped("signature_passport's s half does not reassemble into a valid integer".to_string());
+            };
+            if let Err(reason) = ecdsa::verify_ecdsa(curve, &x, &y, &r, &s, &sig_digest) {
+                return Verdict::Invalid(format!("ECDSA signature does not verify: {reason}"));
+            }
+        }
         // Guarded out at the top of this function -- unreachable here.
-        _ => return Verdict::Skipped("passport::verify only handles the RSA PKCS#1v15 and RSASSA-PSS schemes".to_string()),
+        _ => {
+            return Verdict::Skipped(
+                "passport::verify only handles the RSA PKCS#1v15, RSASSA-PSS, and ECDSA schemes".to_string(),
+            )
+        }
     }
 
     Verdict::Valid

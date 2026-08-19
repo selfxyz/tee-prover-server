@@ -60,6 +60,10 @@ fn all_real_fixtures_are_present() {
         "register_pss_sha384.json",
         "register_pss_sha512.json",
         "register_pss_sha256_salt64.json",
+        "register_ecdsa_secp224r1.json",
+        "register_ecdsa_secp256r1.json",
+        "register_ecdsa_secp384r1.json",
+        "register_ecdsa_secp521r1.json",
     ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
@@ -231,4 +235,83 @@ fn real_kyc_fixture_is_valid() {
     );
     let p = params::lookup("register_kyc").expect("known circuit");
     assert_eq!(kyc::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_ecdsa_secp224r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha224',
+    // 'ecdsa_sha224_secp224r1_224', 'FRA', '000101', '300101') ->
+    // generator.generateRegisterInputs(..., { useTestPadding: true }),
+    // mirroring circuits/tests/register/test_cases.ts's sole secp224r1 row
+    // (dgHashAlgo sha256, eContentHashAlgo sha224 -- the asymmetric-hash
+    // algorithm 44 case). Circuit name confirmed via
+    // doc.getRegisterCircuitName() as
+    // register_sha256_sha224_sha224_ecdsa_secp224r1.
+    let Some(inputs) = read_fixture("register_ecdsa_secp224r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha256_sha224_sha224_ecdsa_secp224r1").expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_ecdsa_secp256r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha256', 'sha256',
+    // 'ecdsa_sha256_secp256r1_256', 'FRA', '000101', '300101'), mirroring
+    // test_cases.ts's algorithm 8 row. Circuit name confirmed as
+    // register_sha256_sha256_sha256_ecdsa_secp256r1.
+    let Some(inputs) = read_fixture("register_ecdsa_secp256r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha256_sha256_sha256_ecdsa_secp256r1").expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_ecdsa_secp384r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha384', 'sha384',
+    // 'ecdsa_sha384_secp384r1_384', 'FRA', '000101', '300101'), mirroring
+    // test_cases.ts's algorithm 9 row. Circuit name confirmed as
+    // register_sha384_sha384_sha384_ecdsa_secp384r1.
+    let Some(inputs) = read_fixture("register_ecdsa_secp384r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha384_sha384_sha384_ecdsa_secp384r1").expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_ecdsa_secp521r1_fixture_is_valid() {
+    // Captured via genAndInitMockPassportData('sha512', 'sha512',
+    // 'ecdsa_sha512_secp521r1_521', 'FRA', '000101', '300101'), mirroring
+    // test_cases.ts's algorithm 41 row. Circuit name confirmed as
+    // register_sha512_sha512_sha512_ecdsa_secp521r1.
+    let Some(inputs) = read_fixture("register_ecdsa_secp521r1.json") else {
+        return;
+    };
+    let p = params::lookup("register_sha512_sha512_sha512_ecdsa_secp521r1").expect("known circuit");
+    assert_eq!(passport::verify(&inputs, &p), Verdict::Valid);
+}
+
+#[test]
+fn real_ecdsa_secp256r1_fixture_with_a_corrupted_signature_limb_is_invalid_for_the_ecdsa_check() {
+    // Corrupts only `signature_passport` -- dg1, eContent, and signed_attr
+    // are untouched, so links 1 and 2 still pass. The reason must therefore
+    // name the ECDSA signature check itself, not a dg1/eContent/signed_attr
+    // chain link -- a mutation that failed for the wrong reason would prove
+    // nothing (see this module's doc comment on wire-format mismatches).
+    let Some(mut inputs) = read_fixture("register_ecdsa_secp256r1.json") else {
+        return;
+    };
+    let arr = inputs["signature_passport"].as_array_mut().unwrap();
+    arr[0] = serde_json::Value::String("1".to_string());
+    let p = params::lookup("register_sha256_sha256_sha256_ecdsa_secp256r1").expect("known circuit");
+    let v = passport::verify(&inputs, &p);
+    let Verdict::Invalid(reason) = &v else {
+        panic!("corrupting signature_passport must be Invalid, got {v:?}");
+    };
+    assert!(
+        reason.contains("ECDSA") || reason.contains("does not verify"),
+        "the reason must name the ECDSA signature check, not a chain link, got: {reason}"
+    );
 }

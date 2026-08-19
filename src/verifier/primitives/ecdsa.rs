@@ -24,9 +24,8 @@
 //! set that would catch a future instance needing the truncation branch;
 //! this primitive intentionally does not guess at it.
 //!
-//! `#[cfg_attr(not(test), allow(dead_code))]` marks everything not yet wired
-//! into production -- Task 3's `passport.rs` dispatch for `Scheme::Ecdsa` is
-//! what removes it.
+//! Wired into production via `passport.rs`'s dispatch arm for
+//! `Scheme::Ecdsa` (Task 3); no longer test-only.
 
 use num_bigint::BigUint;
 // The `signature` crate is only a transitive dependency (re-exported by each
@@ -36,7 +35,6 @@ use num_bigint::BigUint;
 use p256::ecdsa::signature::hazmat::PrehashVerifier;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub enum Curve {
     Secp224r1,
     Secp256r1,
@@ -45,7 +43,6 @@ pub enum Curve {
 }
 
 impl Curve {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_name(s: &str) -> Option<Curve> {
         Some(match s {
             "secp224r1" => Curve::Secp224r1,
@@ -61,7 +58,6 @@ impl Curve {
     /// `n = 66` limbs not being byte-aligned. This function only deals in
     /// bytes (the SEC1 point / signature scalar encoding width), not limbs,
     /// so that misalignment does not appear here.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn field_bytes(self) -> usize {
         match self {
             Curve::Secp224r1 => 28,
@@ -95,7 +91,6 @@ fn coord_bytes(v: &BigUint, width: usize) -> Result<Vec<u8>, String> {
 /// Task 3 maps most reasons to `Skipped`, not `Invalid`, since the Groth16
 /// circuit is the actual source of truth); a false accept costs nothing,
 /// since the circuit still verifies afterward.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_ecdsa(
     curve: Curve,
     x: &BigUint,
