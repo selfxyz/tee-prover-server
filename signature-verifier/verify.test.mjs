@@ -15,7 +15,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import { limbsToBigInt, fieldAsStrings, recoverMessage, certPublicKey, keyMatchesCert } from './verify.mjs';
+import { spawnSync } from 'node:child_process';
+import { limbsToBigInt, fieldAsStrings, recoverMessage, certPublicKey, keyMatchesCert, verify, parseCircuitName } from './verify.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'tests', 'fixtures');
@@ -133,22 +134,22 @@ function tbsCertificateOf(certPem) {
 // pubKey_dsc/signature_passport, and the embedded certificate bytes are
 // raw_dsc (a bare tbsCertificate, actual-length-delimited, no SHA padding).
 const REGISTER_FAMILY = [
-  { file: 'register_passport.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsa_3_4096' },
-  { file: 'register_id.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsa_65537_4096' },
-  { file: 'register_pss.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsapss_32_65537_2048' },
-  { file: 'register_pss_sha256_salt64.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsapss_64_65537_2048' },
-  { file: 'register_pss_sha384.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha384_rsapss_48_65537_2048' },
-  { file: 'register_pss_sha512.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha512_rsapss_64_65537_2048' },
-  { file: 'register_ecdsa_brainpoolP224r1.json', scheme: 'ecdsa', curve: 'brainpoolP224r1', n: 32, k: 7, mockDir: 'sha1_ecdsa_brainpoolP224r1' },
-  { file: 'register_ecdsa_brainpoolP256r1.json', scheme: 'ecdsa', curve: 'brainpoolP256r1', n: 64, k: 4, mockDir: 'sha256_ecdsa_brainpoolP256r1' },
-  { file: 'register_ecdsa_brainpoolP384r1.json', scheme: 'ecdsa', curve: 'brainpoolP384r1', n: 64, k: 6, mockDir: 'sha384_ecdsa_brainpoolP384r1' },
-  { file: 'register_ecdsa_brainpoolP512r1.json', scheme: 'ecdsa', curve: 'brainpoolP512r1', n: 64, k: 8, mockDir: 'sha512_ecdsa_brainpoolP512r1' },
-  { file: 'register_ecdsa_secp224r1.json', scheme: 'ecdsa', curve: 'secp224r1', n: 32, k: 7, mockDir: 'sha224_ecdsa_secp224r1' },
-  { file: 'register_ecdsa_secp256r1.json', scheme: 'ecdsa', curve: 'secp256r1', n: 64, k: 4, mockDir: 'sha256_ecdsa_secp256r1' },
-  { file: 'register_ecdsa_secp256r1_sha1.json', scheme: 'ecdsa', curve: 'secp256r1', n: 64, k: 4, mockDir: 'sha1_ecdsa_secp256r1' },
-  { file: 'register_ecdsa_secp384r1.json', scheme: 'ecdsa', curve: 'secp384r1', n: 64, k: 6, mockDir: 'sha384_ecdsa_secp384r1' },
-  { file: 'register_ecdsa_secp384r1_sha256.json', scheme: 'ecdsa', curve: 'secp384r1', n: 64, k: 6, mockDir: 'sha256_ecdsa_secp384r1' },
-  { file: 'register_ecdsa_secp521r1.json', scheme: 'ecdsa', curve: 'secp521r1', n: 66, k: 8, mockDir: 'sha512_ecdsa_secp521r1' },
+  { file: 'register_passport.json', circuit: 'register_sha256_sha256_sha256_rsa_3_4096', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsa_3_4096' },
+  { file: 'register_id.json', circuit: 'register_id_sha1_sha256_sha256_rsa_65537_4096', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsa_65537_4096' },
+  { file: 'register_pss.json', circuit: 'register_sha256_sha256_sha256_rsapss_65537_32_2048', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsapss_32_65537_2048' },
+  { file: 'register_pss_sha256_salt64.json', circuit: 'register_sha256_sha256_sha256_rsapss_65537_64_2048', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsapss_64_65537_2048' },
+  { file: 'register_pss_sha384.json', circuit: 'register_sha384_sha384_sha384_rsapss_65537_48_2048', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha384_rsapss_48_65537_2048' },
+  { file: 'register_pss_sha512.json', circuit: 'register_sha512_sha512_sha512_rsapss_65537_64_2048', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha512_rsapss_64_65537_2048' },
+  { file: 'register_ecdsa_brainpoolP224r1.json', circuit: 'register_sha1_sha1_sha1_ecdsa_brainpoolP224r1', scheme: 'ecdsa', curve: 'brainpoolP224r1', n: 32, k: 7, mockDir: 'sha1_ecdsa_brainpoolP224r1' },
+  { file: 'register_ecdsa_brainpoolP256r1.json', circuit: 'register_sha256_sha256_sha256_ecdsa_brainpoolP256r1', scheme: 'ecdsa', curve: 'brainpoolP256r1', n: 64, k: 4, mockDir: 'sha256_ecdsa_brainpoolP256r1' },
+  { file: 'register_ecdsa_brainpoolP384r1.json', circuit: 'register_sha384_sha384_sha384_ecdsa_brainpoolP384r1', scheme: 'ecdsa', curve: 'brainpoolP384r1', n: 64, k: 6, mockDir: 'sha384_ecdsa_brainpoolP384r1' },
+  { file: 'register_ecdsa_brainpoolP512r1.json', circuit: 'register_sha512_sha512_sha512_ecdsa_brainpoolP512r1', scheme: 'ecdsa', curve: 'brainpoolP512r1', n: 64, k: 8, mockDir: 'sha512_ecdsa_brainpoolP512r1' },
+  { file: 'register_ecdsa_secp224r1.json', circuit: 'register_sha256_sha224_sha224_ecdsa_secp224r1', scheme: 'ecdsa', curve: 'secp224r1', n: 32, k: 7, mockDir: 'sha224_ecdsa_secp224r1' },
+  { file: 'register_ecdsa_secp256r1.json', circuit: 'register_sha256_sha256_sha256_ecdsa_secp256r1', scheme: 'ecdsa', curve: 'secp256r1', n: 64, k: 4, mockDir: 'sha256_ecdsa_secp256r1' },
+  { file: 'register_ecdsa_secp256r1_sha1.json', circuit: 'register_sha1_sha1_sha1_ecdsa_secp256r1', scheme: 'ecdsa', curve: 'secp256r1', n: 64, k: 4, mockDir: 'sha1_ecdsa_secp256r1' },
+  { file: 'register_ecdsa_secp384r1.json', circuit: 'register_sha384_sha384_sha384_ecdsa_secp384r1', scheme: 'ecdsa', curve: 'secp384r1', n: 64, k: 6, mockDir: 'sha384_ecdsa_secp384r1' },
+  { file: 'register_ecdsa_secp384r1_sha256.json', circuit: 'register_sha256_sha256_sha256_ecdsa_secp384r1', scheme: 'ecdsa', curve: 'secp384r1', n: 64, k: 6, mockDir: 'sha256_ecdsa_secp384r1' },
+  { file: 'register_ecdsa_secp521r1.json', circuit: 'register_sha512_sha512_sha512_ecdsa_secp521r1', scheme: 'ecdsa', curve: 'secp521r1', n: 66, k: 8, mockDir: 'sha512_ecdsa_secp521r1' },
 ].map((row) => ({
   ...row,
   keyField: 'pubKey_dsc',
@@ -164,11 +165,11 @@ const REGISTER_FAMILY = [
 // covers (SHA-padded, hence raw_dsc_padded_length) -- exercised separately
 // below via recoverMessage, not via certPublicKey/keyMatchesCert.
 const DSC_FAMILY = [
-  { file: 'dsc_sha256_rsa_65537_4096.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsa_65537_4096' },
-  { file: 'dsc_sha256_rsapss_65537_32_3072.json', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsapss_32_65537_3072' },
-  { file: 'dsc_sha256_ecdsa_secp521r1.json', scheme: 'ecdsa', curve: 'secp521r1', n: 66, k: 8, mockDir: 'sha256_ecdsa_secp521r1' },
-  { file: 'dsc_sha512_ecdsa_secp521r1.json', scheme: 'ecdsa', curve: 'secp521r1', n: 66, k: 8, mockDir: 'sha512_ecdsa_secp521r1' },
-  { file: 'dsc_sha256_ecdsa_brainpoolP256r1.json', scheme: 'ecdsa', curve: 'brainpoolP256r1', n: 64, k: 4, mockDir: 'sha256_ecdsa_brainpoolP256r1' },
+  { file: 'dsc_sha256_rsa_65537_4096.json', circuit: 'dsc_sha256_rsa_65537_4096', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsa_65537_4096' },
+  { file: 'dsc_sha256_rsapss_65537_32_3072.json', circuit: 'dsc_sha256_rsapss_65537_32_3072', scheme: 'rsa', n: 120, k: 35, mockDir: 'sha256_rsapss_32_65537_3072' },
+  { file: 'dsc_sha256_ecdsa_secp521r1.json', circuit: 'dsc_sha256_ecdsa_secp521r1', scheme: 'ecdsa', curve: 'secp521r1', n: 66, k: 8, mockDir: 'sha256_ecdsa_secp521r1' },
+  { file: 'dsc_sha512_ecdsa_secp521r1.json', circuit: 'dsc_sha512_ecdsa_secp521r1', scheme: 'ecdsa', curve: 'secp521r1', n: 66, k: 8, mockDir: 'sha512_ecdsa_secp521r1' },
+  { file: 'dsc_sha256_ecdsa_brainpoolP256r1.json', circuit: 'dsc_sha256_ecdsa_brainpoolP256r1', scheme: 'ecdsa', curve: 'brainpoolP256r1', n: 64, k: 4, mockDir: 'sha256_ecdsa_brainpoolP256r1' },
 ].map((row) => ({
   ...row,
   keyField: 'csca_pubKey',
@@ -592,5 +593,359 @@ describe('limbsToBigInt rejects what chunks.rs rejects', () => {
     const limb = (1n << 66n) - 1n;
     assert.equal(limbsToBigInt([limb.toString(), '1'], 66), limb | (1n << 66n));
     assert.equal(limbsToBigInt([(1n << 66n).toString()], 66), null);
+  });
+});
+
+// =======================================================================
+// Task 2: chain links, signature verification, and the verdict contract.
+// None of this needs MOCK_CERTS_AVAILABLE -- unlike Task 1's independence
+// checks (which cross-check against the sibling monorepo's own mock PEMs),
+// `verify()` parses raw_dsc/raw_csca as a certificate using only the
+// fixture's own bytes, so every test below runs on a bare checkout of this
+// repo alone.
+// =======================================================================
+
+const AADHAAR_CIRCUIT = 'register_aadhaar';
+const KYC_CIRCUIT = 'register_kyc';
+
+/**
+ * Every fixture this verifier is expected to actually handle: the 16
+ * register-family + 5 DSC-family rows already defined above (reused, not
+ * duplicated), plus Aadhaar. 22 of the 23 checked-in fixtures --
+ * `register_kyc` is the one deliberate exception; see the describe block
+ * below for why.
+ */
+const ALL_FIXTURE_CIRCUITS = [
+  ...REGISTER_FAMILY.map((r) => ({ file: r.file, circuit: r.circuit, sigField: r.sigField, keyField: r.keyField, scheme: r.scheme, family: 'register' })),
+  ...DSC_FAMILY.map((r) => ({ file: r.file, circuit: r.circuit, sigField: r.sigField, keyField: r.keyField, scheme: r.scheme, family: 'dsc' })),
+  { file: 'register_aadhaar.json', circuit: AADHAAR_CIRCUIT, sigField: 'signature', keyField: 'pubKey', scheme: 'rsa', family: 'aadhaar' },
+];
+
+assert.equal(
+  ALL_FIXTURE_CIRCUITS.length,
+  22,
+  'expected 22 of the 23 fixtures to be handled by this verifier -- register_kyc is the deliberate exception',
+);
+
+// Reason-text fragments used to assert a mutation failed for its OWN reason
+// and no other -- six tests in this project have passed for the wrong
+// reason, per this task's brief.
+const DG1_LINK_PHRASE = 'dg1 hash does not match';
+const ECONTENT_LINK_PHRASE = 'eContent hash does not match';
+const CERT_LINK_PHRASE = 'does not match the certificate';
+const SIGNATURE_PHRASES = ['does not verify under the certificate key', 'PSS signature does not verify', 'ECDSA signature does not verify', 'Aadhaar signature does not verify'];
+
+function assertReasonNamesOnly(reason, allowedPhrase, label) {
+  assert.ok(reason.includes(allowedPhrase), `${label}: reason must contain "${allowedPhrase}", got: ${reason}`);
+  const allOtherPhrases = [DG1_LINK_PHRASE, ECONTENT_LINK_PHRASE, CERT_LINK_PHRASE, ...SIGNATURE_PHRASES].filter((p) => p !== allowedPhrase);
+  for (const other of allOtherPhrases) {
+    assert.ok(!reason.includes(other), `${label}: reason must NOT mention "${other}", got: ${reason}`);
+  }
+}
+
+function tamperedLimb(original) {
+  return String(original) === '1' ? '2' : '1';
+}
+
+function signatureReasonPhrase(scheme) {
+  if (scheme === 'rsa') return 'does not verify under the certificate key';
+  if (scheme === 'rsapss') return 'PSS signature does not verify';
+  if (scheme === 'ecdsa') return 'ECDSA signature does not verify';
+  return null;
+}
+
+describe('verify -- every non-KYC fixture is valid', () => {
+  // THE test that matters most in this task: a verifier that checked nothing
+  // would also pass a test that merely tolerated `skipped`, which has
+  // happened twice in this project already -- so this asserts the verdict
+  // is exactly `{verdict:'valid'}`, nothing looser.
+  for (const row of ALL_FIXTURE_CIRCUITS) {
+    test(`${row.file} (${row.circuit}) is valid`, () => {
+      const fixture = loadFixture(row.file);
+      assert.deepEqual(verify(row.circuit, fixture), { verdict: 'valid' });
+    });
+  }
+});
+
+describe('verify -- register_kyc is a deliberate, documented exception, not silently skipped coverage', () => {
+  test('register_kyc is skipped, not valid', () => {
+    const fixture = loadFixture('register_kyc.json');
+    const result = verify(KYC_CIRCUIT, fixture);
+    assert.equal(result.verdict, 'skipped');
+    assert.match(
+      result.reason,
+      /BabyJubJub/,
+      'the skip reason must name why -- EdDSA-BabyJubJub has no node:crypto-representable scheme',
+    );
+  });
+});
+
+describe('verify -- tampering the signature is invalid, naming the signature check and nothing else', () => {
+  for (const row of ALL_FIXTURE_CIRCUITS) {
+    test(`${row.file}: flipping one limb of ${row.sigField} is invalid for the signature check`, () => {
+      const fixture = loadFixture(row.file);
+      const tampered = structuredClone(fixture);
+      const limbs = [...tampered[row.sigField]];
+      limbs[0] = tamperedLimb(limbs[0]);
+      tampered[row.sigField] = limbs;
+
+      const result = verify(row.circuit, tampered);
+      assert.equal(result.verdict, 'invalid', `${row.file}: got ${JSON.stringify(result)}`);
+      // row.scheme (borrowed from REGISTER_FAMILY/DSC_FAMILY) is the
+      // key-MATCHING scheme ('rsa'|'ecdsa' -- PSS shares RSA's key layout),
+      // not the signature scheme, so it cannot distinguish plain RSA from
+      // RSA-PSS here. Re-derive the real scheme from the circuit name.
+      const realScheme = row.family === 'aadhaar' ? 'aadhaar' : parseCircuitName(row.circuit).scheme;
+      const phrase = signatureReasonPhrase(realScheme);
+      if (phrase) {
+        assertReasonNamesOnly(result.reason, phrase, row.file);
+      } else {
+        // Aadhaar's own phrase isn't in the shared SIGNATURE_PHRASES set
+        // (different family, no chain links to cross-check against), so it
+        // gets its own direct assertion instead of the shared helper.
+        assert.match(result.reason, /Aadhaar signature does not verify/, `${row.file}: got ${result.reason}`);
+      }
+    });
+  }
+});
+
+describe('verify -- tampering dg1 is invalid, naming the dg1 link and nothing else (register family only)', () => {
+  for (const row of REGISTER_FAMILY) {
+    test(`${row.file}: flipping one byte of dg1 is invalid for the dg1 link`, () => {
+      const fixture = loadFixture(row.file);
+      const tampered = structuredClone(fixture);
+      const dg1 = [...tampered.dg1];
+      dg1[0] = String((Number(dg1[0]) ^ 1) & 0xff);
+      tampered.dg1 = dg1;
+
+      const result = verify(row.circuit, tampered);
+      assert.equal(result.verdict, 'invalid', `${row.file}: got ${JSON.stringify(result)}`);
+      assertReasonNamesOnly(result.reason, DG1_LINK_PHRASE, row.file);
+    });
+  }
+});
+
+describe('verify -- tampering eContent is invalid, naming the eContent link and nothing else (register family only)', () => {
+  for (const row of REGISTER_FAMILY) {
+    test(`${row.file}: flipping eContent[0] (outside the dg1_hash_offset=70 window) is invalid for the eContent link`, () => {
+      const fixture = loadFixture(row.file);
+      // dg1_hash_offset is 70 for every register-family fixture (verified
+      // against every checked-in fixture before writing this test), so
+      // index 0 lies outside the dg1-hash window and link 1 stays intact --
+      // only link 2 (the eContent<->signed_attr hash) can break here.
+      assert.equal(Number([].concat(fixture.dg1_hash_offset)[0]), 70, `${row.file}: dg1_hash_offset assumption changed`);
+      const tampered = structuredClone(fixture);
+      const econtent = [...tampered.eContent];
+      econtent[0] = String((Number(econtent[0]) ^ 1) & 0xff);
+      tampered.eContent = econtent;
+
+      const result = verify(row.circuit, tampered);
+      assert.equal(result.verdict, 'invalid', `${row.file}: got ${JSON.stringify(result)}`);
+      assertReasonNamesOnly(result.reason, ECONTENT_LINK_PHRASE, row.file);
+    });
+  }
+});
+
+describe('verify -- tampering the certificate-embedded key limb is invalid, naming the key/certificate link and nothing else', () => {
+  // Covers both families: pubKey_dsc (register, checked against raw_dsc --
+  // this module's own added link, see verifyRegisterFamily's doc comment)
+  // and csca_pubKey (DSC, checked against raw_csca -- dsc.circom's own
+  // link). Without this link, any key matching any signature would pass.
+  for (const row of [...REGISTER_FAMILY, ...DSC_FAMILY]) {
+    test(`${row.file}: flipping one limb of ${row.keyField} is invalid for the key/certificate link`, () => {
+      const fixture = loadFixture(row.file);
+      const tampered = structuredClone(fixture);
+      const limbs = [...tampered[row.keyField]];
+      limbs[0] = tamperedLimb(limbs[0]);
+      tampered[row.keyField] = limbs;
+
+      const result = verify(row.circuit, tampered);
+      assert.equal(result.verdict, 'invalid', `${row.file}: got ${JSON.stringify(result)}`);
+      assertReasonNamesOnly(result.reason, CERT_LINK_PHRASE, row.file);
+    });
+  }
+});
+
+describe('verify -- skip paths', () => {
+  test('an unknown circuit name is skipped', () => {
+    const result = verify('totally_not_a_real_circuit', {});
+    assert.equal(result.verdict, 'skipped');
+  });
+
+  test('a non-object input.json is skipped, not a thrown exception', () => {
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', null).verdict, 'skipped');
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', 'not an object').verdict, 'skipped');
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]).verdict, 'skipped');
+  });
+
+  test('a missing field is skipped, not invalid (register family)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    delete tampered.pubKey_dsc;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'skipped');
+  });
+
+  test('a missing field is skipped, not invalid (DSC family)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    delete tampered.csca_pubKey;
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'skipped');
+  });
+
+  test('malformed eContent padding is skipped, not invalid (register family)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    // Not a multiple of 64: recoverMessage's block-alignment check rejects
+    // this unconditionally, regardless of the real fixture's own byte
+    // content -- unlike a padded length that IS block-aligned (e.g. 64),
+    // which this real fixture's actual bytes might still happen to parse as
+    // a differently-recovered (but structurally valid) message, breaking
+    // link 2 (Invalid) rather than the padding parse itself (Skipped). Still
+    // >= dg1_hash_offset(70) + dg_hash/8(32) = 102, so link 1's own offset
+    // bound check (checked first) does not trip instead.
+    tampered.eContent_padded_length = ['447'];
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+  });
+
+  test('malformed raw_dsc padding is skipped, not invalid (DSC family)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    // Not a multiple of 64 -- see the eContent test above for why this is
+    // the deterministic choice rather than a block-aligned length.
+    tampered.raw_dsc_padded_length = '703';
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+  });
+
+  test('an unreadable certificate is skipped (register family: raw_dsc\'s outer DER tag corrupted)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const rawDsc = [...tampered.raw_dsc];
+    rawDsc[0] = '0'; // corrupt the tbsCertificate's own outer SEQUENCE tag byte
+    tampered.raw_dsc = rawDsc;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /certificate/);
+  });
+
+  test('an unreadable certificate is skipped (DSC family: raw_csca\'s outer DER tag corrupted)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    const rawCsca = [...tampered.raw_csca];
+    rawCsca[0] = '0';
+    tampered.raw_csca = rawCsca;
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /certificate/);
+  });
+
+  test('an out-of-range dg1_hash_offset is invalid (register family, passportVerifier.circom:53-66)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    tampered.dg1_hash_offset = ['100000'];
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+  });
+
+  test('an out-of-range csca_pubKey_offset is skipped, not invalid (DSC family, dsc.circom:110-127)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    tampered.csca_pubKey_offset = '100000';
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+  });
+
+  test('an out-of-range dsc_pubKey_offset is skipped, not invalid (register family -- this module\'s own added link)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    tampered.dsc_pubKey_offset = ['100000'];
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+  });
+});
+
+describe('parseCircuitName', () => {
+  test('a DSC name (one hash tag) is not misread as a register name (three hash tags)', () => {
+    const dsc = parseCircuitName('dsc_sha256_rsa_65537_4096');
+    assert.equal(dsc.family, 'dsc');
+    assert.equal(dsc.sigHash, 256);
+    assert.equal(dsc.scheme, 'rsa');
+
+    const reg = parseCircuitName('register_sha1_sha256_sha256_rsa_65537_4096');
+    assert.equal(reg.family, 'register');
+    assert.deepEqual([reg.dgHash, reg.econtentHash, reg.sigHash], [160, 256, 256]);
+  });
+
+  test('register_kyc and register_aadhaar are their own families', () => {
+    assert.equal(parseCircuitName('register_kyc').family, 'kyc');
+    assert.equal(parseCircuitName('register_aadhaar').family, 'aadhaar');
+  });
+
+  test('an unknown or malformed circuit name is null', () => {
+    assert.equal(parseCircuitName('totally_unknown'), null);
+    assert.equal(parseCircuitName('register_sha256_sha256_sha256_rsa_65537'), null); // missing the bits component
+    assert.equal(parseCircuitName('register_sha256_sha256_sha256_ecdsa_not_a_curve'), null);
+    assert.equal(parseCircuitName('dsc_sha256_ecdsa_not_a_curve'), null);
+  });
+
+  test('an ECDSA curve absent from CURVE_PARAMS is null, not a guess', () => {
+    assert.equal(parseCircuitName('register_sha256_sha256_sha256_ecdsa_secp192r1'), null);
+  });
+});
+
+describe('CLI contract: stdin {circuit, inputPath} JSON -> one stdout verdict JSON line, exit 0', () => {
+  const scriptPath = path.join(__dirname, 'verify.mjs');
+
+  function runCli(input) {
+    return spawnSync(process.execPath, [scriptPath], { input, encoding: 'utf8' });
+  }
+
+  test('a valid fixture piped through the CLI prints {"verdict":"valid"} and exits 0', () => {
+    const inputPath = path.join(FIXTURES_DIR, 'register_passport.json');
+    const request = JSON.stringify({ circuit: 'register_sha256_sha256_sha256_rsa_3_4096', inputPath });
+    const result = runCli(request);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), { verdict: 'valid' });
+  });
+
+  test('an unknown circuit prints a skipped verdict and still exits 0', () => {
+    const inputPath = path.join(FIXTURES_DIR, 'register_passport.json');
+    const request = JSON.stringify({ circuit: 'not_a_real_circuit', inputPath });
+    const result = runCli(request);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout.trim()).verdict, 'skipped');
+  });
+
+  test('malformed stdin JSON prints a skipped verdict and still exits 0', () => {
+    const result = runCli('this is not json');
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout.trim()).verdict, 'skipped');
+  });
+
+  test('stdin JSON missing the required fields prints a skipped verdict and still exits 0', () => {
+    const result = runCli(JSON.stringify({ circuit: 'register_sha256_sha256_sha256_rsa_3_4096' }));
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout.trim()).verdict, 'skipped');
+  });
+
+  test('a missing inputPath file prints a skipped verdict and still exits 0', () => {
+    const request = JSON.stringify({
+      circuit: 'register_sha256_sha256_sha256_rsa_3_4096',
+      inputPath: '/nonexistent/path/does/not/exist/input.json',
+    });
+    const result = runCli(request);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout.trim()).verdict, 'skipped');
+  });
+
+  test('an inputPath file that is not valid JSON prints a skipped verdict and still exits 0', () => {
+    const badPath = path.join(FIXTURES_DIR, '..', '..', 'signature-verifier', 'verify.mjs');
+    const request = JSON.stringify({ circuit: 'register_sha256_sha256_sha256_rsa_3_4096', inputPath: badPath });
+    const result = runCli(request);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout.trim()).verdict, 'skipped');
   });
 });

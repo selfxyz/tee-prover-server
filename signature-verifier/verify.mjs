@@ -1,19 +1,33 @@
-// The JS parsing layer for the TEE prover's signature pre-check (Plan A,
-// Task 1). Ports the semantics of src/verifier/chunks.rs,
-// src/verifier/sha_padding.rs, and the certificate/key-matching pieces of
-// src/verifier/passport.rs and src/verifier/dsc.rs -- not their syntax.
+// The JS signature pre-check for the TEE prover (Plan A). Task 1 built the
+// parsing layer (limbsToBigInt/recoverMessage/certPublicKey/keyMatchesCert).
+// Task 2 (this addition) adds the chain links, the actual signature
+// verification, circuit-name parsing, and the stdin/stdout verdict contract
+// Task 4's Rust client consumes -- making this file a complete verifier.
+// Ports the semantics of src/verifier/chunks.rs, src/verifier/sha_padding.rs,
+// src/verifier/passport.rs, and src/verifier/dsc.rs -- not their syntax.
 //
-// Zero dependencies: node:crypto and node:buffer only. No @selfxyz/common, no
-// forge, elliptic, pkijs, or asn1js.
+// Zero dependencies: node:crypto, node:fs, and node:url only. No
+// @selfxyz/common, no forge, elliptic, pkijs, or asn1js.
 //
 // The governing asymmetry from the Rust modules still applies here: a
 // function returns `null` (or `false`, for the boolean-returning check) on
 // anything unparseable or non-matching, never throws. A thrown exception
 // would become a server crash instead of a verdict -- see certPublicKey's
 // doc comment in particular, since `X509Certificate`'s constructor is the
-// one call in this module that throws on malformed input by default.
+// one call in this module that throws on malformed input by default. The
+// same discipline applies to every function Task 2 adds below: a malformed
+// field is a verdict (`skipped`), never an exception.
+//
+// Semantics do not change in this plan: the circuit is still the authority.
+// `Skipped` still means "cannot be certain, so forward to proving"; `Invalid`
+// is reserved for an affirmative cryptographic or structural failure this
+// module can actually stand behind. This file deliberately does NOT add the
+// PSS leftmost-bit check or turn an off-curve key into a rejection -- see
+// `verifyRsaPss` and this file's report for why.
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------
 // limbsToBigInt -- base-2^n reassembly, least-significant limb first.
@@ -411,4 +425,1184 @@ export function keyMatchesCert(suppliedLimbs, n, k, cert, scheme) {
   } catch {
     return false;
   }
+}
+
+// =======================================================================
+// Task 2: chain links, signature verification, circuit-name parsing, and
+// the stdin/stdout verdict contract.
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// Verdict constructors -- the exact wire shape Task 4's Rust client reads.
+// ---------------------------------------------------------------------
+
+function valid() {
+  return { verdict: 'valid' };
+}
+function invalid(reason) {
+  return { verdict: 'invalid', reason };
+}
+function skipped(reason) {
+  return { verdict: 'skipped', reason };
+}
+
+// ---------------------------------------------------------------------
+// A few more chunks.rs-equivalent parsing primitives, built on Task 1's
+// `fieldAsStrings`. Not exported as part of Task 1's four mandated
+// functions, but the same "return null, never throw" discipline applies.
+// ---------------------------------------------------------------------
+
+/**
+ * Parses a list of decimal strings as bytes, returning a `Buffer`. Mirrors
+ * chunks.rs's `bytes_from_decimal_strings`: every element must be a decimal
+ * integer in `0..=255`; anything else -- non-numeric, negative, `>255`, or a
+ * non-decimal form like a leading `+` or a hex digit -- makes the whole call
+ * return `null` rather than truncate or wrap.
+ *
+ * @param {ReadonlyArray<string>} items
+ * @returns {Buffer | null}
+ */
+function bytesFromDecimalStrings(items) {
+  const out = Buffer.alloc(items.length);
+  for (let i = 0; i < items.length; i++) {
+    const text = String(items[i]);
+    if (!/^[0-9]+$/.test(text)) {
+      return null;
+    }
+    const value = Number(text);
+    if (!Number.isInteger(value) || value < 0 || value > 255) {
+      return null;
+    }
+    out[i] = value;
+  }
+  return out;
+}
+
+/**
+ * Reads a scalar field -- exactly one decimal-string element, parsed as a
+ * non-negative integer. Mirrors chunks.rs's `scalar_usize`. `null` if the
+ * value does not normalize to exactly one element (via `fieldAsStrings`), or
+ * that element is not a plain non-negative decimal integer.
+ *
+ * Values here are always compared against small bounds (the 12-bit offset
+ * limit, or a buffer's own `.length`), so `Number`'s float imprecision above
+ * `Number.MAX_SAFE_INTEGER` cannot turn an out-of-range offset into an
+ * in-range one -- an absurdly large decimal string still evaluates as
+ * "huge", which every caller here treats as out of range regardless of the
+ * exact (imprecise) value.
+ *
+ * @param {unknown} value
+ * @returns {number | null}
+ */
+function scalarUsize(value) {
+  const items = fieldAsStrings(value);
+  if (!items || items.length !== 1) {
+    return null;
+  }
+  const text = items[0];
+  if (!/^[0-9]+$/.test(text)) {
+    return null;
+  }
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < 0) {
+    return null;
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------
+// Digest dispatch: bits -> node:crypto hash name, shared by every scheme.
+// ---------------------------------------------------------------------
+
+const SHA_NAME = { 160: 'sha1', 224: 'sha224', 256: 'sha256', 384: 'sha384', 512: 'sha512' };
+
+/**
+ * Hashes `msg` with the SHA variant selected by `bits` (160/224/256/384/512).
+ * `null` for any other width -- an unknown hash width is not something this
+ * module can be certain about, so it becomes `Skipped` upstream, never a
+ * guess at the wrong algorithm.
+ *
+ * @param {number} bits
+ * @param {Uint8Array} msg
+ * @returns {Buffer | null}
+ */
+function digestBuffer(bits, msg) {
+  const name = SHA_NAME[bits];
+  if (!name) {
+    return null;
+  }
+  return crypto.createHash(name).update(msg).digest();
+}
+
+// ---------------------------------------------------------------------
+// Offset/bounds checks, mirroring passportVerifier.circom:53-66 (register
+// family, violation => Invalid) and dsc.circom:110-127 (DSC family and the
+// dsc_pubKey_offset link below, violation => Skipped). See dsc.rs's
+// `offset_in_range` doc comment for why the DSC-shaped check is Skipped
+// rather than Invalid: unlike the register family's padded lengths (which
+// `recoverMessage` independently corroborates against the very buffer they
+// bound), an offset/size pair here has no independent corroboration, so it
+// sits with the "uncertain" class, not the two checks this module can
+// affirmatively stand behind.
+// ---------------------------------------------------------------------
+
+const OFFSET_BITS = 12;
+const OFFSET_LIMIT = 1 << OFFSET_BITS;
+
+/**
+ * Validates an offset against the register family's own range checks: it
+ * must fit in 12 bits, and `offset + hashLen` must not exceed `paddedLength`.
+ * Mirrors passport.rs's `check_offset_range`.
+ *
+ * @returns {string | null} a reason string (the caller reports `Invalid`) or
+ *   `null` if the offset is in range.
+ */
+function checkOffsetRangeInvalid(offset, hashLen, paddedLength, field) {
+  if (offset >= OFFSET_LIMIT) {
+    return `${field} out of range: ${offset} does not fit in ${OFFSET_BITS} bits`;
+  }
+  const end = offset + hashLen;
+  if (end > paddedLength) {
+    return `${field} out of range: offset ${offset} + hash_len ${hashLen} exceeds padded length ${paddedLength}`;
+  }
+  return null;
+}
+
+/**
+ * Checks `offset`/`size` each fit in 12 bits and `offset + size <= bound`.
+ * Mirrors dsc.rs's `offset_in_range`.
+ *
+ * @returns {boolean}
+ */
+function offsetInRangeSkip(offset, size, bound) {
+  if (offset >= OFFSET_LIMIT || size >= OFFSET_LIMIT) {
+    return false;
+  }
+  const end = offset + size;
+  return end < OFFSET_LIMIT && end <= bound;
+}
+
+// ---------------------------------------------------------------------
+// wrapAsCertificate -- promoted from Task 1's test-only helper of the same
+// name into production code. See this file's Task 2 report for the decision
+// this represents: `raw_dsc`/`raw_csca` carry a bare `tbsCertificate`, not a
+// full `Certificate`, and `node:crypto`'s `X509Certificate` constructor only
+// parses a complete `Certificate ::= SEQUENCE { tbsCertificate,
+// signatureAlgorithm, signatureValue }`. Two mechanisms could bridge that
+// gap: wrap the TBS in a synthetic `Certificate` with a placeholder
+// signature and let `X509Certificate` parse it (one code path for every
+// scheme and curve, reusing OpenSSL's own ASN.1 parser), or hand-read the
+// key at the circuit-supplied offset. This module takes the former.
+//
+// The placeholder `signatureAlgorithm`/`signatureValue` below is NEVER
+// verified -- `X509Certificate`'s constructor only parses ASN.1 structure,
+// it does not check that the signature is valid, or even that the algorithm
+// identifier matches the embedded key's real type. Only the *parse* is used;
+// nothing about the placeholder signature is trusted or relied upon
+// anywhere in this module. Empirically verified (Task 1) to parse correctly
+// for every RSA/RSA-PSS/ECDSA (NIST and brainpool) scheme in the fixture
+// set, since d2i_X509 never cross-checks the placeholder algorithm against
+// the real subjectPublicKeyInfo.
+// ---------------------------------------------------------------------
+
+function derLength(len) {
+  if (len < 0x80) {
+    return Buffer.from([len]);
+  }
+  const bytes = [];
+  let l = len;
+  while (l > 0) {
+    bytes.unshift(l & 0xff);
+    l >>= 8;
+  }
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
+}
+
+function derSequence(contentBuf) {
+  return Buffer.concat([Buffer.from([0x30]), derLength(contentBuf.length), contentBuf]);
+}
+
+function derBitString(contentBuf) {
+  const inner = Buffer.concat([Buffer.from([0x00]), contentBuf]);
+  return Buffer.concat([Buffer.from([0x03]), derLength(inner.length), inner]);
+}
+
+/**
+ * Wraps a bare `tbsCertificate` DER buffer in a syntactically complete X.509
+ * `Certificate` so `certPublicKey` (via `X509Certificate`) can parse it. See
+ * this section's module doc for why this exists and what it does and does
+ * not prove.
+ *
+ * @param {Buffer} tbsCertificateBytes
+ * @returns {Buffer}
+ */
+function wrapAsCertificate(tbsCertificateBytes) {
+  // sha256WithRSAEncryption + NULL params -- an arbitrary-but-valid
+  // AlgorithmIdentifier. Parses regardless of the wrapped key's real type
+  // (RSA or EC): d2i_X509 never cross-checks it against the
+  // subjectPublicKeyInfo's own algorithm.
+  const sigAlg = derSequence(
+    Buffer.concat([Buffer.from([0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b]), Buffer.from([0x05, 0x00])]),
+  );
+  const sigValue = derBitString(Buffer.alloc(64, 0x01));
+  return derSequence(Buffer.concat([tbsCertificateBytes, sigAlg, sigValue]));
+}
+
+// ---------------------------------------------------------------------
+// BigInt helpers for RSA-PSS's raw modular exponentiation. node:crypto's
+// built-in RSA_PKCS1_PSS_PADDING verification is NOT used here -- see
+// `verifyRsaPss`'s doc comment for why.
+// ---------------------------------------------------------------------
+
+function bytesToBigInt(buf) {
+  if (buf.length === 0) {
+    return 0n;
+  }
+  return BigInt(`0x${buf.toString('hex')}`);
+}
+
+function modPow(base, exponent, modulus) {
+  let result = 1n;
+  let b = base % modulus;
+  let e = exponent;
+  while (e > 0n) {
+    if (e & 1n) {
+      result = (result * b) % modulus;
+    }
+    e >>= 1n;
+    b = (b * b) % modulus;
+  }
+  return result;
+}
+
+/**
+ * RFC 8017 Appendix B.2.1: repeatedly hash `seed || counter` (counter as a
+ * 4-byte big-endian block), concatenate, and truncate to `outLen`.
+ *
+ * @param {Buffer} seed
+ * @param {number} outLen
+ * @param {string} hashName node:crypto digest name (e.g. `'sha256'`).
+ * @returns {Buffer}
+ */
+function mgf1(seed, outLen, hashName) {
+  const blocks = [];
+  let counter = 0;
+  let produced = 0;
+  while (produced < outLen) {
+    const counterBytes = Buffer.alloc(4);
+    counterBytes.writeUInt32BE(counter >>> 0, 0);
+    const block = crypto.createHash(hashName).update(Buffer.concat([seed, counterBytes])).digest();
+    blocks.push(block);
+    produced += block.length;
+    counter += 1;
+  }
+  return Buffer.concat(blocks).subarray(0, outLen);
+}
+
+// ---------------------------------------------------------------------
+// Per-scheme signature verification. Each returns `{ok:true}` on a verified
+// signature, or `{ok:false, skip:true, reason}` (caller reports `Skipped`)
+// / `{ok:false, skip:false, reason}` (caller reports `Invalid`) -- mirroring
+// the Option/Result split every Rust primitive in this task's spec makes
+// between "cannot be certain" and "affirmatively fails".
+//
+// All three verify against `cert.key` -- the certificate's own key, parsed
+// from `raw_dsc`/`raw_csca` -- never a key rebuilt from the supplied limbs.
+// The limbs are checked against the certificate separately, by
+// `keyMatchesCert`, before any of these run; the certificate is authoritative
+// for the key material used in the actual cryptographic check.
+// ---------------------------------------------------------------------
+
+/**
+ * RSA PKCS#1 v1.5, via `crypto.verify` directly. Safe to delegate to
+ * node:crypto/OpenSSL wholesale here (unlike PSS below): rsa.rs's PKCS#1 v1.5
+ * encoding has no documented divergence from RFC 8017 the circuit relies on.
+ */
+function verifyRsaPkcs1v15(cert, hashBits, message, sigLimbs, n) {
+  const hashName = SHA_NAME[hashBits];
+  if (!hashName) {
+    return { ok: false, skip: true, reason: `unknown sig_hash width: ${hashBits}` };
+  }
+  const sig = limbsToBigInt(sigLimbs, n);
+  if (sig === null) {
+    return { ok: false, skip: true, reason: 'signature does not reassemble into a valid integer' };
+  }
+  const modulusBits = cert.key.asymmetricKeyDetails && cert.key.asymmetricKeyDetails.modulusLength;
+  if (!modulusBits) {
+    return { ok: false, skip: true, reason: 'certificate key has no usable modulus length' };
+  }
+  const modulusBytes = Math.ceil(modulusBits / 8);
+  const sigBytes = bigIntToFixedBytes(sig, modulusBytes);
+  if (!sigBytes) {
+    return { ok: false, skip: true, reason: 'signature is wider than the certificate modulus' };
+  }
+  let ok;
+  try {
+    ok = crypto.verify(hashName, message, { key: cert.key, padding: crypto.constants.RSA_PKCS1_PADDING }, sigBytes);
+  } catch (err) {
+    return { ok: false, skip: true, reason: `RSA verification threw: ${err.message}` };
+  }
+  if (!ok) {
+    return { ok: false, skip: false, reason: 'signature does not verify under the certificate key' };
+  }
+  return { ok: true };
+}
+
+/**
+ * RSASSA-PSS, via a hand-rolled RFC 8017 Section 9.1.2 decode -- deliberately
+ * NOT `crypto.verify` with `RSA_PKCS1_PSS_PADDING`.
+ *
+ * rsapss.rs's module doc documents one deliberate divergence from the RFC:
+ * the circuit *clears* DB's leftmost bit rather than rejecting it when set
+ * (`rsapss65537.circom:162-168`), because an EM_LEN-byte value with that bit
+ * set can still land under the modulus for every key size these circuits
+ * use, and the circuit itself never treats that bit as meaningful. OpenSSL's
+ * own PSS verifier enforces the strict RFC check instead (rejects when that
+ * bit is set) -- and unlike an off-curve ECDSA key (a rare, adversarial
+ * edge case), this bit is the top bit of the *encoded message*, effectively
+ * a coin flip on genuinely valid, real-world signatures whenever `EM_LEN*8 -
+ * key_bits` leaves exactly one wasted bit -- which is every current PSS
+ * circuit here (2048/3072/4096-bit keys). Using `crypto.verify`'s native PSS
+ * mode would therefore falsely reject roughly half of otherwise-valid PSS
+ * signatures. So this function reimplements the circuit's own semantics
+ * directly: raw `modpow` (via BigInt, no library) plus MGF1 (via
+ * `crypto.createHash`), clearing rather than checking that bit -- mirroring
+ * rsapss.rs's `verify_pss` line for line. Do not "simplify" this back to
+ * `crypto.verify`'s PSS mode; that reintroduces the false reject this
+ * function exists to avoid.
+ */
+function verifyRsaPss(cert, hashBits, message, sigLimbs, n, saltLen) {
+  const hashName = SHA_NAME[hashBits];
+  if (!hashName) {
+    return { ok: false, skip: true, reason: `unknown sig_hash width: ${hashBits}` };
+  }
+  const sig = limbsToBigInt(sigLimbs, n);
+  if (sig === null) {
+    return { ok: false, skip: true, reason: 'signature does not reassemble into a valid integer' };
+  }
+  let jwk;
+  try {
+    jwk = cert.key.export({ format: 'jwk' });
+  } catch (err) {
+    return { ok: false, skip: true, reason: `could not export certificate key: ${err.message}` };
+  }
+  if (jwk.kty !== 'RSA' || typeof jwk.n !== 'string' || typeof jwk.e !== 'string') {
+    return { ok: false, skip: true, reason: 'certificate key is not a usable RSA key' };
+  }
+  const modulusBytes = Buffer.from(jwk.n, 'base64url');
+  const modulus = bytesToBigInt(modulusBytes);
+  const exponent = bytesToBigInt(Buffer.from(jwk.e, 'base64url'));
+  if (sig >= modulus) {
+    return { ok: false, skip: false, reason: 'PSS signature does not verify: signature is not less than modulus' };
+  }
+  const emLen = modulusBytes.length;
+  const mHash = digestBuffer(hashBits, message);
+  const hLen = mHash.length;
+  const minLen = hLen + saltLen + 2;
+  if (emLen < minLen) {
+    return {
+      ok: false,
+      skip: true,
+      reason: `EM length ${emLen} too short for hash ${hLen} + salt ${saltLen}`,
+    };
+  }
+  const emInt = modPow(sig, exponent, modulus);
+  const em = bigIntToFixedBytes(emInt, emLen);
+  if (!em) {
+    return { ok: false, skip: false, reason: 'PSS signature does not verify: EM exceeds the expected length' };
+  }
+  if (em[em.length - 1] !== 0xbc) {
+    return {
+      ok: false,
+      skip: false,
+      reason: `PSS signature does not verify: EM does not end in 0xbc (found 0x${em[em.length - 1].toString(16)})`,
+    };
+  }
+  const dbLen = emLen - hLen - 1;
+  const maskedDb = em.subarray(0, dbLen);
+  const hField = em.subarray(dbLen, dbLen + hLen);
+  const mask = mgf1(hField, dbLen, hashName);
+  const db = Buffer.alloc(dbLen);
+  for (let i = 0; i < dbLen; i++) {
+    db[i] = maskedDb[i] ^ mask[i];
+  }
+  // rsapss65537.circom:162-168 CLEARS this bit rather than checking it --
+  // see this function's doc comment. Checking it (as RFC 8017 step 9 would)
+  // would reject inputs the circuit accepts, which is exactly the false
+  // reject this whole function exists to avoid.
+  if (dbLen > 0) {
+    db[0] &= 0x7f;
+  }
+  const zeroLen = dbLen - saltLen - 1;
+  if (zeroLen < 0) {
+    return { ok: false, skip: true, reason: `DB length ${dbLen} is too short for salt length ${saltLen}` };
+  }
+  for (let i = 0; i < zeroLen; i++) {
+    if (db[i] !== 0) {
+      return { ok: false, skip: false, reason: 'PSS signature does not verify: DB padding is not all zero' };
+    }
+  }
+  if (db[zeroLen] !== 0x01) {
+    return {
+      ok: false,
+      skip: false,
+      reason: `PSS signature does not verify: DB 0x01 separator missing (found 0x${db[zeroLen].toString(16)})`,
+    };
+  }
+  const salt = db.subarray(zeroLen + 1);
+  const mPrime = Buffer.concat([Buffer.alloc(8), mHash, salt]);
+  const hPrime = crypto.createHash(hashName).update(mPrime).digest();
+  if (Buffer.compare(hPrime, hField) !== 0) {
+    return { ok: false, skip: false, reason: 'PSS signature does not verify: H mismatch' };
+  }
+  return { ok: true };
+}
+
+/**
+ * ECDSA (NIST or brainpool -- both go through this one path, see this file's
+ * report), via `crypto.verify` with `dsaEncoding: 'ieee-p1363'` and `r || s`
+ * each left-padded to the certificate's own field width (read from the
+ * certificate's SPKI point via `extractEcPoint`, not a hardcoded per-curve
+ * table). Unlike PSS, node:crypto's own ECDSA verification has no documented
+ * divergence from the circuit's semantics (`ecdsaVerifier.circom:27-41`'s
+ * short-digest left-pad is the standard FIPS 186-4 `bits2int` behaviour, and
+ * a digest interpreted directly as a big-endian integer already IS that
+ * left-pad -- there is no library-specific floor to work around here the way
+ * RustCrypto's `bits2field` needed one).
+ *
+ * `rLimbs`/`sLimbs` are already split into their own `k`-limb halves by the
+ * caller.
+ */
+function verifyEcdsa(cert, hashBits, message, rLimbs, sLimbs, n) {
+  const hashName = SHA_NAME[hashBits];
+  if (!hashName) {
+    return { ok: false, skip: true, reason: `unknown sig_hash width: ${hashBits}` };
+  }
+  const r = limbsToBigInt(rLimbs, n);
+  const s = limbsToBigInt(sLimbs, n);
+  if (r === null || s === null) {
+    return { ok: false, skip: true, reason: 'signature does not reassemble into a valid integer' };
+  }
+  let spkiDer;
+  try {
+    spkiDer = cert.key.export({ format: 'der', type: 'spki' });
+  } catch (err) {
+    return { ok: false, skip: true, reason: `could not export certificate key: ${err.message}` };
+  }
+  const point = extractEcPoint(spkiDer);
+  if (!point) {
+    return { ok: false, skip: true, reason: 'certificate key is not a readable EC point' };
+  }
+  const fieldBytes = point.x.length;
+  const rBytes = bigIntToFixedBytes(r, fieldBytes);
+  const sBytes = bigIntToFixedBytes(s, fieldBytes);
+  if (!rBytes || !sBytes) {
+    return { ok: false, skip: true, reason: 'signature scalar is wider than the curve field' };
+  }
+  const sigBytes = Buffer.concat([rBytes, sBytes]);
+  let ok;
+  try {
+    ok = crypto.verify(hashName, message, { key: cert.key, dsaEncoding: 'ieee-p1363' }, sigBytes);
+  } catch (err) {
+    // A small, documented divergence from passport.rs/dsc.rs's ECDSA arm:
+    // Rust distinguishes an off-curve key (Structural -> Skipped) from a
+    // failed verification (Failed -> Invalid) because it reconstructs the
+    // EC point from raw limbs, which can be off-curve. This module never
+    // does that -- the point always comes from a real certificate that
+    // OpenSSL's own X.509 parser accepted -- so that specific Structural
+    // case does not arise the same way here. If `crypto.verify` still
+    // throws (a malformed key/signature shape it cannot even attempt),
+    // that is a structural uncertainty, not a circuit-equivalent failure.
+    return { ok: false, skip: true, reason: `ECDSA verification threw: ${err.message}` };
+  }
+  if (!ok) {
+    return { ok: false, skip: false, reason: 'ECDSA signature does not verify' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Dispatches to the right signature primitive for `scheme`. `sigLimbs` is
+ * the full limb array as it arrives on the wire (a single `k`-limb integer
+ * for RSA/RSA-PSS, `2k` limbs for ECDSA) -- the ECDSA split happens here,
+ * with its own limb-count check first (mirrors passport.rs/dsc.rs's explicit
+ * `sig_limbs.len() != 2 * k` guard, Skipped on mismatch, distinct from a
+ * value that reassembles but does not verify).
+ */
+function verifySignatureLink(scheme, cert, hashBits, message, sigLimbs, n, k, saltLen) {
+  if (scheme === 'rsa') {
+    return verifyRsaPkcs1v15(cert, hashBits, message, sigLimbs, n);
+  }
+  if (scheme === 'rsapss') {
+    return verifyRsaPss(cert, hashBits, message, sigLimbs, n, saltLen);
+  }
+  if (scheme === 'ecdsa') {
+    if (sigLimbs.length !== 2 * k) {
+      return {
+        ok: false,
+        skip: true,
+        reason: `signature has ${sigLimbs.length} limbs, expected 2*k=${2 * k}`,
+      };
+    }
+    return verifyEcdsa(cert, hashBits, message, sigLimbs.slice(0, k), sigLimbs.slice(k, 2 * k), n);
+  }
+  return { ok: false, skip: true, reason: `unsupported scheme: ${scheme}` };
+}
+
+// ---------------------------------------------------------------------
+// Circuit-name parsing. Parses the name's own components (hash tags,
+// scheme, exponent-or-curve) rather than building a table keyed by full
+// circuit name, and never tries multiple algorithms to see which one
+// verifies -- see this file's report for the (n, k) simplification this
+// enables relative to params.rs's per-instance-file tables.
+// ---------------------------------------------------------------------
+
+const SHA_BITS = { sha1: 160, sha224: 224, sha256: 256, sha384: 384, sha512: 512 };
+
+// Every current RSA and RSASSA-PSS register/register_id/DSC circuit uses
+// these exact limb parameters (verified against params.rs's RSA_LIMBS,
+// DSC_RSA_LIMBS, PSS_SALT_AND_KEY_LENGTH, and DSC_PSS_SALT_AND_KEY_LENGTH
+// tables -- every single row in all four is `(120, 35)`), regardless of the
+// actual RSA modulus size (2048/3072/4096 bits all fit in 35 limbs of 120
+// bits with room to spare). A genuine circuit-wide constant, not a
+// per-circuit-name table entry.
+const RSA_N = 120;
+const RSA_K = 35;
+
+// (n, k) depends only on the curve, not on which circuit family uses it --
+// confirmed identical across params.rs's ECDSA_LIMBS/ECDSA_BRAINPOOL_LIMBS
+// (register family) and DSC_ECDSA_LIMBS/DSC_ECDSA_BRAINPOOL_LIMBS (DSC
+// family) tables for every curve both cover. This is curve-intrinsic wire
+// parameterization (how many 2^n-base limbs the circuit encodes each
+// coordinate/scalar in), not a per-circuit-name lookup table -- 8 entries
+// total, one per deployed curve, register and DSC alike.
+const CURVE_PARAMS = {
+  secp224r1: { n: 32, k: 7 },
+  secp256r1: { n: 64, k: 4 },
+  secp384r1: { n: 64, k: 6 },
+  secp521r1: { n: 66, k: 8 },
+  brainpoolP224r1: { n: 32, k: 7 },
+  brainpoolP256r1: { n: 64, k: 4 },
+  brainpoolP384r1: { n: 64, k: 6 },
+  brainpoolP512r1: { n: 64, k: 8 },
+};
+
+/**
+ * Parses the scheme-and-onward suffix of a circuit name -- `rsa_<e>_<bits>`,
+ * `rsapss_<e>_<salt>_<bits>`, or `ecdsa_<curve>` -- starting at `parts[at]`.
+ * Shared verbatim between the register family (`at = 3`, after the three
+ * hash tags) and the DSC family (`at = 1`, after the single hash tag): the
+ * scheme grammar itself does not differ between the two, only how many hash
+ * components precede it.
+ *
+ * `e` and `bits` are validated (must parse as plain decimal integers) but
+ * their *values* are intentionally unused: this module verifies with the
+ * certificate's own key (see this file's report), so the circuit name's
+ * claimed exponent/key-length never feeds into any cryptographic
+ * calculation -- only `salt_len` (RSA-PSS) and the curve (ECDSA) do, since
+ * those select real behaviour (the fixed salt length the circuit's own
+ * padding assumes, and the limb width for reassembly) that the certificate
+ * cannot supply by itself.
+ *
+ * @returns {{scheme:'rsa', n:number, k:number} |
+ *   {scheme:'rsapss', n:number, k:number, saltLen:number} |
+ *   {scheme:'ecdsa', curve:string, n:number, k:number} | null}
+ */
+function parseSchemeSuffix(parts, at) {
+  const isDecimal = (s) => /^[0-9]+$/.test(s);
+  const token = parts[at];
+  if (token === 'rsa') {
+    if (parts.length !== at + 3 || !isDecimal(parts[at + 1]) || !isDecimal(parts[at + 2])) {
+      return null;
+    }
+    return { scheme: 'rsa', n: RSA_N, k: RSA_K };
+  }
+  if (token === 'rsapss') {
+    if (parts.length !== at + 4 || !isDecimal(parts[at + 1]) || !isDecimal(parts[at + 2]) || !isDecimal(parts[at + 3])) {
+      return null;
+    }
+    return { scheme: 'rsapss', n: RSA_N, k: RSA_K, saltLen: Number(parts[at + 2]) };
+  }
+  if (token === 'ecdsa') {
+    if (parts.length !== at + 2) {
+      return null;
+    }
+    const curve = parts[at + 1];
+    const cp = CURVE_PARAMS[curve];
+    if (!cp) {
+      return null;
+    }
+    return { scheme: 'ecdsa', curve, n: cp.n, k: cp.k };
+  }
+  return null;
+}
+
+/**
+ * Parses a circuit name into the family and scheme parameters this module's
+ * verify functions need. `null` for anything unrecognized -- an unknown
+ * circuit name is `Skipped` upstream, never a guess.
+ *
+ * Register/EU-ID names carry three hash tags (`register_<dg>_<econtent>_
+ * <sig>_<scheme>...`); DSC names carry one (`dsc_<sig>_<scheme>...`) --
+ * handled as two entirely separate branches (not a shared "split and hope"),
+ * since assuming the register shape would misread every DSC name (e.g.
+ * reading `"rsa"` as if it were the register grammar's 4th component).
+ *
+ * `register_aadhaar` and `register_kyc` are exact-name special cases with no
+ * hash-tag suffix at all -- see `verifyAadhaar`'s and this file's report's
+ * notes on KYC.
+ *
+ * @param {string} name
+ * @returns {object | null}
+ */
+export function parseCircuitName(name) {
+  if (name === 'register_kyc') {
+    // KYC (EdDSA over BabyJubJub + Poseidon2) has no node:crypto-representable
+    // scheme at all -- see this file's report. Recognized (not `null`, which
+    // would read as "unknown circuit") so `verify` can report a specific,
+    // honest skip reason rather than a generic one.
+    return { family: 'kyc' };
+  }
+  if (name === 'register_aadhaar') {
+    // register_aadhaar.circom instantiates REGISTER_AADHAAR(121, 17, ...) --
+    // a different template with a different argument order than
+    // REGISTER/REGISTER_ID, transcribed directly from params.rs's
+    // register_aadhaar branch (n=121, k=17, fixed RSA-65537).
+    return { family: 'aadhaar', sigHash: 256, scheme: 'rsa', n: 121, k: 17 };
+  }
+  if (name.startsWith('dsc_')) {
+    const rest = name.slice('dsc_'.length);
+    const parts = rest.split('_');
+    if (parts.length < 2) {
+      return null;
+    }
+    const sigHash = SHA_BITS[parts[0]];
+    if (!sigHash) {
+      return null;
+    }
+    const schemeInfo = parseSchemeSuffix(parts, 1);
+    if (!schemeInfo) {
+      return null;
+    }
+    return { family: 'dsc', sigHash, ...schemeInfo };
+  }
+  let rest;
+  if (name.startsWith('register_id_')) {
+    rest = name.slice('register_id_'.length);
+  } else if (name.startsWith('register_')) {
+    rest = name.slice('register_'.length);
+  } else {
+    return null;
+  }
+  const parts = rest.split('_');
+  if (parts.length < 4) {
+    return null;
+  }
+  const dgHash = SHA_BITS[parts[0]];
+  const econtentHash = SHA_BITS[parts[1]];
+  const sigHash = SHA_BITS[parts[2]];
+  if (!dgHash || !econtentHash || !sigHash) {
+    return null;
+  }
+  const schemeInfo = parseSchemeSuffix(parts, 3);
+  if (!schemeInfo) {
+    return null;
+  }
+  return { family: 'register', dgHash, econtentHash, sigHash, ...schemeInfo };
+}
+
+// ---------------------------------------------------------------------
+// Register/EU-ID family: the three-link chain from passportVerifier.circom.
+// ---------------------------------------------------------------------
+
+/**
+ * Verifies a `register_*`/`register_id_*` input. Four links, all required:
+ *
+ * 1. `sha(dg1)` equals `eContent[dg1_hash_offset .. +dg_hash/8]`.
+ * 2. `sha(recoverMessage(eContent, eContent_padded_length))` equals
+ *    `signed_attr[signed_attr_econtent_hash_offset .. +econtent_hash/8]`.
+ * 3. `pubKey_dsc` equals the key embedded in `raw_dsc` at `dsc_pubKey_offset`
+ *    (for `dsc_pubKey_actual_size` bytes) -- **not** checked by
+ *    `src/verifier/passport.rs` today (see this file's report: passport.rs
+ *    never reads `raw_dsc`/`dsc_pubKey_offset`/`dsc_pubKey_actual_size` at
+ *    all, unlike `dsc.rs`'s analogous `csca_pubKey` link). This module adds
+ *    it deliberately, mirroring `dsc.rs`'s own module doc verbatim --
+ *    "without this link any key matching any signature passes" -- and per
+ *    this task's own Step 1 test list, which requires exactly this mutation
+ *    (`pubKey_dsc` no longer matching its certificate) to be `Invalid`. It
+ *    never fires for a genuine document: the real circuit enforces this
+ *    same link at `register.circom:102-135`, so `pubKey_dsc` always matches
+ *    its embedded certificate for every real input, tampered or not
+ *    otherwise. Closes a real (if narrow) gap without changing any verdict
+ *    on real traffic.
+ * 4. `signature_passport` verifies over
+ *    `sha(recoverMessage(signed_attr, signed_attr_padded_length))` under the
+ *    certificate's own key.
+ *
+ * @param {object} inputs
+ * @param {object} p a `parseCircuitName` result with `family: 'register'`.
+ */
+function verifyRegisterFamily(inputs, p) {
+  const dg1Strs = fieldAsStrings(inputs.dg1);
+  if (!dg1Strs) {
+    return skipped('missing or malformed field: dg1');
+  }
+  const dg1 = bytesFromDecimalStrings(dg1Strs);
+  if (!dg1) {
+    return skipped('dg1 contains a non-byte value');
+  }
+  const dg1HashOffset = scalarUsize(inputs.dg1_hash_offset);
+  if (dg1HashOffset === null) {
+    return skipped('missing or malformed field: dg1_hash_offset');
+  }
+
+  const econtentStrs = fieldAsStrings(inputs.eContent);
+  if (!econtentStrs) {
+    return skipped('missing or malformed field: eContent');
+  }
+  const econtent = bytesFromDecimalStrings(econtentStrs);
+  if (!econtent) {
+    return skipped('eContent contains a non-byte value');
+  }
+  const econtentPaddedLength = scalarUsize(inputs.eContent_padded_length);
+  if (econtentPaddedLength === null) {
+    return skipped('missing or malformed field: eContent_padded_length');
+  }
+
+  const signedAttrStrs = fieldAsStrings(inputs.signed_attr);
+  if (!signedAttrStrs) {
+    return skipped('missing or malformed field: signed_attr');
+  }
+  const signedAttr = bytesFromDecimalStrings(signedAttrStrs);
+  if (!signedAttr) {
+    return skipped('signed_attr contains a non-byte value');
+  }
+  const signedAttrPaddedLength = scalarUsize(inputs.signed_attr_padded_length);
+  if (signedAttrPaddedLength === null) {
+    return skipped('missing or malformed field: signed_attr_padded_length');
+  }
+  const saEcontentHashOffset = scalarUsize(inputs.signed_attr_econtent_hash_offset);
+  if (saEcontentHashOffset === null) {
+    return skipped('missing or malformed field: signed_attr_econtent_hash_offset');
+  }
+
+  const pubkeyLimbs = fieldAsStrings(inputs.pubKey_dsc);
+  if (!pubkeyLimbs) {
+    return skipped('missing or malformed field: pubKey_dsc');
+  }
+  const sigLimbs = fieldAsStrings(inputs.signature_passport);
+  if (!sigLimbs) {
+    return skipped('missing or malformed field: signature_passport');
+  }
+
+  const rawDscStrs = fieldAsStrings(inputs.raw_dsc);
+  if (!rawDscStrs) {
+    return skipped('missing or malformed field: raw_dsc');
+  }
+  const rawDsc = bytesFromDecimalStrings(rawDscStrs);
+  if (!rawDsc) {
+    return skipped('raw_dsc contains a non-byte value');
+  }
+  const rawDscActualLength = scalarUsize(inputs.raw_dsc_actual_length);
+  if (rawDscActualLength === null) {
+    return skipped('missing or malformed field: raw_dsc_actual_length');
+  }
+  const dscPubKeyOffset = scalarUsize(inputs.dsc_pubKey_offset);
+  if (dscPubKeyOffset === null) {
+    return skipped('missing or malformed field: dsc_pubKey_offset');
+  }
+  const dscPubKeyActualSize = scalarUsize(inputs.dsc_pubKey_actual_size);
+  if (dscPubKeyActualSize === null) {
+    return skipped('missing or malformed field: dsc_pubKey_actual_size');
+  }
+
+  // --- offset bounds, passportVerifier.circom:53-66: violation => Invalid ---
+  const dgHashLen = p.dgHash / 8;
+  const dgReason = checkOffsetRangeInvalid(dg1HashOffset, dgHashLen, econtentPaddedLength, 'dg1_hash_offset');
+  if (dgReason) {
+    return invalid(dgReason);
+  }
+  const ecHashLen = p.econtentHash / 8;
+  const ecReason = checkOffsetRangeInvalid(
+    saEcontentHashOffset,
+    ecHashLen,
+    signedAttrPaddedLength,
+    'signed_attr_econtent_hash_offset',
+  );
+  if (ecReason) {
+    return invalid(ecReason);
+  }
+
+  // --- link 1: sha(dg1) == eContent[dg1_hash_offset .. +dg_hash/8] ---
+  const dg1Digest = digestBuffer(p.dgHash, dg1);
+  if (!dg1Digest) {
+    return skipped(`unknown dg_hash width: ${p.dgHash}`);
+  }
+  if (dg1HashOffset + dgHashLen > econtent.length) {
+    return skipped('eContent is shorter than dg1_hash_offset + dg_hash/8 declares');
+  }
+  const econtentWindow = econtent.subarray(dg1HashOffset, dg1HashOffset + dgHashLen);
+  if (Buffer.compare(dg1Digest, econtentWindow) !== 0) {
+    return invalid('dg1 hash does not match eContent at dg1_hash_offset');
+  }
+
+  // --- link 2: sha(recoverMessage(eContent)) == signed_attr window ---
+  const econtentMsg = recoverMessage(econtent, econtentPaddedLength);
+  if (!econtentMsg) {
+    return skipped('eContent padding is malformed or inconsistent with eContent_padded_length');
+  }
+  const econtentDigest = digestBuffer(p.econtentHash, econtentMsg);
+  if (!econtentDigest) {
+    return skipped(`unknown econtent_hash width: ${p.econtentHash}`);
+  }
+  if (saEcontentHashOffset + ecHashLen > signedAttr.length) {
+    return skipped('signed_attr is shorter than signed_attr_econtent_hash_offset + econtent_hash/8 declares');
+  }
+  const signedAttrWindow = signedAttr.subarray(saEcontentHashOffset, saEcontentHashOffset + ecHashLen);
+  if (Buffer.compare(econtentDigest, signedAttrWindow) !== 0) {
+    return invalid('eContent hash does not match signed_attr at signed_attr_econtent_hash_offset');
+  }
+
+  // --- link 3: pubKey_dsc must equal the key embedded in raw_dsc's certificate ---
+  // (see this function's doc comment for why this link exists here even
+  // though passport.rs itself does not check it)
+  if (!offsetInRangeSkip(dscPubKeyOffset, dscPubKeyActualSize, rawDscActualLength)) {
+    return skipped(
+      `dsc_pubKey_offset (${dscPubKeyOffset}) + dsc_pubKey_actual_size (${dscPubKeyActualSize}) is out of range for raw_dsc_actual_length (${rawDscActualLength})`,
+    );
+  }
+  if (rawDscActualLength > rawDsc.length) {
+    return skipped('raw_dsc is shorter than raw_dsc_actual_length declares');
+  }
+  const dscTbs = rawDsc.subarray(0, rawDscActualLength);
+  const dscCert = certPublicKey(wrapAsCertificate(dscTbs));
+  if (!dscCert) {
+    return skipped('raw_dsc does not parse as a readable certificate');
+  }
+  const keyScheme = p.scheme === 'ecdsa' ? 'ecdsa' : 'rsa';
+  // Mirrors passport.rs's/dsc.rs's explicit `pubkey_limbs.len() != 2 * k`
+  // ECDSA guard (Skipped, distinct from a value that reassembles but
+  // mismatches). RSA/RSA-PSS has no analogous check in the Rust reference
+  // either (see this file's report), so none is added here.
+  if (keyScheme === 'ecdsa' && pubkeyLimbs.length !== 2 * p.k) {
+    return skipped(`pubKey_dsc has ${pubkeyLimbs.length} limbs, expected 2*k=${2 * p.k}`);
+  }
+  if (!keyMatchesCert(pubkeyLimbs, p.n, p.k, dscCert, keyScheme)) {
+    return invalid('pubKey_dsc does not match the certificate embedded in raw_dsc at dsc_pubKey_offset');
+  }
+
+  // --- link 4: signature_passport verifies over sha(recoverMessage(signed_attr)) under the certificate's key ---
+  const signedAttrMsg = recoverMessage(signedAttr, signedAttrPaddedLength);
+  if (!signedAttrMsg) {
+    return skipped('signed_attr padding is malformed or inconsistent with signed_attr_padded_length');
+  }
+  const result = verifySignatureLink(p.scheme, dscCert, p.sigHash, signedAttrMsg, sigLimbs, p.n, p.k, p.saltLen);
+  if (!result.ok) {
+    return result.skip ? skipped(result.reason) : invalid(result.reason);
+  }
+
+  return valid();
+}
+
+// ---------------------------------------------------------------------
+// DSC family: the one-link chain from dsc.circom (a CSCA signing a DSC).
+// ---------------------------------------------------------------------
+
+/**
+ * Verifies a `dsc_*` input. Two links, both required:
+ *
+ * 1. `csca_pubKey` equals the key embedded in `raw_csca` at
+ *    `csca_pubKey_offset` (for `csca_pubKey_actual_size` bytes) --
+ *    `dsc.circom:171-192`, the link that makes this more than a bare
+ *    signature check.
+ * 2. `signature` verifies over `sig_hash(recoverMessage(raw_dsc,
+ *    raw_dsc_padded_length))` under the certificate's own key.
+ *
+ * Link 1 is checked, and can return `Invalid`, strictly before any
+ * signature-related parsing -- mirrors dsc.rs's ordering guarantee that a
+ * corrupted `csca_pubKey` is always reported as a certificate-key mismatch,
+ * never mistaken for (or masked by) a signature failure.
+ *
+ * `dg_hash`/`econtent_hash` are meaningless for this family (a CSCA signing
+ * a DSC has no dg1<->eContent<->signed_attr chain at all) and are never read
+ * here -- `p.sigHash` is the only hash width this function uses.
+ */
+function verifyDscFamily(inputs, p) {
+  const rawCscaStrs = fieldAsStrings(inputs.raw_csca);
+  if (!rawCscaStrs) {
+    return skipped('missing or malformed field: raw_csca');
+  }
+  const rawCsca = bytesFromDecimalStrings(rawCscaStrs);
+  if (!rawCsca) {
+    return skipped('raw_csca contains a non-byte value');
+  }
+  const rawCscaActualLength = scalarUsize(inputs.raw_csca_actual_length);
+  if (rawCscaActualLength === null) {
+    return skipped('missing or malformed field: raw_csca_actual_length');
+  }
+  const cscaPubkeyOffset = scalarUsize(inputs.csca_pubKey_offset);
+  if (cscaPubkeyOffset === null) {
+    return skipped('missing or malformed field: csca_pubKey_offset');
+  }
+  const cscaPubkeyActualSize = scalarUsize(inputs.csca_pubKey_actual_size);
+  if (cscaPubkeyActualSize === null) {
+    return skipped('missing or malformed field: csca_pubKey_actual_size');
+  }
+
+  const rawDscStrs = fieldAsStrings(inputs.raw_dsc);
+  if (!rawDscStrs) {
+    return skipped('missing or malformed field: raw_dsc');
+  }
+  const rawDsc = bytesFromDecimalStrings(rawDscStrs);
+  if (!rawDsc) {
+    return skipped('raw_dsc contains a non-byte value');
+  }
+  const rawDscPaddedLength = scalarUsize(inputs.raw_dsc_padded_length);
+  if (rawDscPaddedLength === null) {
+    return skipped('missing or malformed field: raw_dsc_padded_length');
+  }
+
+  const pubkeyLimbs = fieldAsStrings(inputs.csca_pubKey);
+  if (!pubkeyLimbs) {
+    return skipped('missing or malformed field: csca_pubKey');
+  }
+  const sigLimbs = fieldAsStrings(inputs.signature);
+  if (!sigLimbs) {
+    return skipped('missing or malformed field: signature');
+  }
+
+  // --- offset bounds, dsc.circom:110-127: violation => Skipped (see this
+  // section's module doc on why this is Skipped, not Invalid, unlike the
+  // register family's dg1/eContent offsets) ---
+  if (!offsetInRangeSkip(cscaPubkeyOffset, cscaPubkeyActualSize, rawCscaActualLength)) {
+    return skipped(
+      `csca_pubKey_offset (${cscaPubkeyOffset}) + csca_pubKey_actual_size (${cscaPubkeyActualSize}) is out of range for raw_csca_actual_length (${rawCscaActualLength})`,
+    );
+  }
+  if (rawCscaActualLength > rawCsca.length) {
+    return skipped('raw_csca is shorter than raw_csca_actual_length declares');
+  }
+
+  // --- link 1: csca_pubKey must equal the key embedded in raw_csca's certificate ---
+  const cscaTbs = rawCsca.subarray(0, rawCscaActualLength);
+  const cscaCert = certPublicKey(wrapAsCertificate(cscaTbs));
+  if (!cscaCert) {
+    return skipped('raw_csca does not parse as a readable certificate');
+  }
+  const keyScheme = p.scheme === 'ecdsa' ? 'ecdsa' : 'rsa';
+  if (p.scheme === 'ecdsa' && pubkeyLimbs.length !== 2 * p.k) {
+    return skipped(`csca_pubKey has ${pubkeyLimbs.length} limbs, expected 2*k=${2 * p.k}`);
+  }
+  if (!keyMatchesCert(pubkeyLimbs, p.n, p.k, cscaCert, keyScheme)) {
+    return invalid('csca_pubKey does not match the certificate embedded in raw_csca at csca_pubKey_offset');
+  }
+
+  // --- link 2: signature verifies over sig_hash(recoverMessage(raw_dsc)) under the certificate's key ---
+  const rawDscMsg = recoverMessage(rawDsc, rawDscPaddedLength);
+  if (!rawDscMsg) {
+    return skipped('raw_dsc padding is malformed or inconsistent with raw_dsc_padded_length');
+  }
+  const result = verifySignatureLink(p.scheme, cscaCert, p.sigHash, rawDscMsg, sigLimbs, p.n, p.k, p.saltLen);
+  if (!result.ok) {
+    return result.skip ? skipped(result.reason) : invalid(result.reason);
+  }
+
+  return valid();
+}
+
+// ---------------------------------------------------------------------
+// Aadhaar: one hash, one RSA verify, no chain at all (register_aadhaar.circom
+// has no dg1/eContent/signed_attr concept -- see aadhaar.rs's module doc).
+// No certificate exists for this family either; `pubKey` is used directly,
+// reconstructed into a real `KeyObject` so node:crypto -- not a hand-rolled
+// modexp -- performs the actual verification.
+// ---------------------------------------------------------------------
+
+function verifyAadhaar(inputs, p) {
+  const qrStrs = fieldAsStrings(inputs.qrDataPadded);
+  if (!qrStrs) {
+    return skipped('missing or malformed field: qrDataPadded');
+  }
+  const qrPadded = bytesFromDecimalStrings(qrStrs);
+  if (!qrPadded) {
+    return skipped('qrDataPadded contains a non-byte value');
+  }
+  const qrPaddedLen = scalarUsize(inputs.qrDataPaddedLength);
+  if (qrPaddedLen === null) {
+    return skipped('missing or malformed field: qrDataPaddedLength');
+  }
+
+  const pubkeyLimbs = fieldAsStrings(inputs.pubKey);
+  if (!pubkeyLimbs) {
+    return skipped('missing or malformed field: pubKey');
+  }
+  const modulus = limbsToBigInt(pubkeyLimbs, p.n);
+  if (modulus === null) {
+    return skipped('pubKey does not reassemble into a valid integer');
+  }
+
+  const sigLimbs = fieldAsStrings(inputs.signature);
+  if (!sigLimbs) {
+    return skipped('missing or malformed field: signature');
+  }
+  const signature = limbsToBigInt(sigLimbs, p.n);
+  if (signature === null) {
+    return skipped('signature does not reassemble into a valid integer');
+  }
+
+  const qrMsg = recoverMessage(qrPadded, qrPaddedLen);
+  if (!qrMsg) {
+    return skipped('qrDataPadded padding is malformed or inconsistent with qrDataPaddedLength');
+  }
+
+  // params.rs's register_aadhaar branch fixes the modulus at 2048 bits
+  // (Scheme::Rsa{e:65537,bits:2048}) -- 256 bytes.
+  const modulusBytes = bigIntToFixedBytes(modulus, 256);
+  if (!modulusBytes) {
+    return skipped('pubKey is wider than the expected 2048-bit Aadhaar modulus');
+  }
+  const sigBytes = bigIntToFixedBytes(signature, 256);
+  if (!sigBytes) {
+    return skipped('signature is wider than the expected 2048-bit Aadhaar modulus');
+  }
+
+  let publicKey;
+  try {
+    publicKey = crypto.createPublicKey({
+      key: { kty: 'RSA', n: modulusBytes.toString('base64url'), e: Buffer.from([0x01, 0x00, 0x01]).toString('base64url') },
+      format: 'jwk',
+    });
+  } catch (err) {
+    return skipped(`pubKey does not form a usable RSA key: ${err.message}`);
+  }
+
+  let ok;
+  try {
+    ok = crypto.verify('sha256', qrMsg, { key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, sigBytes);
+  } catch (err) {
+    return skipped(`RSA verification threw: ${err.message}`);
+  }
+  if (!ok) {
+    return invalid('Aadhaar signature does not verify');
+  }
+  return valid();
+}
+
+// ---------------------------------------------------------------------
+// Top-level dispatch and the stdin/stdout CLI contract.
+// ---------------------------------------------------------------------
+
+/**
+ * Verifies `inputs` (already-parsed circuit-input JSON) against
+ * `circuitName`, returning `{verdict:'valid'}`, `{verdict:'invalid',
+ * reason}`, or `{verdict:'skipped', reason}`. Never throws.
+ *
+ * `register_kyc` (EdDSA over BabyJubJub + Poseidon2) is recognized but always
+ * `Skipped`: neither `node:crypto` nor any dependency this module is allowed
+ * (zero, by constraint) can verify that scheme. This has no practical effect
+ * on production dispatch either way -- `src/verifier/mod.rs`'s `dispatch`
+ * matches `register_kyc` before the generic `register` prefix and routes it
+ * straight to the native Rust `kyc::verify`, in every version of this plan,
+ * including after Task 4 (whose own brief says so explicitly: "KYC stays").
+ * This module is simply never invoked with that circuit name in production.
+ *
+ * @param {string} circuitName
+ * @param {unknown} inputs
+ * @returns {{verdict:'valid'} | {verdict:'invalid'|'skipped', reason:string}}
+ */
+export function verify(circuitName, inputs) {
+  if (typeof inputs !== 'object' || inputs === null || Array.isArray(inputs)) {
+    return skipped('input.json is not a JSON object');
+  }
+  const p = parseCircuitName(circuitName);
+  if (!p) {
+    return skipped(`unknown or unsupported circuit: ${circuitName}`);
+  }
+  if (p.family === 'kyc') {
+    return skipped(
+      'register_kyc uses EdDSA over BabyJubJub + Poseidon2, which this node:crypto-only verifier cannot check; ' +
+        'production dispatch never routes this circuit to this verifier either (it is handled natively in Rust)',
+    );
+  }
+  if (p.family === 'aadhaar') {
+    return verifyAadhaar(inputs, p);
+  }
+  if (p.family === 'dsc') {
+    return verifyDscFamily(inputs, p);
+  }
+  if (p.family === 'register') {
+    return verifyRegisterFamily(inputs, p);
+  }
+  return skipped(`unhandled circuit family for ${circuitName}`);
+}
+
+function writeVerdict(result) {
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+}
+
+/**
+ * The CLI entrypoint Task 4's Rust client drives:
+ * `stdin: {"circuit":"...","inputPath":"/tmp/.../input.json"}`, `stdout` one
+ * JSON verdict line. Exit 0 whenever a verdict was written -- which is
+ * always, short of stdin itself being unreadable -- reserving a non-zero
+ * exit for a genuinely unexpected failure (see this file's report).
+ */
+function main() {
+  let requestRaw;
+  try {
+    requestRaw = fs.readFileSync(0, 'utf8');
+  } catch (err) {
+    process.stderr.write(`could not read stdin: ${err.message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    let request;
+    try {
+      request = JSON.parse(requestRaw);
+    } catch (err) {
+      writeVerdict(skipped(`stdin is not valid JSON: ${err.message}`));
+      return;
+    }
+    if (
+      typeof request !== 'object' ||
+      request === null ||
+      typeof request.circuit !== 'string' ||
+      typeof request.inputPath !== 'string'
+    ) {
+      writeVerdict(skipped('stdin JSON must be an object with string "circuit" and "inputPath" fields'));
+      return;
+    }
+
+    let inputsRaw;
+    try {
+      inputsRaw = fs.readFileSync(request.inputPath, 'utf8');
+    } catch (err) {
+      writeVerdict(skipped(`could not read inputPath: ${err.message}`));
+      return;
+    }
+    let inputs;
+    try {
+      inputs = JSON.parse(inputsRaw);
+    } catch (err) {
+      writeVerdict(skipped(`inputPath is not valid JSON: ${err.message}`));
+      return;
+    }
+
+    writeVerdict(verify(request.circuit, inputs));
+  } catch (err) {
+    // Belt-and-braces: every function this module calls is documented to
+    // return null/false/a verdict rather than throw, but a top-level catch
+    // here means a bug in that discipline still produces a verdict (Skipped)
+    // instead of a crash with no output at all -- see the contract's "exit 0
+    // whenever a verdict was written" requirement.
+    writeVerdict(skipped(`unexpected error: ${err && err.message ? err.message : String(err)}`));
+  }
+}
+
+// Only run the CLI when this file is executed directly (`node verify.mjs`),
+// not when imported by the test suite.
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  main();
 }
