@@ -23,12 +23,15 @@ import crypto from 'node:crypto';
  * Reassembles a big integer from little-endian base-`2^n` limbs (decimal
  * strings): `limbs[0] + limbs[1] * 2^n + limbs[2] * 2^(2n) + ...`.
  *
- * Mirrors chunks.rs's `bigint_from_limbs`, with one deliberate difference:
- * this function does not reject an out-of-range limb (`limb >= 2^n`) or
- * throw on a malformed decimal string -- see this task's brief, which pins
- * the exported signature to exactly `(limbs, n)` with no null return. A
- * caller that has already validated its limbs (e.g. via `fieldAsStrings`
- * plus a range check) gets a plain BigInt back.
+ * Mirrors chunks.rs's `bigint_from_limbs`, including its two rejections:
+ * `n == 0`, and any limb outside `[0, 2^n)`. Both return `null`.
+ *
+ * Rejecting matters even though no legitimate input triggers it. An
+ * out-of-range limb means the client sent a value the circuit's own
+ * `Num2Bits` range check would refuse, and accumulating it with `|=` would
+ * silently overlap the neighbouring limb's bits -- reassembling a *different*
+ * key and failing verification for a reason no message would explain. Better
+ * an explicit `null` the caller turns into a skip.
  *
  * `n` need not be a multiple of 8 -- secp521r1 uses `n = 66`, and limbs are
  * NOT byte-aligned there. This must stay genuine base-`2^n` arithmetic
@@ -38,13 +41,23 @@ import crypto from 'node:crypto';
  *
  * @param {ReadonlyArray<string>} limbs decimal-string limbs, LSB-first.
  * @param {number} n limb width in bits (base is `2^n`).
- * @returns {bigint}
+ * @returns {bigint|null} null if `n == 0` or a limb is out of range.
  */
 export function limbsToBigInt(limbs, n) {
+  if (!Number.isInteger(n) || n <= 0) return null;
   const nBig = BigInt(n);
+  const bound = 1n << nBig;
   let acc = 0n;
   for (let i = 0; i < limbs.length; i++) {
-    acc |= BigInt(limbs[i]) << (nBig * BigInt(i));
+    // Validate the text before converting: BigInt('') is 0n rather than a
+    // throw, so a try/catch alone lets an empty limb through as zero and
+    // silently reassembles a different key. chunks.rs's parse::<BigUint>()
+    // rejects it, so this must too.
+    const text = String(limbs[i]);
+    if (!/^[0-9]+$/.test(text)) return null;
+    const limb = BigInt(text);
+    if (limb < 0n || limb >= bound) return null;
+    acc += limb << (nBig * BigInt(i));
   }
   return acc;
 }
@@ -281,7 +294,11 @@ function extractEcPoint(spkiDer) {
  * @returns {Buffer | null}
  */
 function bigIntToFixedBytes(value, length) {
-  if (value < 0n) {
+  // `null` reaches here when limbsToBigInt rejected its input. Guarding is not
+  // decoration: `null < 0n` is false (null coerces to 0), so without this the
+  // next line throws TypeError on null.toString(16) -- turning a verdict into
+  // a crash.
+  if (typeof value !== 'bigint' || value < 0n) {
     return null;
   }
   let hex = value.toString(16);

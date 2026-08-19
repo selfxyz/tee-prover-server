@@ -54,5 +54,19 @@ jobs:
       # Name the file explicitly. `node --test brainpool-verifier/` resolves
       # the directory as a module and fails with MODULE_NOT_FOUND rather than
       # scanning it.
+      # `node --test` exits 0 when a suite BODY throws -- it prints `not ok` for
+      # the suite but the process still succeeds, and `# fail 0` is reported.
+      # Measured on Node 22: a failing test() exits 1, but a describe() whose
+      # body throws exits 0. That is the failure you get from a typo, a bad
+      # import, or a renamed export -- i.e. the way a test file breaks during a
+      # refactor -- so relying on the exit code alone would let a whole suite
+      # stop running while CI stayed green.
       - name: Run sidecar tests
-        run: node --test brainpool-verifier/verify.test.mjs
+        run: |
+          set -o pipefail
+          out=$(node --test brainpool-verifier/verify.test.mjs 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          if grep -qE '^not ok' <<< "$out"; then
+            echo "::error::a test suite reported 'not ok' while the process exited 0"
+            exit 1
+          fi

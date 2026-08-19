@@ -555,3 +555,42 @@ describe('keyMatchesCert', () => {
     assert.equal(keyMatchesCert(fixture.pubKey_dsc, 120, 35, cert, 'eddsa'), false);
   });
 });
+
+describe('limbsToBigInt rejects what chunks.rs rejects', () => {
+  // chunks.rs's bigint_from_limbs returns None for n == 0 and for any limb
+  // outside [0, 2^n). Accepting them would accumulate overlapping bits and
+  // reassemble a DIFFERENT key -- verification would then fail with no message
+  // explaining why, which is the confusing-failure mode worth spending a guard
+  // on even though no legitimate input triggers it.
+  test('rejects n == 0', () => {
+    assert.equal(limbsToBigInt(['1', '2'], 0), null);
+  });
+
+  test('rejects a negative or non-integer n', () => {
+    assert.equal(limbsToBigInt(['1'], -8), null);
+    assert.equal(limbsToBigInt(['1'], 1.5), null);
+  });
+
+  test('rejects a limb that does not fit in n bits', () => {
+    assert.equal(limbsToBigInt(['255'], 8), 255n); // 2^8 - 1 fits
+    assert.equal(limbsToBigInt(['256'], 8), null); // 2^8 does not
+    assert.equal(limbsToBigInt(['1', '999'], 8), null); // second limb overflows
+  });
+
+  test('rejects a negative limb', () => {
+    assert.equal(limbsToBigInt(['-1'], 8), null);
+  });
+
+  test('rejects a limb that is not a decimal integer', () => {
+    assert.equal(limbsToBigInt(['deadbeef'], 8), null);
+    assert.equal(limbsToBigInt([''], 8), null);
+  });
+
+  test('still reassembles the non-byte-aligned n=66 case', () => {
+    // Guards against a regression where the range check is computed with a
+    // byte-aligned bound; 2^66 is not a whole number of bytes.
+    const limb = (1n << 66n) - 1n;
+    assert.equal(limbsToBigInt([limb.toString(), '1'], 66), limb | (1n << 66n));
+    assert.equal(limbsToBigInt([(1n << 66n).toString()], 66), null);
+  });
+});
