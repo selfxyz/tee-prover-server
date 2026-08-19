@@ -22,6 +22,14 @@ pub mod primitives;
 mod real_fixtures;
 pub mod sha_padding;
 #[cfg(test)]
+/// Test-only helpers, including a deterministic RSA key.
+///
+/// Gated behind `cfg(test)` so it stays out of the release binary. Its
+/// `TestRsaKey` carries two hardcoded primes -- fine for a test key generated
+/// for this purpose, but a hardcoded private key has no business inside a
+/// confidential-computing image, and a scanner or auditor finding one there
+/// would be right to object.
+#[cfg(test)]
 pub mod testkit;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
