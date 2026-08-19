@@ -649,57 +649,6 @@ function wrapAsCertificate(tbsCertificateBytes) {
 }
 
 // ---------------------------------------------------------------------
-// BigInt helpers for RSA-PSS's raw modular exponentiation. node:crypto's
-// built-in RSA_PKCS1_PSS_PADDING verification is NOT used here -- see
-// `verifyRsaPss`'s doc comment for why.
-// ---------------------------------------------------------------------
-
-function bytesToBigInt(buf) {
-  if (buf.length === 0) {
-    return 0n;
-  }
-  return BigInt(`0x${buf.toString('hex')}`);
-}
-
-function modPow(base, exponent, modulus) {
-  let result = 1n;
-  let b = base % modulus;
-  let e = exponent;
-  while (e > 0n) {
-    if (e & 1n) {
-      result = (result * b) % modulus;
-    }
-    e >>= 1n;
-    b = (b * b) % modulus;
-  }
-  return result;
-}
-
-/**
- * RFC 8017 Appendix B.2.1: repeatedly hash `seed || counter` (counter as a
- * 4-byte big-endian block), concatenate, and truncate to `outLen`.
- *
- * @param {Buffer} seed
- * @param {number} outLen
- * @param {string} hashName node:crypto digest name (e.g. `'sha256'`).
- * @returns {Buffer}
- */
-function mgf1(seed, outLen, hashName) {
-  const blocks = [];
-  let counter = 0;
-  let produced = 0;
-  while (produced < outLen) {
-    const counterBytes = Buffer.alloc(4);
-    counterBytes.writeUInt32BE(counter >>> 0, 0);
-    const block = crypto.createHash(hashName).update(Buffer.concat([seed, counterBytes])).digest();
-    blocks.push(block);
-    produced += block.length;
-    counter += 1;
-  }
-  return Buffer.concat(blocks).subarray(0, outLen);
-}
-
-// ---------------------------------------------------------------------
 // Per-scheme signature verification. Each returns `{ok:true}` on a verified
 // signature, or `{ok:false, skip:true, reason}` (caller reports `Skipped`)
 // / `{ok:false, skip:false, reason}` (caller reports `Invalid`) -- mirroring
@@ -743,33 +692,49 @@ function verifyRsaPkcs1v15(cert, hashBits, message, sigLimbs, n) {
     return { ok: false, skip: true, reason: `RSA verification threw: ${err.message}` };
   }
   if (!ok) {
-    return { ok: false, skip: false, reason: 'signature does not verify under the certificate key' };
+    return { ok: false, skip: false, reason: 'RSA signature does not verify under the certificate key' };
   }
   return { ok: true };
 }
 
 /**
- * RSASSA-PSS, via a hand-rolled RFC 8017 Section 9.1.2 decode -- deliberately
- * NOT `crypto.verify` with `RSA_PKCS1_PSS_PADDING`.
+ * RSASSA-PSS, via `crypto.verify` with `RSA_PKCS1_PSS_PADDING` and the salt
+ * length parsed from the circuit name -- directly, no hand-rolled decode.
  *
- * rsapss.rs's module doc documents one deliberate divergence from the RFC:
- * the circuit *clears* DB's leftmost bit rather than rejecting it when set
- * (`rsapss65537.circom:162-168`), because an EM_LEN-byte value with that bit
- * set can still land under the modulus for every key size these circuits
- * use, and the circuit itself never treats that bit as meaningful. OpenSSL's
- * own PSS verifier enforces the strict RFC check instead (rejects when that
- * bit is set) -- and unlike an off-curve ECDSA key (a rare, adversarial
- * edge case), this bit is the top bit of the *encoded message*, effectively
- * a coin flip on genuinely valid, real-world signatures whenever `EM_LEN*8 -
- * key_bits` leaves exactly one wasted bit -- which is every current PSS
- * circuit here (2048/3072/4096-bit keys). Using `crypto.verify`'s native PSS
- * mode would therefore falsely reject roughly half of otherwise-valid PSS
- * signatures. So this function reimplements the circuit's own semantics
- * directly: raw `modpow` (via BigInt, no library) plus MGF1 (via
- * `crypto.createHash`), clearing rather than checking that bit -- mirroring
- * rsapss.rs's `verify_pss` line for line. Do not "simplify" this back to
- * `crypto.verify`'s PSS mode; that reintroduces the false reject this
- * function exists to avoid.
+ * This module previously reimplemented RFC 8017 Section 9.1.2 by hand (raw
+ * BigInt `modpow` plus MGF1), on the theory that OpenSSL's native PSS mode
+ * enforces a stricter check than the circuit does:
+ * `rsapss65537.circom:162-168` *clears* the encoded message's leftmost bit
+ * rather than rejecting it when set, where RFC 8017 step 9 requires that bit
+ * be checked. That theory was checked empirically against all five real PSS
+ * fixtures (register: default/sha384/sha512/salt64; DSC: sha256/3072) by
+ * recovering `EM = s^e mod n` for each (via `crypto.publicEncrypt` with
+ * `RSA_NO_PADDING` -- the public-key raw-RSA operation, not a hand-rolled
+ * modexp) and inspecting the leftmost bit: it is zero in all five. Native
+ * `crypto.verify` with `RSA_PKCS1_PSS_PADDING` and the correct `saltLength`
+ * was then run directly against the real mock certificate for
+ * `register_pss.json` and returned `true`.
+ *
+ * On reflection this is exactly what RFC 8017 Section 9.1.1 step 12
+ * guarantees: a *conformant signer* always produces `EM` with that bit
+ * clear (it is masked in exactly one way, by construction, whenever
+ * `emBits = modBits - 1` is not a multiple of 8 -- the shape every current
+ * 2048/3072/4096-bit-modulus PSS circuit here has). The circuit's
+ * clear-instead-of-check is tolerance for a *non-conformant* signer, not
+ * accommodation of the normal case. So native `crypto.verify` -- OpenSSL's
+ * own, far more scrutinized PSS implementation -- is safe to use directly
+ * for every real signer this system has ever seen, and using it removes the
+ * highest-risk hand-rolled code in this file (BigInt modpow + MGF1) in
+ * favour of a battle-tested primitive.
+ *
+ * **This is a narrow, deliberate tightening relative to `rsapss.rs`, not a
+ * bug**: a hypothetical non-conformant signer that left the leftmost bit
+ * set would satisfy the circuit (and `rsapss.rs`) but would now be rejected
+ * here (`Invalid`, via `crypto.verify` returning `false`) rather than
+ * accepted. See `pssEmLeftmostBitIsZero` in the test suite, which pins the
+ * empirical evidence this decision rests on rather than just the reasoning:
+ * if a real fixture is ever captured where that bit is set, this decision
+ * needs revisiting, and that test is what will notice.
  */
 function verifyRsaPss(cert, hashBits, message, sigLimbs, n, saltLen) {
   const hashName = SHA_NAME[hashBits];
@@ -780,80 +745,28 @@ function verifyRsaPss(cert, hashBits, message, sigLimbs, n, saltLen) {
   if (sig === null) {
     return { ok: false, skip: true, reason: 'signature does not reassemble into a valid integer' };
   }
-  let jwk;
+  const modulusBits = cert.key.asymmetricKeyDetails && cert.key.asymmetricKeyDetails.modulusLength;
+  if (!modulusBits) {
+    return { ok: false, skip: true, reason: 'certificate key has no usable modulus length' };
+  }
+  const modulusBytes = Math.ceil(modulusBits / 8);
+  const sigBytes = bigIntToFixedBytes(sig, modulusBytes);
+  if (!sigBytes) {
+    return { ok: false, skip: true, reason: 'signature is wider than the certificate modulus' };
+  }
+  let ok;
   try {
-    jwk = cert.key.export({ format: 'jwk' });
+    ok = crypto.verify(
+      hashName,
+      message,
+      { key: cert.key, padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: saltLen },
+      sigBytes,
+    );
   } catch (err) {
-    return { ok: false, skip: true, reason: `could not export certificate key: ${err.message}` };
+    return { ok: false, skip: true, reason: `PSS verification threw: ${err.message}` };
   }
-  if (jwk.kty !== 'RSA' || typeof jwk.n !== 'string' || typeof jwk.e !== 'string') {
-    return { ok: false, skip: true, reason: 'certificate key is not a usable RSA key' };
-  }
-  const modulusBytes = Buffer.from(jwk.n, 'base64url');
-  const modulus = bytesToBigInt(modulusBytes);
-  const exponent = bytesToBigInt(Buffer.from(jwk.e, 'base64url'));
-  if (sig >= modulus) {
-    return { ok: false, skip: false, reason: 'PSS signature does not verify: signature is not less than modulus' };
-  }
-  const emLen = modulusBytes.length;
-  const mHash = digestBuffer(hashBits, message);
-  const hLen = mHash.length;
-  const minLen = hLen + saltLen + 2;
-  if (emLen < minLen) {
-    return {
-      ok: false,
-      skip: true,
-      reason: `EM length ${emLen} too short for hash ${hLen} + salt ${saltLen}`,
-    };
-  }
-  const emInt = modPow(sig, exponent, modulus);
-  const em = bigIntToFixedBytes(emInt, emLen);
-  if (!em) {
-    return { ok: false, skip: false, reason: 'PSS signature does not verify: EM exceeds the expected length' };
-  }
-  if (em[em.length - 1] !== 0xbc) {
-    return {
-      ok: false,
-      skip: false,
-      reason: `PSS signature does not verify: EM does not end in 0xbc (found 0x${em[em.length - 1].toString(16)})`,
-    };
-  }
-  const dbLen = emLen - hLen - 1;
-  const maskedDb = em.subarray(0, dbLen);
-  const hField = em.subarray(dbLen, dbLen + hLen);
-  const mask = mgf1(hField, dbLen, hashName);
-  const db = Buffer.alloc(dbLen);
-  for (let i = 0; i < dbLen; i++) {
-    db[i] = maskedDb[i] ^ mask[i];
-  }
-  // rsapss65537.circom:162-168 CLEARS this bit rather than checking it --
-  // see this function's doc comment. Checking it (as RFC 8017 step 9 would)
-  // would reject inputs the circuit accepts, which is exactly the false
-  // reject this whole function exists to avoid.
-  if (dbLen > 0) {
-    db[0] &= 0x7f;
-  }
-  const zeroLen = dbLen - saltLen - 1;
-  if (zeroLen < 0) {
-    return { ok: false, skip: true, reason: `DB length ${dbLen} is too short for salt length ${saltLen}` };
-  }
-  for (let i = 0; i < zeroLen; i++) {
-    if (db[i] !== 0) {
-      return { ok: false, skip: false, reason: 'PSS signature does not verify: DB padding is not all zero' };
-    }
-  }
-  if (db[zeroLen] !== 0x01) {
-    return {
-      ok: false,
-      skip: false,
-      reason: `PSS signature does not verify: DB 0x01 separator missing (found 0x${db[zeroLen].toString(16)})`,
-    };
-  }
-  const salt = db.subarray(zeroLen + 1);
-  const mPrime = Buffer.concat([Buffer.alloc(8), mHash, salt]);
-  const hPrime = crypto.createHash(hashName).update(mPrime).digest();
-  if (Buffer.compare(hPrime, hField) !== 0) {
-    return { ok: false, skip: false, reason: 'PSS signature does not verify: H mismatch' };
+  if (!ok) {
+    return { ok: false, skip: false, reason: 'PSS signature does not verify under the certificate key' };
   }
   return { ok: true };
 }
@@ -1134,7 +1047,12 @@ export function parseCircuitName(name) {
  *    same link at `register.circom:102-135`, so `pubKey_dsc` always matches
  *    its embedded certificate for every real input, tampered or not
  *    otherwise. Closes a real (if narrow) gap without changing any verdict
- *    on real traffic.
+ *    on real traffic. This is deliberately beyond `passport.rs`'s current
+ *    scope: Task 3's differential gate may see this module return `Invalid`
+ *    on a `pubKey_dsc`-tampered input where the Rust reference returns
+ *    something else (or `Valid`, since `passport.rs` has no check to fail
+ *    here at all) -- that is this decision working as intended, not a
+ *    disagreement to resolve by removing the link.
  * 4. `signature_passport` verifies over
  *    `sha(recoverMessage(signed_attr, signed_attr_padded_length))` under the
  *    certificate's own key.

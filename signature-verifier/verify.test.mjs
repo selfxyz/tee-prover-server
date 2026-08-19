@@ -633,7 +633,7 @@ assert.equal(
 const DG1_LINK_PHRASE = 'dg1 hash does not match';
 const ECONTENT_LINK_PHRASE = 'eContent hash does not match';
 const CERT_LINK_PHRASE = 'does not match the certificate';
-const SIGNATURE_PHRASES = ['does not verify under the certificate key', 'PSS signature does not verify', 'ECDSA signature does not verify', 'Aadhaar signature does not verify'];
+const SIGNATURE_PHRASES = ['RSA signature does not verify', 'PSS signature does not verify', 'ECDSA signature does not verify', 'Aadhaar signature does not verify'];
 
 function assertReasonNamesOnly(reason, allowedPhrase, label) {
   assert.ok(reason.includes(allowedPhrase), `${label}: reason must contain "${allowedPhrase}", got: ${reason}`);
@@ -648,11 +648,54 @@ function tamperedLimb(original) {
 }
 
 function signatureReasonPhrase(scheme) {
-  if (scheme === 'rsa') return 'does not verify under the certificate key';
+  if (scheme === 'rsa') return 'RSA signature does not verify';
   if (scheme === 'rsapss') return 'PSS signature does not verify';
   if (scheme === 'ecdsa') return 'ECDSA signature does not verify';
   return null;
 }
+
+describe("verify -- RSA-PSS uses native crypto.verify, pinned against the empirical evidence that licenses it", () => {
+  // This module's PSS path uses native crypto.verify(RSA_PKCS1_PSS_PADDING)
+  // directly, on the empirical claim (see verifyRsaPss's doc comment) that
+  // every real PSS fixture's recovered EM (= signature^e mod n -- the
+  // public-key raw RSA operation, computed here via crypto.publicEncrypt
+  // with RSA_NO_PADDING, NOT a hand-rolled modexp) has its leftmost bit
+  // clear, exactly what RFC 8017 step 12 guarantees for a conformant
+  // signer. This test pins that EVIDENCE, not just the reasoning: if a
+  // fixture is ever captured where this fails, a non-conformant issuer has
+  // appeared in real traffic and the native-crypto.verify decision for PSS
+  // needs revisiting -- see verifyRsaPss's doc comment in verify.mjs.
+  const pssRows = ALL_FIXTURE_CIRCUITS.filter((r) => r.circuit.includes('_rsapss_'));
+  assert.equal(pssRows.length, 5, 'expected all 5 PSS fixtures (4 register + 1 DSC)');
+
+  for (const row of pssRows) {
+    test(`${row.file}: recovered EM has a clear leftmost bit (RFC 8017 step 12's conformant-signer guarantee)`, () => {
+      const fixture = loadFixture(row.file);
+      const certRow = [...REGISTER_FAMILY, ...DSC_FAMILY].find((r) => r.file === row.file);
+      assert.ok(certRow, `${row.file}: expected a REGISTER_FAMILY/DSC_FAMILY row for certificate parsing`);
+      const tbs = tbsBytesOf(certRow, fixture);
+      const cert = certPublicKey(wrapAsCertificate(tbs));
+      assert.ok(cert, `${row.file}: certificate must parse`);
+
+      const modulusBits = cert.key.asymmetricKeyDetails.modulusLength;
+      const modulusBytes = Math.ceil(modulusBits / 8);
+      const sig = limbsToBigInt(fixture[row.sigField], 120);
+      assert.ok(sig !== null, `${row.file}: signature must reassemble`);
+      const sigBytes = bigIntToBytesForTest(sig, modulusBytes);
+
+      // s^e mod n via node:crypto's own raw RSA public-key operation.
+      const em = crypto.publicEncrypt({ key: cert.key, padding: crypto.constants.RSA_NO_PADDING }, sigBytes);
+      assert.equal(em.length, modulusBytes);
+      assert.equal(
+        em[0] & 0x80,
+        0,
+        `${row.file}: EM's leftmost bit must be clear -- if this fails, a non-conformant signer has ` +
+          'appeared in real traffic and verifyRsaPss\'s native crypto.verify decision needs revisiting',
+      );
+    });
+  }
+});
+
 
 describe('verify -- every non-KYC fixture is valid', () => {
   // THE test that matters most in this task: a verifier that checked nothing
