@@ -277,8 +277,17 @@ mod tests_support {
         let h_len = m_hash.len();
         let mut salt = salt_prefix.to_vec();
         let salt_len = salt.len();
-        for attempt in 0u32..=0xffff {
-            if salt_len >= 2 {
+        // Three varying salt bytes, not two. The two-byte space is 65536 wide
+        // and the joint condition (EM's top two bytes zero, so EM < n) lands
+        // roughly once per 32768 candidates -- the committed key happens to hit
+        // at attempt 44936, a 31% margin. A different key or message could
+        // plausibly need more than 65536 and would exhaust into the
+        // `unreachable!()` below as a baffling failure. Widening to three bytes
+        // makes exhaustion effectively impossible while terminating just as
+        // fast, since the expected hit is still ~32768 attempts in.
+        for attempt in 0u32..=0xff_ffff {
+            if salt_len >= 3 {
+                salt[salt_len - 3] = (attempt >> 16) as u8;
                 salt[salt_len - 2] = (attempt >> 8) as u8;
                 salt[salt_len - 1] = attempt as u8;
             }
