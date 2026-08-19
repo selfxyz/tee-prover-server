@@ -70,7 +70,14 @@ impl Curve {
 
 /// Left-pads `v` to exactly `width` bytes, big-endian. `Err` if `v` needs
 /// more than `width` bytes -- silently truncating instead would let an
-/// oversized coordinate masquerade as a valid, different one.
+/// oversized coordinate masquerade as a valid, different one. Unreachable in
+/// practice from real reassembled input: `bigint_from_limbs` (the caller's
+/// caller) already rejects any limb `>= 2^n`, and `n*k` equals the field
+/// width in bits exactly for all four curves, so a value it produces can
+/// never need more than `width` bytes. Classified `Structural` below rather
+/// than `Failed` anyway, since this branch is not a circuit constraint
+/// either way and the safer default for an unreachable path is the one that
+/// cannot false-reject.
 fn coord_bytes(v: &BigUint, width: usize) -> Result<Vec<u8>, String> {
     let raw = v.to_bytes_be();
     if raw.len() > width {
@@ -84,13 +91,59 @@ fn coord_bytes(v: &BigUint, width: usize) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// The two ways `verify_ecdsa` can fail, distinguished by whether the
+/// *circuit* would also reject the input:
+///
+/// - `Structural`: the circuit cannot be shown to reject this. Right now
+///   the only case is an off-curve public key -- `verifyECDSABits`
+///   (`../self/circuits/circuits/utils/crypto/signature/ecdsa/ecdsa.circom:
+///   18-102`) never checks that the point satisfies the curve equation, only
+///   `1 <= r,s < order` (`:44-57`) and limb widths. An off-curve key paired
+///   with a signature crafted against the point's *twist* can satisfy those
+///   checks and pass the circuit, so natively rejecting it here would be a
+///   false reject -- a production outage, per this module's governing
+///   asymmetry. The caller must map this to `Verdict::Skipped`, not
+///   `Invalid`.
+/// - `Failed`: the circuit's own constraints would also reject this --
+///   `r`/`s` out of `1..order` (a real `verifyECDSABits` range check), or the
+///   signature affirmatively fails to verify. The caller maps this to
+///   `Verdict::Invalid`.
+///
+/// A typed distinction rather than matching on `reason`'s text: the
+/// underlying `signature`/`elliptic-curve` crate error strings are not a
+/// stable API contract, so string-matching them would be one dependency
+/// bump away from silently falling back to the wrong variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EcdsaError {
+    Structural(String),
+    Failed(String),
+}
+
+impl EcdsaError {
+    /// The human-readable reason, regardless of variant. `passport.rs`
+    /// matches on the variant directly rather than calling this (it needs to
+    /// route `Structural` to `Skipped` and `Failed` to `Invalid`, not just
+    /// read the message), so this has no caller outside `#[cfg(test)]` --
+    /// used by this module's own tests to assert on the reason text without
+    /// duplicating the `Structural(s) | Failed(s) => s` match at each call
+    /// site.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn message(&self) -> &str {
+        match self {
+            EcdsaError::Structural(s) | EcdsaError::Failed(s) => s,
+        }
+    }
+}
+
 /// Verifies an ECDSA signature over one of the four NIST curves the
 /// deployed circuits use, given the limb-reassembled coordinates and
-/// scalars and the signed-attribute digest. `Err(reason)` is an affirmative
-/// failure -- a false reject here is a production outage (the caller in
-/// Task 3 maps most reasons to `Skipped`, not `Invalid`, since the Groth16
-/// circuit is the actual source of truth); a false accept costs nothing,
-/// since the circuit still verifies afterward.
+/// scalars and the signed-attribute digest. `Err` is either a `Structural`
+/// failure (cannot determine what the circuit would do -- the caller must
+/// map this to `Skipped`) or a `Failed` one (the circuit's own constraints
+/// would also reject this -- the caller maps this to `Invalid`); see
+/// `EcdsaError`'s doc comment for which is which and why. A false reject
+/// here is a production outage; a false accept costs nothing, since the
+/// circuit still verifies afterward.
 pub fn verify_ecdsa(
     curve: Curve,
     x: &BigUint,
@@ -98,12 +151,12 @@ pub fn verify_ecdsa(
     r: &BigUint,
     s: &BigUint,
     m_hash: &[u8],
-) -> Result<(), String> {
+) -> Result<(), EcdsaError> {
     let width = curve.field_bytes();
-    let x_bytes = coord_bytes(x, width)?;
-    let y_bytes = coord_bytes(y, width)?;
-    let r_bytes = coord_bytes(r, width)?;
-    let s_bytes = coord_bytes(s, width)?;
+    let x_bytes = coord_bytes(x, width).map_err(EcdsaError::Structural)?;
+    let y_bytes = coord_bytes(y, width).map_err(EcdsaError::Structural)?;
+    let r_bytes = coord_bytes(r, width).map_err(EcdsaError::Structural)?;
+    let s_bytes = coord_bytes(s, width).map_err(EcdsaError::Structural)?;
 
     // SEC1 uncompressed point encoding: 0x04 || x || y.
     let mut point = Vec::with_capacity(1 + 2 * width);
@@ -126,35 +179,35 @@ pub fn verify_ecdsa(
     match curve {
         Curve::Secp224r1 => {
             let vk = p224::ecdsa::VerifyingKey::from_sec1_bytes(&point)
-                .map_err(|e| format!("public key is not on the curve: {e}"))?;
+                .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p224::ecdsa::Signature::from_slice(&rs_bytes)
-                .map_err(|e| format!("signature scalar out of range: {e}"))?;
+                .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
             vk.verify_prehash(m_hash, &sig)
-                .map_err(|e| format!("ECDSA signature does not verify: {e}"))
+                .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
         Curve::Secp256r1 => {
             let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&point)
-                .map_err(|e| format!("public key is not on the curve: {e}"))?;
+                .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p256::ecdsa::Signature::from_slice(&rs_bytes)
-                .map_err(|e| format!("signature scalar out of range: {e}"))?;
+                .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
             vk.verify_prehash(m_hash, &sig)
-                .map_err(|e| format!("ECDSA signature does not verify: {e}"))
+                .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
         Curve::Secp384r1 => {
             let vk = p384::ecdsa::VerifyingKey::from_sec1_bytes(&point)
-                .map_err(|e| format!("public key is not on the curve: {e}"))?;
+                .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p384::ecdsa::Signature::from_slice(&rs_bytes)
-                .map_err(|e| format!("signature scalar out of range: {e}"))?;
+                .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
             vk.verify_prehash(m_hash, &sig)
-                .map_err(|e| format!("ECDSA signature does not verify: {e}"))
+                .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
         Curve::Secp521r1 => {
             let vk = p521::ecdsa::VerifyingKey::from_sec1_bytes(&point)
-                .map_err(|e| format!("public key is not on the curve: {e}"))?;
+                .map_err(|e| EcdsaError::Structural(format!("public key is not on the curve: {e}")))?;
             let sig = p521::ecdsa::Signature::from_slice(&rs_bytes)
-                .map_err(|e| format!("signature scalar out of range: {e}"))?;
+                .map_err(|e| EcdsaError::Failed(format!("signature scalar out of range: {e}")))?;
             vk.verify_prehash(m_hash, &sig)
-                .map_err(|e| format!("ECDSA signature does not verify: {e}"))
+                .map_err(|e| EcdsaError::Failed(format!("ECDSA signature does not verify: {e}")))
         }
     }
 }
@@ -227,27 +280,49 @@ mod tests {
         let (x, y, r, s, _) = p256_case();
         let other = sha256(b"different attributes").to_vec();
         let err = verify_ecdsa(Curve::Secp256r1, &x, &y, &r, &s, &other).unwrap_err();
-        assert!(err.contains("does not verify"), "wrong reason: {err}");
+        assert!(
+            matches!(err, EcdsaError::Failed(_)),
+            "a signature that fails to verify is a Failed error (the circuit rejects it \
+             too), not Structural: got {err:?}"
+        );
+        assert!(err.message().contains("does not verify"), "wrong reason: {err:?}");
     }
 
     #[test]
-    fn a_point_not_on_the_curve_is_rejected() {
-        // y+1 is not on the curve: must be Err, and the reason must say so --
-        // this is the check that stops a malformed key from being read as a
-        // signature failure.
+    fn a_point_not_on_the_curve_is_skipped_not_failed() {
+        // y+1 is not on the curve: must be Err, and specifically Structural --
+        // the circuit's own verifyECDSABits never checks curve membership
+        // (ecdsa.circom:18-102), so an off-curve key is not something this
+        // primitive can prove the circuit would also reject. The caller
+        // (passport.rs) maps Structural to Skipped, not Invalid -- this is
+        // the fix for the false-reject this fix wave's item 1 closes.
         let (x, y, r, s, m_hash) = p256_case();
         let err = verify_ecdsa(Curve::Secp256r1, &x, &(y + 1u32), &r, &s, &m_hash).unwrap_err();
-        assert!(err.contains("not on the curve"), "wrong reason: {err}");
+        assert!(
+            matches!(err, EcdsaError::Structural(_)),
+            "an off-curve point must be Structural (-> Skipped upstream), not Failed \
+             (-> Invalid): got {err:?}"
+        );
+        assert!(err.message().contains("not on the curve"), "wrong reason: {err:?}");
     }
 
     #[test]
     fn a_coordinate_wider_than_the_field_is_rejected() {
         // Guards the left-pad in coord_bytes: a value needing more than
         // field_bytes must not be silently truncated into a valid-looking key.
+        // Unreachable from real reassembled limbs (see coord_bytes's doc
+        // comment) but exercised directly here with a synthetic oversized
+        // value, which is exactly why this test can still fail: feed
+        // coord_bytes a value under `width` bytes and this assertion breaks.
         let (_, y, r, s, m_hash) = p256_case();
         let too_big = BigUint::from(1u32) << 300;
         let err = verify_ecdsa(Curve::Secp256r1, &too_big, &y, &r, &s, &m_hash).unwrap_err();
-        assert!(err.contains("wider than the field"), "wrong reason: {err}");
+        assert!(
+            matches!(err, EcdsaError::Structural(_)),
+            "an oversized coordinate is Structural, same safe-default reasoning as an \
+             off-curve point: got {err:?}"
+        );
+        assert!(err.message().contains("wider than the field"), "wrong reason: {err:?}");
     }
 
     // One test per curve, so a curve listed in the params table without a

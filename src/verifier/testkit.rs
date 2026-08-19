@@ -122,6 +122,62 @@ pub fn passport_inputs(key: &TestRsaKey, n: u32, k: usize) -> Value {
     })
 }
 
+/// Builds a self-consistent ECDSA (P-256) passport input: same dg1 ->
+/// eContent -> signed_attr chain as `passport_inputs` above, but
+/// `pubKey_dsc`/`signature_passport` are each `2k` limbs (`x||y`, `r||s`)
+/// per `ecdsaVerifier.circom`'s `getKLengthFactor(alg) == 2`, instead of the
+/// single `k`-limb RSA modulus/signature. Also returns `(x, y, r, s)` as
+/// big integers so a caller can perturb one coordinate (e.g. build an
+/// off-curve `y`) and re-splice just that half's limbs, without re-deriving
+/// the rest of the chain.
+#[allow(clippy::type_complexity)]
+pub fn ecdsa_passport_inputs(n: u32, k: usize) -> (Value, BigUint, BigUint, BigUint, BigUint) {
+    use p256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
+
+    let dg1: Vec<u8> = (0u8..93).collect();
+    let dg1_hash = Sha256::digest(&dg1);
+
+    let dg1_hash_offset = 32usize;
+    let mut econtent = vec![0u8; 128];
+    econtent[dg1_hash_offset..dg1_hash_offset + 32].copy_from_slice(&dg1_hash);
+    let econtent_padded = sha_pad(&econtent);
+    let econtent_hash = Sha256::digest(&econtent);
+
+    let sa_offset = 16usize;
+    let mut signed_attr = vec![0u8; 96];
+    signed_attr[sa_offset..sa_offset + 32].copy_from_slice(&econtent_hash);
+    let signed_attr_padded = sha_pad(&signed_attr);
+    let signed_attr_hash = Sha256::digest(&signed_attr);
+
+    let sk = SigningKey::from_slice(&[0x42u8; 32]).expect("valid seed");
+    let (sig, _): (p256::ecdsa::Signature, _) =
+        sk.sign_prehash(&signed_attr_hash).expect("sign_prehash");
+    let pt = sk.verifying_key().to_encoded_point(false);
+    let x = BigUint::from_bytes_be(pt.x().expect("x coordinate"));
+    let y = BigUint::from_bytes_be(pt.y().expect("y coordinate"));
+    let r = BigUint::from_bytes_be(&sig.r().to_bytes());
+    let s = BigUint::from_bytes_be(&sig.s().to_bytes());
+
+    let mut pubkey_limbs = to_limbs(&x, n, k);
+    pubkey_limbs.extend(to_limbs(&y, n, k));
+    let mut sig_limbs = to_limbs(&r, n, k);
+    sig_limbs.extend(to_limbs(&s, n, k));
+
+    let inputs = json!({
+        "dg1": bytes_to_decimal(&dg1),
+        "dg1_hash_offset": [dg1_hash_offset.to_string()],
+        "eContent": bytes_to_decimal(&econtent_padded),
+        "eContent_padded_length": [econtent_padded.len().to_string()],
+        "signed_attr": bytes_to_decimal(&signed_attr_padded),
+        "signed_attr_padded_length": [signed_attr_padded.len().to_string()],
+        "signed_attr_econtent_hash_offset": [sa_offset.to_string()],
+        "pubKey_dsc": pubkey_limbs,
+        "signature_passport": sig_limbs,
+    });
+
+    (inputs, x, y, r, s)
+}
+
 /// Self-consistent Aadhaar input: one sha256 over padded QR data, one RSA-65537 signature.
 pub fn aadhaar_inputs(key: &TestRsaKey, n: u32, k: usize) -> Value {
     let qr: Vec<u8> = (0u8..200).cycle().take(512).collect();

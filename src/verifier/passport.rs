@@ -249,12 +249,30 @@ pub fn verify(inputs: &serde_json::Value, p: &CircuitParams) -> Verdict {
             let Some(s) = bigint_from_limbs(&sig_limbs[k..2 * k], p.n) else {
                 return Verdict::Skipped("signature_passport's s half does not reassemble into a valid integer".to_string());
             };
-            if let Err(reason) = ecdsa::verify_ecdsa(curve, &x, &y, &r, &s, &sig_digest) {
-                // `reason` is already self-describing -- verify_ecdsa prefixes
-                // its own failures ("ECDSA signature does not verify: ...",
-                // "public key is not on the curve: ...", "signature scalar out
-                // of range: ..."). Wrapping it again produced a doubled prefix.
-                return Verdict::Invalid(reason);
+            match ecdsa::verify_ecdsa(curve, &x, &y, &r, &s, &sig_digest) {
+                Ok(()) => {}
+                // Structural: cannot show the circuit would reject this too
+                // (today's only case is an off-curve public key --
+                // verifyECDSABits never checks curve membership, only
+                // 1<=r,s<order and limb widths -- see EcdsaError's doc
+                // comment). Skipped, not Invalid: rejecting it natively would
+                // be a false reject on an input the circuit itself would
+                // still prove.
+                Err(ecdsa::EcdsaError::Structural(reason)) => {
+                    return Verdict::Skipped(format!(
+                        "ECDSA public key or coordinate cannot be checked natively: {reason}"
+                    ));
+                }
+                // Failed: an affirmative failure the circuit's own
+                // constraints would also produce (out-of-range r/s, or the
+                // signature does not verify). `reason` is already
+                // self-describing -- verify_ecdsa prefixes its own failures
+                // ("ECDSA signature does not verify: ...", "signature scalar
+                // out of range: ..."); wrapping it again produced a doubled
+                // prefix.
+                Err(ecdsa::EcdsaError::Failed(reason)) => {
+                    return Verdict::Invalid(reason);
+                }
             }
         }
         // Guarded out at the top of this function -- unreachable here.
@@ -327,6 +345,35 @@ mod tests {
         assert!(matches!(v, Verdict::Invalid(_)), "got {v:?}");
         let r = reason(&v);
         assert!(r.contains("signature"), "the reason must name the signature check, got: {r}");
+    }
+
+    #[test]
+    fn an_off_curve_ecdsa_pubkey_is_skipped_not_invalid() {
+        // Fix wave item 1: the circuit's own verifyECDSABits never checks
+        // that pubKey_dsc's point satisfies the curve equation -- only
+        // 1<=r,s<order and limb widths (ecdsa.circom:18-102) -- so an
+        // off-curve key paired with a twist-crafted signature can satisfy
+        // the circuit. Rejecting it natively (Invalid) would be a false
+        // reject on a request that would have proved; this must be Skipped.
+        // Asserted at this passport::verify level, not just against the bare
+        // primitive, since the whole point is that the *dispatch* mapping in
+        // passport.rs -- not just verify_ecdsa's own return type -- routes
+        // Structural to Skipped.
+        let p = crate::verifier::params::lookup("register_sha256_sha256_sha256_ecdsa_secp256r1")
+            .expect("known circuit");
+        let (mut inputs, _x, y, _r, _s) = crate::verifier::testkit::ecdsa_passport_inputs(p.n, p.k as usize);
+        let k = p.k as usize;
+        let bad_y_limbs = crate::verifier::testkit::to_limbs(&(y + 1u32), p.n, k);
+        let arr = inputs["pubKey_dsc"].as_array_mut().unwrap();
+        for (i, limb) in bad_y_limbs.into_iter().enumerate() {
+            arr[k + i] = serde_json::Value::String(limb);
+        }
+        let v = verify(&inputs, &p);
+        assert!(
+            matches!(v, Verdict::Skipped(_)),
+            "an off-curve pubKey_dsc must be Skipped, not Invalid -- a false reject on a \
+             request the circuit itself would still prove: got {v:?}"
+        );
     }
 
     #[test]
