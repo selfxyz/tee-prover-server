@@ -2,3 +2,4 @@
 
 pub mod eddsa;
 pub mod rsa;
+pub mod rsapss;
