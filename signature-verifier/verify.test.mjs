@@ -483,6 +483,22 @@ function bigIntToBytesForTest(value, length) {
   return Buffer.from(hex.padStart(length * 2, '0'), 'hex');
 }
 
+/** Inverse of limbsToBigInt: splits `value` into `k` base-`2^n` limbs,
+ * least-significant limb first, as decimal strings -- for tests that need
+ * to construct a wire-shaped limb array from a value they picked (an
+ * off-curve point's coordinates, an out-of-range scalar), rather than one
+ * read out of a real fixture. */
+function limbsFromBigInt(value, n, k) {
+  const mask = (1n << BigInt(n)) - 1n;
+  const limbs = [];
+  let v = value;
+  for (let i = 0; i < k; i++) {
+    limbs.push(String(v & mask));
+    v >>= BigInt(n);
+  }
+  return limbs;
+}
+
 // ---------------------------------------------------------------------
 // certPublicKey
 // ---------------------------------------------------------------------
@@ -988,6 +1004,292 @@ describe('verify -- skip paths', () => {
     tampered.dsc_pubKey_offset = ['100000'];
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
     assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+  });
+});
+
+// =======================================================================
+// Plan B, Task 1: RFC-strict negative vectors.
+//
+// The premise these pin: a false accept is a forged credential, not a free
+// optimization, so this module must be RFC-strict on its own terms rather
+// than lenient anywhere. Two cases these vectors cover: a malleable PSS EM,
+// and an off-curve key, both of which must be rejections rather than
+// coverage gaps. Each block below first establishes
+// current behaviour by running it (not by assuming the design doc), then
+// pins whatever that behaviour turns out to be -- see this task's report
+// for which of these four required an implementation change and which
+// were already true after Plan A.
+// =======================================================================
+
+describe('verify -- RFC 8017 leftmost-bit PSS forgery is invalid (RFC-strict, not circuit-mirrored)', () => {
+  // rsapss65537.circom:162 CLEARS the leftmost bit of the recovered DB
+  // rather than checking it (RFC 8017 SS9.1.2 step 9), and the pre-Plan-B
+  // design deliberately matched that: a signature whose EM has the
+  // leftmost bit genuinely set verified as Valid. This test constructs
+  // exactly such a signature -- using a real mock DSC's own private key,
+  // so the rest of the chain (dg1/eContent/signed_attr links, the
+  // certificate) is completely real and only the forged EM under test is
+  // synthetic -- and confirms it is now Invalid.
+  //
+  // Constructing the EM is the fiddly part the task brief warns about:
+  // forcing the leftmost bit can (a) push EM above the modulus, breaking
+  // the RSA round-trip, or (b) land on a byte where the bit was already
+  // going to end up set anyway, which would prove nothing about the
+  // clear-vs-check divergence. `rsapss.rs`'s deleted
+  // `sign_pss_with_high_bit_set` test helper (git history: commit 40ba9f7's
+  // parent, src/verifier/primitives/rsapss.rs) searches salt bytes for a
+  // candidate clearing both hurdles at once; this port follows the same
+  // two-gate acceptance test.
+  function mgf1(seed, outLen) {
+    const blocks = [];
+    let counter = 0;
+    while (blocks.length * 32 < outLen) {
+      const block = Buffer.concat([seed, Buffer.from([(counter >>> 24) & 0xff, (counter >>> 16) & 0xff, (counter >>> 8) & 0xff, counter & 0xff])]);
+      blocks.push(crypto.createHash('sha256').update(block).digest());
+      counter += 1;
+    }
+    return Buffer.concat(blocks).subarray(0, outLen);
+  }
+
+  /** Mirrors rsapss.rs's sign_pss_with_high_bit_set: searches candidate
+   * salts (varying only the last two bytes) for one where forcing
+   * maskedDB's leftmost bit BOTH keeps EM < n AND leaves the bit `verify_pss`
+   * (here, crypto.verify) will actually recover genuinely set -- not merely
+   * a bit that was going to be 1 regardless of forcing. Returns raw RSA
+   * signature bytes for BOTH the forced-bit EM under test and (for the same
+   * candidate salt/db/mask) the conformant, bit-clear EM a real signer would
+   * have produced -- the latter is the control this task's brief asks for:
+   * disabling the "force the bit" step on this exact candidate must leave a
+   * signature that verifies, proving the forced bit is what the rejection
+   * test below actually exercises, not some other broken parameter. Both are
+   * `EM^d mod n` via crypto.privateEncrypt/RSA_NO_PADDING -- the private-key
+   * raw operation, not a hand-rolled modexp. */
+  function signPssWithAndWithoutHighBit(privateKey, n, mHash, saltLenBytes, emLenBytes) {
+    const hLen = mHash.length;
+    const dbLen = emLenBytes - hLen - 1;
+    const salt = Buffer.alloc(saltLenBytes, 7);
+    for (let attempt = 0; attempt <= 0xffff; attempt++) {
+      salt[saltLenBytes - 1] = attempt & 0xff;
+      salt[saltLenBytes - 2] = (attempt >> 8) & 0xff;
+      const mPrime = Buffer.concat([Buffer.alloc(8, 0), mHash, salt]);
+      const h = crypto.createHash('sha256').update(mPrime).digest();
+      const db = Buffer.alloc(dbLen, 0);
+      db[dbLen - saltLenBytes - 1] = 0x01;
+      salt.copy(db, dbLen - saltLenBytes);
+      const mask = mgf1(h, dbLen);
+      const maskedConformant = Buffer.alloc(dbLen);
+      for (let i = 0; i < dbLen; i++) maskedConformant[i] = db[i] ^ mask[i];
+      const maskedForced = Buffer.from(maskedConformant);
+      maskedForced[0] |= 0x80;
+      const recoveredTopBitGenuinelySet = (maskedForced[0] ^ mask[0]) & 0x80;
+      const emForced = Buffer.concat([maskedForced, h, Buffer.from([0xbc])]);
+      const emForcedInt = BigInt(`0x${emForced.toString('hex')}`);
+      if (recoveredTopBitGenuinelySet && emForcedInt < n) {
+        const emConformant = Buffer.concat([maskedConformant, h, Buffer.from([0xbc])]);
+        return {
+          forgedSig: crypto.privateEncrypt({ key: privateKey, padding: crypto.constants.RSA_NO_PADDING }, emForced),
+          conformantSig: crypto.privateEncrypt({ key: privateKey, padding: crypto.constants.RSA_NO_PADDING }, emConformant),
+        };
+      }
+    }
+    throw new Error('no candidate salt produced both EM < n and a genuinely-set recovered top bit in 65536 attempts');
+  }
+
+  test('a forged PSS signature with a genuinely-set leftmost EM bit is invalid, not valid -- and the SAME candidate without the forced bit is valid (isolates the forced bit as the cause)', { skip: !MOCK_CERTS_AVAILABLE }, () => {
+    const row = REGISTER_FAMILY.find((r) => r.file === 'register_pss.json');
+    const fixture = loadFixture('register_pss.json');
+    const privateKey = crypto.createPrivateKey(fs.readFileSync(path.join(MOCK_CERT_ROOT, row.mockDir, 'mock_dsc.key'), 'utf8'));
+
+    // The real message this signature must cover -- link 4 verifies over
+    // sha256(recoverMessage(signed_attr)), and crypto.verify hashes the
+    // message it is given internally, so `message` (not its hash) is what
+    // must match what verify.mjs will feed crypto.verify.
+    const signedAttr = bytesFromDecimalArray(fixture.signed_attr);
+    const signedAttrPaddedLength = scalarNumber(fixture.signed_attr_padded_length);
+    const message = recoverMessage(signedAttr, signedAttrPaddedLength);
+    assert.ok(message, 'register_pss.json\'s own signed_attr must recover cleanly');
+    const mHash = crypto.createHash('sha256').update(message).digest();
+
+    const n = BigInt(`0x${Buffer.from(privateKey.export({ format: 'jwk' }).n, 'base64url').toString('hex')}`);
+    const { forgedSig, conformantSig } = signPssWithAndWithoutHighBit(privateKey, n, mHash, 32, 256);
+
+    const forgedLimbs = limbsFromBigInt(BigInt(`0x${forgedSig.toString('hex')}`), 120, 35);
+    const forged = structuredClone(fixture);
+    forged.signature_passport = forgedLimbs;
+    const forgedResult = verify(row.circuit, forged);
+    assert.equal(forgedResult.verdict, 'invalid', `got ${JSON.stringify(forgedResult)}`);
+    assert.match(forgedResult.reason, /PSS signature does not verify/, `got ${forgedResult.reason}`);
+
+    // Control: same candidate salt, same db, same mask, same message -- only
+    // the forced leftmost bit differs. If this were also invalid, the
+    // rejection above would not be attributable to the forced bit at all
+    // (it would prove this test's construction is broken some other way).
+    const conformantLimbs = limbsFromBigInt(BigInt(`0x${conformantSig.toString('hex')}`), 120, 35);
+    const conformant = structuredClone(fixture);
+    conformant.signature_passport = conformantLimbs;
+    const conformantResult = verify(row.circuit, conformant);
+    assert.deepEqual(conformantResult, { verdict: 'valid' }, `control (bit not forced) must verify: got ${JSON.stringify(conformantResult)}`);
+  });
+});
+
+describe('verify -- an off-curve embedded public key is invalid, not skipped (RFC-strict)', () => {
+  // ecdsa.circom never checks the curve equation (ecdsa.circom:18-102), and
+  // the shipped design mirrored that by treating an off-curve point the
+  // same as any other certificate-parse failure: Skipped. Running this
+  // (rather than assuming it) shows the CURRENT pre-implementation
+  // behaviour is exactly that -- see this task's report. This test
+  // replaces the real embedded EC point's bytes (both in raw_dsc AND in
+  // pubKey_dsc, so the byte-window comparison still passes and this
+  // exercises certificate parsing specifically, not keyMatchesWindow) with
+  // an all-0x01 point, which is vanishingly unlikely to satisfy any real
+  // curve equation, and confirms the result is Invalid and names the curve.
+  test('register family: an off-curve point in raw_dsc is invalid and names the curve', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const circuit = 'register_sha256_sha256_sha256_ecdsa_secp256r1';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const offset = scalarNumber(tampered.dsc_pubKey_offset);
+    const size = scalarNumber(tampered.dsc_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset);
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset + half);
+    tampered.raw_dsc = [...rawDsc].map(String);
+
+    const n = 64;
+    const k = 4;
+    const onesLimbs = limbsFromBigInt(BigInt(`0x${Buffer.alloc(half, 0x01).toString('hex')}`), n, k);
+    tampered.pubKey_dsc = [...onesLimbs, ...onesLimbs];
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /not carry a valid point on secp256r1/, `got ${result.reason}`);
+  });
+
+  test('DSC family: an off-curve point in raw_csca is invalid and names the curve', () => {
+    const fixture = loadFixture('dsc_sha256_ecdsa_secp521r1.json');
+    const circuit = 'dsc_sha256_ecdsa_secp521r1';
+    const tampered = structuredClone(fixture);
+
+    const rawCsca = bytesFromDecimalArray(tampered.raw_csca);
+    const offset = scalarNumber(tampered.csca_pubKey_offset);
+    const size = scalarNumber(tampered.csca_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(rawCsca, offset);
+    Buffer.alloc(half, 0x01).copy(rawCsca, offset + half);
+    tampered.raw_csca = [...rawCsca].map(String);
+
+    const n = 66;
+    const k = 8;
+    const onesLimbs = limbsFromBigInt(BigInt(`0x${Buffer.alloc(half, 0x01).toString('hex')}`), n, k);
+    tampered.csca_pubKey = [...onesLimbs, ...onesLimbs];
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /not carry a valid point on secp521r1/, `got ${result.reason}`);
+  });
+
+  test('disabling the check: without it, the off-curve point would only be Skipped (proves this is not caught downstream by something else)', () => {
+    // Same construction as the register-family test above, but calling the
+    // OLD certPublicKey (Task 1's parse-or-null primitive, which does not
+    // distinguish a structurally-fine-but-off-curve key from any other
+    // unparseable certificate) directly through the same wrapAsCertificate
+    // path this test file already uses elsewhere. This is the "disable the
+    // specific check" proof the task brief asks for: with the distinguishing
+    // check removed, the off-curve certificate is merely unparseable to
+    // certPublicKey, which is exactly the Skipped outcome this task's
+    // change moves away from.
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const row = REGISTER_FAMILY.find((r) => r.file === 'register_ecdsa_secp256r1.json');
+    const tbs = tbsBytesOf(row, fixture);
+    const corrupted = Buffer.from(tbs);
+    const offset = scalarNumber(fixture.dsc_pubKey_offset);
+    const size = scalarNumber(fixture.dsc_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(corrupted, offset);
+    Buffer.alloc(half, 0x01).copy(corrupted, offset + half);
+
+    assert.equal(certPublicKey(wrapAsCertificate(corrupted)), null, 'the pre-existing certPublicKey primitive must not itself distinguish off-curve from any other parse failure -- that distinction is what verify.mjs\'s new certPublicKeyOrInvalidReason adds');
+  });
+});
+
+describe('verify -- an out-of-range ECDSA scalar (r >= curve order) is invalid', () => {
+  // node:crypto/OpenSSL's own ECDSA verification already rejects a
+  // component outside [1, n-1] (n = the curve order) -- there is no
+  // circuit-mirroring divergence to remove here, unlike PSS and off-curve
+  // above. This pins that behaviour with evidence rather than assuming it:
+  // setting every limb of the signature's r half to its maximum
+  // representable value (2^n - 1, n = the limb width) yields a value that
+  // is provably >= every deployed curve's order (Hasse's theorem bounds the
+  // order strictly below the field size, which is itself what the limb
+  // width encodes) -- curve-agnostic, no per-curve order constant needed.
+  for (const row of REGISTER_FAMILY.filter((r) => r.scheme === 'ecdsa')) {
+    test(`${row.file}: r forced to the maximum representable value (>= ${row.curve}'s order) is invalid`, () => {
+      const fixture = loadFixture(row.file);
+      const tampered = structuredClone(fixture);
+      const maxLimb = String((1n << BigInt(row.n)) - 1n);
+      const sigLimbs = [...tampered.signature_passport];
+      for (let i = 0; i < row.k; i++) {
+        sigLimbs[i] = maxLimb; // the r half occupies limbs [0, k)
+      }
+      tampered.signature_passport = sigLimbs;
+
+      const result = verify(row.circuit, tampered);
+      assert.equal(result.verdict, 'invalid', `${row.file}: got ${JSON.stringify(result)}`);
+      assert.match(result.reason, /ECDSA signature does not verify/, `${row.file}: got ${result.reason}`);
+    });
+  }
+
+  test('disabling the check: an in-range but merely-wrong r fails for the SAME reason, not a different one -- OpenSSL does not distinguish "out of range" as its own error class', () => {
+    // This is the closest this item comes to a "disable the check and
+    // confirm it is not caught downstream" proof: there is no separate,
+    // disable-able range check in this codebase for ECDSA scalars (unlike
+    // PSS's leftmost bit or the off-curve certificate case) -- the range
+    // check lives entirely inside OpenSSL's own ECDSA_verify. An ordinary
+    // tampered-but-in-range r fails via the exact same code path and the
+    // exact same reason string, confirming there is no separate downstream
+    // catch this test could be accidentally exercising instead.
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    const sigLimbs = [...tampered.signature_passport];
+    sigLimbs[0] = tamperedLimb(sigLimbs[0]);
+    tampered.signature_passport = sigLimbs;
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid');
+    assert.match(result.reason, /ECDSA signature does not verify/);
+  });
+});
+
+describe('verify -- the signature algorithm (hash) is pinned to the circuit name, never discovered', () => {
+  // Never infer the algorithm by trying candidates (this plan's design
+  // doc, "RFC-strict" section): a real signature, valid under the hash its
+  // circuit name actually declares, must NOT verify under a DIFFERENT
+  // declared hash -- proving verify.mjs uses exactly the hash the name
+  // says rather than brute-forcing until something matches. Only the
+  // SIGNATURE hash tag is changed (the last of the three register-family
+  // tags); dg_hash/econtent_hash are left alone so this isolates the
+  // signature-hash pin from the dg1/eContent chain checks, which use their
+  // own hash tags and would otherwise fail first for an unrelated reason.
+  test('ECDSA: a real sha256 signature presented against a circuit declaring sha512 is invalid, not valid', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    // Real circuit: register_sha256_sha256_sha256_ecdsa_secp256r1 (dg,
+    // econtent, AND sig hash all sha256). Only the sig hash tag changes.
+    const result = verify('register_sha256_sha256_sha512_ecdsa_secp256r1', fixture);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /ECDSA signature does not verify/, `got ${result.reason}`);
+  });
+
+  test('RSA PKCS#1 v1.5: a real sha256 signature presented against a circuit declaring sha512 is invalid, not valid', () => {
+    const fixture = loadFixture('register_passport.json');
+    // Real circuit: register_sha256_sha256_sha256_rsa_3_4096.
+    const result = verify('register_sha256_sha256_sha512_rsa_3_4096', fixture);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /RSA signature does not verify/, `got ${result.reason}`);
+  });
+
+  test('sanity: the real fixture with its own real circuit name is still valid (the hash-pin tests above are not vacuously passing on a fixture that never verifies)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    assert.deepEqual(verify('register_sha256_sha256_sha256_ecdsa_secp256r1', fixture), { verdict: 'valid' });
   });
 });
 

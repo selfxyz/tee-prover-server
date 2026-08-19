@@ -18,26 +18,39 @@
 // same discipline applies to every function Task 2 adds below: a malformed
 // field is a verdict (`skipped`), never an exception.
 //
-// Semantics do not change in this plan, with ONE recorded, sanctioned
-// exception: the circuit is still the authority, `Skipped` still means
-// "cannot be certain, so forward to proving", and `Invalid` is reserved for
-// an affirmative cryptographic or structural failure this module can
-// actually stand behind -- EXCEPT that RSA-PSS verification (`verifyRsaPss`)
-// deliberately DOES add the RFC 8017 leftmost-bit check via native
-// `crypto.verify`/OpenSSL, which the circuit itself does not enforce (it
-// clears that bit rather than checking it). This is a narrow, intentional
-// tightening (ruling 7), not an oversight: empirically, every real PSS
-// signature already has that bit clear (RFC 8017 step 12 guarantees this for
-// any conformant signer), so the only input this can newly reject is one a
-// non-conformant signer produced -- see `verifyRsaPss`'s doc comment for the
-// full reasoning and the evidence test (`verify.test.mjs`'s "RSA-PSS uses
-// native crypto.verify" suite) that pins the empirical claim the decision
-// rests on. A reader tempted to "fix" this by reintroducing a hand-rolled
-// BigInt/MGF1 PSS decode should read that doc comment first -- doing so
-// would undo a deliberate simplification while believing it restores
-// correctness. Every other check in this file, including not turning an
-// off-curve ECDSA key into a rejection, still follows the "do not be
-// stricter than the circuit" rule without exception.
+// This module is RFC-strict rather than circuit-matching. Its verdict is
+// authoritative: the enclave signs no proof for anything but `valid`, so a
+// false accept and a false reject are both real costs, and where they
+// conflict this module rejects. That is a deliberate change from an earlier
+// design in which the verdict was only an optimization hint and this module
+// was built to mirror the circuit's behaviour wherever the two differed.
+// Two places where being RFC-strict rather than circuit-matching matters:
+//
+//   - RSA-PSS (`verifyRsaPss`): native `crypto.verify`/OpenSSL enforces RFC
+//     8017 SS9.1.2 step 9 (maskedDB's leftmost bits must be zero), where
+//     rsapss65537.circom:162 clears that bit instead of checking it. See
+//     `verifyRsaPss`'s doc comment for why this needed no code change here
+//     -- OpenSSL was already strict by construction -- and
+//     `verify.test.mjs`'s "RFC 8017 leftmost-bit PSS forgery" suite for the
+//     negative vector proving it. A reader tempted to "fix" this by
+//     reintroducing a hand-rolled BigInt/MGF1 PSS decode should read
+//     `verifyRsaPss`'s doc comment first -- that would undo a deliberate
+//     simplification, not restore correctness.
+//   - Off-curve ECDSA keys (`certPublicKeyOrInvalidReason`): ecdsa.circom
+//     never checks the curve equation at all (ecdsa.circom:18-102), so an
+//     off-curve point was previously `Skipped` (mirroring the circuit's
+//     blind spot) rather than rejected. This module now reports `Invalid`,
+//     naming the curve, when a certificate's ASN.1 structure parses but
+//     OpenSSL refuses to build a `KeyObject` from its embedded key -- see
+//     that function's doc comment and `verify.test.mjs`'s "an off-curve
+//     embedded public key" suite.
+//
+// Every other check in this file continues to follow the discipline
+// established above: `Skipped` means "cannot be certain, so forward to
+// proving" (an honest coverage gap, not a rejection); `Invalid` is reserved
+// for an affirmative cryptographic or structural failure this module can
+// actually stand behind. What changed is which failures qualify as
+// affirmative -- the RFC's definition, not the circuit's, going forward.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -367,6 +380,61 @@ export function certPublicKey(derBytes) {
     return { key, details: { ...key.asymmetricKeyDetails } };
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------
+// certPublicKeyOrInvalidReason -- Task 2 (Plan B) addition. Same parse as
+// certPublicKey, but distinguishes WHY no key came out, because the two
+// reasons now get different verdicts (RFC-strict, not circuit-mirroring):
+// a structurally unparseable certificate is still Skipped (uncertain,
+// unchanged from Plan A); a certificate that parses fine as ASN.1 but whose
+// embedded public key OpenSSL itself refuses to build a KeyObject for --
+// the off-curve-point case, primarily -- is now Invalid, an affirmative
+// rejection, per this plan's design doc ("RFC-strict: ECDSA" section).
+//
+// certPublicKey itself is left alone (Task 1's contract, tested directly
+// with its own "returns null on any failure" semantics) rather than
+// widening its return shape -- this is a separate function used only by the
+// two call sites that need the distinction.
+// ---------------------------------------------------------------------
+
+/**
+ * Splits certPublicKey's single "parse the certificate" step into its two
+ * distinct OpenSSL calls, so the two ways it can fail can get two different
+ * verdicts:
+ *
+ * 1. `new crypto.X509Certificate(buf)` parses DER/ASN.1 *structure* only. If
+ *    this throws, the certificate itself is unparseable (a corrupted tag
+ *    byte, truncated length, etc.) -- `{ok:false, invalid:false}`, callers
+ *    report `Skipped`, unchanged from before.
+ * 2. `cert.publicKey` is where OpenSSL actually builds an `EVP_PKEY` from the
+ *    parsed `SubjectPublicKeyInfo` -- this is where curve-membership (and
+ *    other key-validity) checks happen. Verified empirically (this file's
+ *    report): a certificate carrying a syntactically well-formed but
+ *    off-curve EC point parses fine at step 1, then throws only here
+ *    (`"digital envelope routines::decode error"`), while a corrupted outer
+ *    DER tag throws at step 1 instead. If step 2 throws, the certificate's
+ *    structure was fine but its key material was not -- `{ok:false,
+ *    invalid:true, reason}`, callers report `Invalid`.
+ *
+ * @param {Uint8Array | Buffer} derBytes
+ * @returns {{ok:true, key: import('node:crypto').KeyObject, details: object} |
+ *   {ok:false, invalid:true, reason:string} | {ok:false, invalid:false}}
+ */
+function certPublicKeyOrInvalidReason(derBytes) {
+  const buf = Buffer.isBuffer(derBytes) ? derBytes : Buffer.from(derBytes);
+  let cert;
+  try {
+    cert = new crypto.X509Certificate(buf);
+  } catch {
+    return { ok: false, invalid: false };
+  }
+  try {
+    const key = cert.publicKey;
+    return { ok: true, key, details: { ...key.asymmetricKeyDetails } };
+  } catch (err) {
+    return { ok: false, invalid: true, reason: err && err.message ? err.message : String(err) };
   }
 }
 
@@ -912,11 +980,16 @@ function verifyEcdsa(cert, hashBits, message, rLimbs, sLimbs, n) {
     // Rust distinguishes an off-curve key (Structural -> Skipped) from a
     // failed verification (Failed -> Invalid) because it reconstructs the
     // EC point from raw limbs, which can be off-curve. This module never
-    // does that -- the point always comes from a real certificate that
-    // OpenSSL's own X.509 parser accepted -- so that specific Structural
-    // case does not arise the same way here. If `crypto.verify` still
-    // throws (a malformed key/signature shape it cannot even attempt),
-    // that is a structural uncertainty, not a circuit-equivalent failure.
+    // does that -- `cert.key` here always comes from a real certificate
+    // whose key `certPublicKeyOrInvalidReason` already confirmed OpenSSL
+    // could build a KeyObject for, which (Plan B) is itself now the
+    // off-curve check: an off-curve point is caught and reported `Invalid`
+    // there, before a call ever reaches this function. So this catch is not
+    // where off-curve-ness is caught (by design, not oversight) -- if
+    // `crypto.verify` still throws here, it is over some OTHER malformed
+    // key/signature shape it cannot even attempt, a structural uncertainty
+    // distinct from both the off-curve case above and a normal failed
+    // verification below.
     return { ok: false, skip: true, reason: `ECDSA verification threw: ${err.message}` };
   }
   if (!ok) {
@@ -1316,10 +1389,25 @@ function verifyRegisterFamily(inputs, p) {
     return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
   }
   const dscTbs = rawDsc.subarray(0, rawDscActualLength);
-  const dscCert = certPublicKey(wrapAsCertificate(dscTbs));
-  if (!dscCert) {
+  const dscCertResult = certPublicKeyOrInvalidReason(wrapAsCertificate(dscTbs));
+  if (!dscCertResult.ok) {
+    if (dscCertResult.invalid) {
+      // RFC-strict (Plan B): the certificate's ASN.1 structure parsed fine,
+      // but OpenSSL refused to build a KeyObject from its embedded public
+      // key -- an off-curve EC point, most commonly. The previous design
+      // mirrored the circuit (ecdsa.circom never checks the curve equation)
+      // by treating this identically to a structurally unparseable
+      // certificate: Skipped. That is no longer correct -- this is an
+      // affirmative "the embedded key is not valid," not a coverage gap.
+      const keyKind = keyScheme === 'ecdsa' ? `a valid point on ${p.curve}` : 'a valid RSA public key';
+      return invalid(
+        `pubKey_dsc's certificate (raw_dsc at dsc_pubKey_offset) does not carry ${keyKind}: ` +
+          `OpenSSL rejected the embedded key (${dscCertResult.reason})`,
+      );
+    }
     return skipped('raw_dsc does not parse as a readable certificate');
   }
+  const dscCert = { key: dscCertResult.key, details: dscCertResult.details };
   // Certificate-based comparison, kept alongside the window comparison
   // above (not replaced by it): this is what Task 1/Task 2 already
   // established, and it is what lets `verifySignatureLink` below use a real
@@ -1453,10 +1541,20 @@ function verifyDscFamily(inputs, p) {
     return windowResult.skip ? skipped(windowResult.reason) : invalid(windowResult.reason);
   }
   const cscaTbs = rawCsca.subarray(0, rawCscaActualLength);
-  const cscaCert = certPublicKey(wrapAsCertificate(cscaTbs));
-  if (!cscaCert) {
+  const cscaCertResult = certPublicKeyOrInvalidReason(wrapAsCertificate(cscaTbs));
+  if (!cscaCertResult.ok) {
+    if (cscaCertResult.invalid) {
+      // See verifyRegisterFamily's identical branch for why this is Invalid,
+      // not Skipped, under Plan B's RFC-strict rule.
+      const keyKind = keyScheme === 'ecdsa' ? `a valid point on ${p.curve}` : 'a valid RSA public key';
+      return invalid(
+        `csca_pubKey's certificate (raw_csca at csca_pubKey_offset) does not carry ${keyKind}: ` +
+          `OpenSSL rejected the embedded key (${cscaCertResult.reason})`,
+      );
+    }
     return skipped('raw_csca does not parse as a readable certificate');
   }
+  const cscaCert = { key: cscaCertResult.key, details: cscaCertResult.details };
   // Certificate-based comparison, kept alongside the window comparison
   // above (not replaced by it) -- see verifyRegisterFamily's identical
   // comment on why both are needed.
