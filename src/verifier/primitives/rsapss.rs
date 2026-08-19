@@ -252,6 +252,60 @@ mod tests_support {
              in 65536 attempts"
         );
     }
+
+    /// Signs a `(hash, salt_len)` shape whose minimum EM_LEN exceeds what
+    /// fits under this file's 1024-bit test modulus -- true today only for
+    /// (SHA-512, 64), whose minimum EM_LEN is 64 (hash) + 64 (salt) + 2 = 130
+    /// bytes (1040 bits), 16 bits more than this key's 128-byte capacity.
+    /// `sign_pss`'s plain `em_int.modpow(d, n)` only proves anything when
+    /// `EM < n`: RSA signs `EM mod n`, not EM itself, whenever EM >= n, and
+    /// the reduced value does not round-trip back through `verify_pss`'s own
+    /// EMSA-PSS-DECODE. So this searches the last two bytes of the salt
+    /// (65536 candidates, fixed content otherwise) for one whose resulting
+    /// EM happens to land below `n` -- a fixed, deterministic search space
+    /// (not a source of test flakiness), confirmed non-vacuous below by
+    /// finding a hit well inside that bound.
+    pub fn sign_pss_for_a_shape_wider_than_the_modulus(
+        m_hash: &[u8],
+        salt_prefix: &[u8],
+        hash: PssHash,
+        key_bits: u32,
+        n: &BigUint,
+        d: &BigUint,
+    ) -> BigUint {
+        let em_len = (key_bits as usize) / 8;
+        let h_len = m_hash.len();
+        let mut salt = salt_prefix.to_vec();
+        let salt_len = salt.len();
+        for attempt in 0u32..=0xffff {
+            if salt_len >= 2 {
+                salt[salt_len - 2] = (attempt >> 8) as u8;
+                salt[salt_len - 1] = attempt as u8;
+            }
+            let mut m_prime = vec![0u8; 8];
+            m_prime.extend_from_slice(m_hash);
+            m_prime.extend_from_slice(&salt);
+            let h = hash.digest(&m_prime);
+            let db_len = em_len - h_len - 1;
+            let mut db = vec![0u8; db_len];
+            db[db_len - salt_len - 1] = 0x01;
+            db[db_len - salt_len..].copy_from_slice(&salt);
+            let mask = mgf1(&h, db_len, hash);
+            let mut masked: Vec<u8> = db.iter().zip(mask.iter()).map(|(a, b)| a ^ b).collect();
+            masked[0] &= 0x7f;
+            let mut em = masked;
+            em.extend_from_slice(&h);
+            em.push(0xbc);
+            let em_int = BigUint::from_bytes_be(&em);
+            if &em_int < n {
+                return em_int.modpow(d, n);
+            }
+        }
+        unreachable!(
+            "no candidate salt suffix produced EM < n against the 1024-bit test modulus \
+             in 65536 attempts"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -260,18 +314,28 @@ mod tests {
 
     // Signs by constructing EM directly and raising to d, so the test proves
     // verify_pss agrees with a from-scratch EMSA-PSS-ENCODE — not with itself.
-    fn sign_pss(m_hash: &[u8], salt: &[u8], key_bits: u32, n: &BigUint, d: &BigUint) -> BigUint {
+    // Parameterised over `hash` (rather than hardcoding SHA-256) so the same
+    // helper can prove round-trips for every (hash, salt_len) shape the 15
+    // PSS_SALT_AND_KEY_LENGTH rows use, not just SHA-256's.
+    fn sign_pss(
+        m_hash: &[u8],
+        salt: &[u8],
+        hash: PssHash,
+        key_bits: u32,
+        n: &BigUint,
+        d: &BigUint,
+    ) -> BigUint {
         let em_len = (key_bits / 8) as usize;
         let h_len = m_hash.len();
         let mut m_prime = vec![0u8; 8];
         m_prime.extend_from_slice(m_hash);
         m_prime.extend_from_slice(salt);
-        let h = sha256(&m_prime);
+        let h = hash.digest(&m_prime);
         let db_len = em_len - h_len - 1;
         let mut db = vec![0u8; db_len];
         db[db_len - salt.len() - 1] = 0x01;
         db[db_len - salt.len()..].copy_from_slice(salt);
-        let mask = mgf1(&h, db_len, PssHash::Sha256);
+        let mask = mgf1(&h, db_len, hash);
         let mut masked: Vec<u8> = db.iter().zip(mask.iter()).map(|(a, b)| a ^ b).collect();
         masked[0] &= 0x7f; // clear the leftmost bit, as a conformant signer does
         let mut em = masked;
@@ -285,7 +349,7 @@ mod tests {
         let (n, d) = tests_support::test_key();
         let m_hash = sha256(b"signed attributes");
         let salt = [7u8; 32];
-        let sig = sign_pss(&m_hash, &salt, 1024, &n, &d);
+        let sig = sign_pss(&m_hash, &salt, PssHash::Sha256, 1024, &n, &d);
         assert_eq!(
             verify_pss(&sig, &n, 65537, &m_hash, PssHash::Sha256, 32, 1024),
             Ok(())
@@ -297,7 +361,7 @@ mod tests {
         let (n, d) = tests_support::test_key();
         let m_hash = sha256(b"signed attributes");
         let salt = [7u8; 32];
-        let sig = sign_pss(&m_hash, &salt, 1024, &n, &d);
+        let sig = sign_pss(&m_hash, &salt, PssHash::Sha256, 1024, &n, &d);
         let other = sha256(b"different attributes");
         let err = verify_pss(&sig, &n, 65537, &other, PssHash::Sha256, 32, 1024).unwrap_err();
         assert!(err.contains("H mismatch"), "wrong reason: {err}");
@@ -307,11 +371,64 @@ mod tests {
     fn a_wrong_salt_length_fails_for_its_own_reason() {
         let (n, d) = tests_support::test_key();
         let m_hash = sha256(b"signed attributes");
-        let sig = sign_pss(&m_hash, &[7u8; 32], 1024, &n, &d);
+        let sig = sign_pss(&m_hash, &[7u8; 32], PssHash::Sha256, 1024, &n, &d);
         // Verifying a salt-32 signature as salt-64 must fail on the DB
         // separator, not on H — asserting the reason is the point.
         let err = verify_pss(&sig, &n, 65537, &m_hash, PssHash::Sha256, 64, 1024).unwrap_err();
         assert!(err.contains("0x01 separator"), "wrong reason: {err}");
+    }
+
+    #[test]
+    fn pss_round_trips_for_sha256_with_a_64_byte_salt() {
+        // id 46's shape: SHA-256 with a 64-byte salt, the single exception
+        // to the otherwise-universal salt = hash/8 rule (see params.rs's
+        // PSS_SALT_AND_KEY_LENGTH doc comment). 32 (hash) + 64 (salt) + 2 =
+        // 98 bytes fits comfortably under this file's 1024-bit (128-byte)
+        // test key, so a plain `sign_pss` round-trip suffices here.
+        let (n, d) = tests_support::test_key();
+        let m_hash = sha256(b"signed attributes");
+        let salt = [7u8; 64];
+        let sig = sign_pss(&m_hash, &salt, PssHash::Sha256, 1024, &n, &d);
+        assert_eq!(
+            verify_pss(&sig, &n, 65537, &m_hash, PssHash::Sha256, 64, 1024),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn pss_round_trips_for_sha384_with_a_48_byte_salt() {
+        // id 45's shape. 48 (hash) + 48 (salt) + 2 = 98 bytes, again well
+        // under this key's 128-byte capacity.
+        let (n, d) = tests_support::test_key();
+        let m_hash = PssHash::Sha384.digest(b"signed attributes");
+        let salt = [7u8; 48];
+        let sig = sign_pss(&m_hash, &salt, PssHash::Sha384, 1024, &n, &d);
+        assert_eq!(
+            verify_pss(&sig, &n, 65537, &m_hash, PssHash::Sha384, 48, 1024),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn pss_round_trips_for_sha512_with_a_64_byte_salt() {
+        // id 42's shape. Its minimum EM_LEN is 64 (hash) + 64 (salt) + 2 =
+        // 130 bytes (1040 bits) -- 16 bits *more* than this file's 1024-bit
+        // test key can carry, which is exactly why production always pairs
+        // this shape with a >=2048-bit key (PSS_SALT_AND_KEY_LENGTH's id-42
+        // row: bits 2048). A plain `sign_pss` round-trip is impossible here
+        // by construction (not a bug to work around): it would sign
+        // `EM mod n`, not EM itself, since EM >= n always at this size.
+        // `sign_pss_for_a_shape_wider_than_the_modulus` searches for a salt
+        // whose EM happens to land below n instead, so the round-trip still
+        // proves something real about the SHA-512 dispatch arm.
+        let (n, d) = tests_support::test_key();
+        let hash = PssHash::Sha512;
+        let m_hash = hash.digest(b"signed attributes");
+        let salt = [7u8; 64];
+        let sig = tests_support::sign_pss_for_a_shape_wider_than_the_modulus(
+            &m_hash, &salt, hash, 1040, &n, &d,
+        );
+        assert_eq!(verify_pss(&sig, &n, 65537, &m_hash, hash, 64, 1040), Ok(()));
     }
 
     #[test]
