@@ -29,6 +29,46 @@ fn fixed2(values: &[String], what: &str) -> Result<[U256; 2], String> {
     Ok([parsed[0], parsed[1]])
 }
 
+/// Reorders a proof's G2 coordinates into the form that is actually submitted
+/// on-chain, so a digest taken over it matches what the hub will compute.
+///
+/// The hub digests the calldata it receives. A relaying client transposes each
+/// `pi_b` pair before submitting, because a Solidity pairing check reads an Fp2
+/// element imaginary-part-first while a Groth16 prover emits it the other way --
+/// see `relayer/src/celo/types/conversions.rs` in self-infra-revamp, which does
+/// this on all three submission paths, and `formatCallData.ts` in the monorepo,
+/// which has always done it for clients.
+///
+/// Signing the prover's order instead produced a digest the hub could never
+/// arrive at: `ecrecover` returned some unrelated address and every register and
+/// disclose call reverted `UnauthorizedProverSigner` under enforcement. Nothing
+/// caught it because each component was locally correct -- the relayer must swap
+/// to make the proof verify, the enclave signed what the prover wrote, and the
+/// hub encoded what it was handed.
+///
+/// Deliberately not folded into `encode`. That function is pinned against
+/// `cast abi-encode` ground truth and its job is to encode faithfully; which
+/// coordinate order to hand it is a separate decision, and keeping the two apart
+/// means the ground-truth test still tests exactly one thing.
+pub fn to_submitted_order(proof: &Proof) -> Result<Proof, String> {
+    if proof.pi_b.len() != 2 {
+        return Err(format!("pi_b must have exactly 2 rows, got {}", proof.pi_b.len()));
+    }
+    let mut pi_b = Vec::with_capacity(2);
+    for (i, row) in proof.pi_b.iter().enumerate() {
+        if row.len() != 2 {
+            return Err(format!("pi_b[{i}] must have exactly 2 elements, got {}", row.len()));
+        }
+        pi_b.push(vec![row[1].clone(), row[0].clone()]);
+    }
+    Ok(Proof {
+        pi_a: proof.pi_a.clone(),
+        pi_b,
+        pi_c: proof.pi_c.clone(),
+        protocol: proof.protocol.clone(),
+    })
+}
+
 /// abi.encode(uint256[2], uint256[2][2], uint256[2], uint256[])
 ///
 /// Split out from `proof_digest` so tests can assert the intermediate ABI-encoded bytes
@@ -69,6 +109,52 @@ mod tests {
             },
             vec!["9".into(), "10".into()],
         )
+    }
+
+    #[test]
+    fn to_submitted_order_transposes_each_g2_pair() {
+        let (p, _) = sample();
+        let out = to_submitted_order(&p).unwrap();
+        assert_eq!(out.pi_b[0], vec!["4".to_string(), "3".to_string()]);
+        assert_eq!(out.pi_b[1], vec!["6".to_string(), "5".to_string()]);
+        // G1 points are untouched -- only G2 coordinates are order-sensitive.
+        assert_eq!(out.pi_a, p.pi_a);
+        assert_eq!(out.pi_c, p.pi_c);
+    }
+
+    /// The reason this exists: the two orders produce different digests, so
+    /// signing the wrong one is unrecoverable at the contract. If this ever
+    /// asserts equal, the transposition has become a no-op and every signature
+    /// would silently be taken over the prover's order again.
+    #[test]
+    fn the_two_orders_do_not_share_a_digest() {
+        let (p, pi) = sample();
+        let submitted = to_submitted_order(&p).unwrap();
+        assert_ne!(
+            proof_digest(&p, &pi).unwrap(),
+            proof_digest(&submitted, &pi).unwrap(),
+            "swapped and unswapped pi_b must not digest identically"
+        );
+    }
+
+    /// Applying it twice returns the original, which is what makes "which order
+    /// am I holding" answerable at all: the transposition is its own inverse.
+    #[test]
+    fn the_transposition_is_its_own_inverse() {
+        let (p, _) = sample();
+        let back = to_submitted_order(&to_submitted_order(&p).unwrap()).unwrap();
+        assert_eq!(back.pi_b, p.pi_b);
+    }
+
+    #[test]
+    fn a_malformed_pi_b_is_rejected() {
+        let (mut p, _) = sample();
+        p.pi_b = vec![vec!["1".into(), "2".into()]];
+        assert!(to_submitted_order(&p).unwrap_err().contains("must have exactly 2 rows"));
+
+        let (mut q, _) = sample();
+        q.pi_b = vec![vec!["1".into()], vec!["3".into(), "4".into()]];
+        assert!(to_submitted_order(&q).unwrap_err().contains("pi_b[0] must have exactly 2 elements"));
     }
 
     #[test]
