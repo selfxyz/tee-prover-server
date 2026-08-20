@@ -63,6 +63,17 @@ COPY ./circuits/gcp_jwt_verifier_cpp /circuits/gcp_jwt_verifier_cpp
 COPY ./zkeys/gcp_jwt_verifier.zkey /zkeys/gcp_jwt_verifier.zkey
 RUN chmod +x /circuits/gcp_jwt_verifier_cpp/gcp_jwt_verifier
 
+# The signature pre-check sidecar, at the path sidecar.rs's DEFAULT_SIDECAR_SCRIPT
+# looks for. Its absence is not a degraded mode: resolved_sidecar_script falls back
+# to CARGO_MANIFEST_DIR, which is a path in the BUILD stage and does not exist here,
+# so the spawn fails, the verdict is Skipped, and --precheck-mode=enforce rejects the
+# request before witness generation. Every non-KYC proof this image serves would fail.
+#
+# Copying the directory is enough because verify.mjs has zero dependencies by design
+# (node:crypto, node:fs, node:path only) -- unlike jwt-input-generator above, which
+# needs npm ci. Node itself is already installed for that sidecar.
+COPY signature-verifier /signature-verifier
+
 LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID,PRECHECK_MODE,PROVER_SECRET_PREFIX"
 LABEL "tee.launch_policy.monitoring_memory_allow"="always"
 
