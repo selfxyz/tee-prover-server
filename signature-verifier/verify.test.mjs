@@ -483,6 +483,22 @@ function bigIntToBytesForTest(value, length) {
   return Buffer.from(hex.padStart(length * 2, '0'), 'hex');
 }
 
+/** Inverse of limbsToBigInt: splits `value` into `k` base-`2^n` limbs,
+ * least-significant limb first, as decimal strings -- for tests that need
+ * to construct a wire-shaped limb array from a value they picked (an
+ * off-curve point's coordinates, an out-of-range scalar), rather than one
+ * read out of a real fixture. */
+function limbsFromBigInt(value, n, k) {
+  const mask = (1n << BigInt(n)) - 1n;
+  const limbs = [];
+  let v = value;
+  for (let i = 0; i < k; i++) {
+    limbs.push(String(v & mask));
+    v >>= BigInt(n);
+  }
+  return limbs;
+}
+
 // ---------------------------------------------------------------------
 // certPublicKey
 // ---------------------------------------------------------------------
@@ -571,6 +587,105 @@ describe('keyMatchesCert', () => {
     const tbs = tbsBytesOf(REGISTER_FAMILY[0], fixture);
     const cert = certPublicKey(wrapAsCertificate(tbs));
     assert.equal(keyMatchesCert(fixture.pubKey_dsc, 120, 35, cert, 'eddsa'), false);
+  });
+});
+
+// ---------------------------------------------------------------------
+// An independent (test-only, not imported from verify.mjs) DER reader for
+// RSAPublicKey's modulus, used solely to build the "known correct" expected
+// value for the RSASSA-PSS tests below without relying on the very
+// extraction code (`extractRsaModulus`) those tests exist to pin -- reusing
+// the fix's own code to build its own input would not actually prove
+// anything. Validated against `KeyObject.export({format:'jwk'})` for a
+// plain RSA key (where JWK export works) before being trusted for the one
+// case JWK export cannot handle (RSASSA-PSS).
+// ---------------------------------------------------------------------
+
+function readTlv(buf, offset) {
+  const tag = buf[offset];
+  const first = buf[offset + 1];
+  let length;
+  let headerLen;
+  if (first & 0x80) {
+    const numLenBytes = first & 0x7f;
+    let len = 0;
+    for (let i = 0; i < numLenBytes; i++) len = len * 256 + buf[offset + 2 + i];
+    length = len;
+    headerLen = 2 + numLenBytes;
+  } else {
+    length = first;
+    headerLen = 2;
+  }
+  const contentStart = offset + headerLen;
+  return { tag, contentStart, content: buf.subarray(contentStart, contentStart + length), nextOffset: contentStart + length };
+}
+
+function rsaModulusFromSpkiDerIndependently(spkiDer) {
+  const outer = readTlv(spkiDer, 0);
+  const alg = readTlv(outer.content, 0);
+  const bitstr = readTlv(outer.content, alg.nextOffset);
+  const rsaPublicKey = readTlv(bitstr.content, 1); // skip the leading unused-bits byte
+  const modulusTlv = readTlv(rsaPublicKey.content, 0);
+  let modulus = modulusTlv.content;
+  if (modulus.length > 1 && modulus[0] === 0x00 && (modulus[1] & 0x80) !== 0) {
+    modulus = modulus.subarray(1);
+  }
+  return modulus;
+}
+
+describe('keyMatchesCert -- id-RSASSA-PSS SPKI certificates', () => {
+  // Real DSCs can carry an id-RSASSA-PSS SPKI algorithm identifier (this
+  // plan's design doc). keyMatchesCert's RSA branch used to call
+  // `cert.key.export({format:'jwk'})`, which throws `Unsupported JWK Key
+  // Type` for an rsa-pss KeyObject -- caught by the branch's own try/catch
+  // and reported as "does not match", even when the supplied modulus was
+  // correct. This pins the fix.
+
+  test("sanity check: this test file's own independent DER reader agrees with JWK export for a plain (non-PSS) RSA key", () => {
+    const { publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const jwkModulus = Buffer.from(publicKey.export({ format: 'jwk' }).n, 'base64url');
+    const derModulus = rsaModulusFromSpkiDerIndependently(publicKey.export({ format: 'der', type: 'spki' }));
+    assert.equal(Buffer.compare(jwkModulus, derModulus), 0);
+  });
+
+  test('the correct modulus for an id-RSASSA-PSS SPKI key is reported as a match, not a mismatch', () => {
+    const { publicKey } = crypto.generateKeyPairSync('rsa-pss', {
+      modulusLength: 3072,
+      hashAlgorithm: 'sha256',
+      mgf1HashAlgorithm: 'sha256',
+      saltLength: 32,
+    });
+    assert.equal(publicKey.asymmetricKeyType, 'rsa-pss');
+    // Confirms the premise this test rests on: JWK export genuinely throws
+    // for this key, so a test that passed without this fix would not
+    // actually be exercising the bug.
+    assert.throws(() => publicKey.export({ format: 'jwk' }), /Unsupported JWK Key Type/);
+
+    const modulus = rsaModulusFromSpkiDerIndependently(publicKey.export({ format: 'der', type: 'spki' }));
+    const n = 120;
+    const k = 35; // this file's fixed RSA limb parameters (register/DSC alike)
+    const suppliedLimbs = limbsFromBigInt(BigInt(`0x${modulus.toString('hex')}`), n, k);
+
+    const cert = { key: publicKey, details: { ...publicKey.asymmetricKeyDetails } };
+    assert.equal(
+      keyMatchesCert(suppliedLimbs, n, k, cert, 'rsa'),
+      true,
+      'the correct modulus must match even though the SPKI algorithm is id-RSASSA-PSS, not rsaEncryption',
+    );
+  });
+
+  test('a WRONG modulus for an id-RSASSA-PSS SPKI key is still reported as a mismatch', () => {
+    // Confirms the fix does not overcorrect into "always matches" for PSS
+    // keys -- it must still genuinely compare the modulus.
+    const { publicKey } = crypto.generateKeyPairSync('rsa-pss', {
+      modulusLength: 2048,
+      hashAlgorithm: 'sha256',
+      mgf1HashAlgorithm: 'sha256',
+      saltLength: 32,
+    });
+    const cert = { key: publicKey, details: { ...publicKey.asymmetricKeyDetails } };
+    const wrongLimbs = limbsFromBigInt(12345n, 120, 35);
+    assert.equal(keyMatchesCert(wrongLimbs, 120, 35, cert, 'rsa'), false);
   });
 });
 
@@ -896,29 +1011,35 @@ describe('verify -- skip paths', () => {
     assert.equal(result.verdict, 'skipped');
   });
 
-  test('a non-object input.json is skipped, not a thrown exception', () => {
-    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', null).verdict, 'skipped');
-    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', 'not an object').verdict, 'skipped');
-    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]).verdict, 'skipped');
+  test('a non-object input.json is invalid, not a thrown exception (Plan B Task 3: a genuine circuit-input generator never emits anything else)', () => {
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', null).verdict, 'invalid');
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', 'not an object').verdict, 'invalid');
+    assert.equal(verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]).verdict, 'invalid');
   });
 
-  test('a missing field is skipped, not invalid (register family)', () => {
+  test('a missing field is invalid, not skipped (register family)', () => {
+    // Plan B, Task 2: pubKey_dsc is a fixed-size signal array in the circuit
+    // (register.circom:87); a JSON payload missing it entirely cannot even
+    // produce a witness, which is a stronger rejection than a failed
+    // constraint, not a coverage gap.
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     delete tampered.pubKey_dsc;
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
-    assert.equal(result.verdict, 'skipped');
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('a missing field is skipped, not invalid (DSC family)', () => {
+  test('a missing field is invalid, not skipped (DSC family)', () => {
+    // Same reasoning as the register-family case above: csca_pubKey is a
+    // fixed-size signal array (dsc.circom:65).
     const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
     const tampered = structuredClone(fixture);
     delete tampered.csca_pubKey;
     const result = verify('dsc_sha256_rsa_65537_4096', tampered);
-    assert.equal(result.verdict, 'skipped');
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('malformed eContent padding is skipped, not invalid (register family)', () => {
+  test('malformed eContent padding is invalid (register family; Plan B Task 3: a genuine eContent is always correctly padded by the deterministic client-side routine that built it)', () => {
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     // Not a multiple of 64: recoverMessage's block-alignment check rejects
@@ -926,22 +1047,22 @@ describe('verify -- skip paths', () => {
     // content -- unlike a padded length that IS block-aligned (e.g. 64),
     // which this real fixture's actual bytes might still happen to parse as
     // a differently-recovered (but structurally valid) message, breaking
-    // link 2 (Invalid) rather than the padding parse itself (Skipped). Still
-    // >= dg1_hash_offset(70) + dg_hash/8(32) = 102, so link 1's own offset
-    // bound check (checked first) does not trip instead.
+    // link 2 for a different reason instead of the padding parse itself.
+    // Still >= dg1_hash_offset(70) + dg_hash/8(32) = 102, so link 1's own
+    // offset bound check (checked first) does not trip instead.
     tampered.eContent_padded_length = ['447'];
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('malformed raw_dsc padding is skipped, not invalid (DSC family)', () => {
+  test('malformed raw_dsc padding is invalid (DSC family; same reasoning)', () => {
     const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
     const tampered = structuredClone(fixture);
     // Not a multiple of 64 -- see the eContent test above for why this is
     // the deterministic choice rather than a block-aligned length.
     tampered.raw_dsc_padded_length = '703';
     const result = verify('dsc_sha256_rsa_65537_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
   test('an unreadable certificate is skipped (register family: raw_dsc\'s outer DER tag corrupted)', () => {
@@ -974,20 +1095,840 @@ describe('verify -- skip paths', () => {
     assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('an out-of-range csca_pubKey_offset is skipped, not invalid (DSC family, dsc.circom:110-127)', () => {
+  test('an out-of-range csca_pubKey_offset is invalid, not skipped (DSC family, dsc.circom:110-127 hard-asserts this range)', () => {
+    // dsc.circom:111-127 Num2Bits(12)s the offset, the size, and their sum,
+    // then asserts `csca_pubKey_offset_in_range === 1` -- an unsatisfiable
+    // constraint for an out-of-range offset, so the circuit itself could
+    // never produce a proof for this input. Treating it as Skipped (an
+    // earlier version of this module did) was looser than both the RFC and
+    // the circuit, and inflated the skip-rate metric the fail-closed
+    // rollout depends on to gate enforcement.
     const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
     const tampered = structuredClone(fixture);
     tampered.csca_pubKey_offset = '100000';
     const result = verify('dsc_sha256_rsa_65537_4096', tampered);
-    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
   });
 
-  test('an out-of-range dsc_pubKey_offset is skipped, not invalid (register family -- this module\'s own added link)', () => {
+  test('an out-of-range dsc_pubKey_offset is invalid, not skipped (register family -- this module\'s own added link, register.circom:102-123 hard-asserts this range)', () => {
     const fixture = loadFixture('register_passport.json');
     const tampered = structuredClone(fixture);
     tampered.dsc_pubKey_offset = ['100000'];
     const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+  });
+});
+
+// =======================================================================
+// Plan B, Task 2: malformed input is invalid, not skipped.
+//
+// The premise: `Skipped` used to mean two different things -- "cannot be
+// certain" and "this input is broken" -- and nearly every site below was
+// the second, reported as the first. Each of these mutations produces an
+// input the sibling monorepo's own circuit could never turn into a proof
+// (a missing/wrong-count fixed-size signal, a byte-range violation, an
+// offset/size relationship the circuit also range-checks, or a limb that
+// cannot satisfy the circuit's own Num2Bits/BigLessThan constraints) -- see
+// this task's report for the exact circuit citation backing each case.
+// Where a case is NOT here (RSA-scheme modulus reassembly, the four
+// SHA-padding-shape checks, three Aadhaar-specific width checks), that is
+// deliberate: this task's report explains why those stay Skipped rather
+// than being promoted on a guess.
+// =======================================================================
+
+function outOfRangeLimb() {
+  // >= 2^120 (the widest `n` any RSA/RSA-PSS circuit here uses) and
+  // >= 2^121 (Aadhaar's `n`) alike -- comfortably out of range for every
+  // scheme's limb width, so `limbsToBigInt` returns null regardless of
+  // which field it lands in.
+  return (1n << 400n).toString();
+}
+
+describe('verify -- Plan B Task 2: byte-range violations are invalid, not skipped', () => {
+  test('dg1 contains a non-byte value is invalid (register family, passportVerifier.circom:68 BytesToBitsArray -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const dg1 = [...tampered.dg1];
+    dg1[0] = '256';
+    tampered.dg1 = dg1;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /dg1 contains a non-byte value/);
+  });
+
+  test('eContent contains a non-byte value is invalid (register family, passportVerifier.circom:79 ShaBytesDynamic -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const econtent = [...tampered.eContent];
+    econtent[econtent.length - 1] = '999';
+    tampered.eContent = econtent;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /eContent contains a non-byte value/);
+  });
+
+  test('signed_attr contains a non-byte value is invalid (register family, passportVerifier.circom:89 ShaBytesDynamic -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const sa = [...tampered.signed_attr];
+    sa[sa.length - 1] = '999';
+    tampered.signed_attr = sa;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signed_attr contains a non-byte value/);
+  });
+
+  test('raw_dsc contains a non-byte value is invalid (register family, register.circom:100 explicit AssertBytes)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const rawDsc = [...tampered.raw_dsc];
+    rawDsc[rawDsc.length - 1] = '300';
+    tampered.raw_dsc = rawDsc;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_dsc contains a non-byte value/);
+  });
+
+  test('raw_csca contains a non-byte value is invalid (DSC family, dsc.circom:73 explicit AssertBytes)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    const rawCsca = [...tampered.raw_csca];
+    rawCsca[rawCsca.length - 1] = '300';
+    tampered.raw_csca = rawCsca;
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_csca contains a non-byte value/);
+  });
+
+  test('raw_dsc contains a non-byte value is invalid (DSC family, dsc.circom:203 PackBytesAndPoseidon -> AssertBytes)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    const rawDsc = [...tampered.raw_dsc];
+    rawDsc[rawDsc.length - 1] = '300';
+    tampered.raw_dsc = rawDsc;
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_dsc contains a non-byte value/);
+  });
+
+  test('qrDataPadded contains a non-byte value is invalid (Aadhaar, register_aadhaar.circom:46 Sha256Bytes -> Num2Bits(8))', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const qr = [...tampered.qrDataPadded];
+    qr[qr.length - 1] = '400';
+    tampered.qrDataPadded = qr;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /qrDataPadded contains a non-byte value/);
+  });
+});
+
+describe('verify -- Plan B Task 2: a missing or wrong-count fixed-size field is invalid, not skipped', () => {
+  test('a missing field is invalid (Aadhaar family)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    delete tampered.pubKey;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /missing or malformed field: pubKey/);
+  });
+
+  test('a wrong-count pubKey_dsc (ECDSA) is invalid, not skipped (fixed-size kScaled signal array)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    tampered.pubKey_dsc = tampered.pubKey_dsc.slice(0, -1);
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /expected 2\*k=/);
+  });
+
+  test('a wrong-count signature_passport (ECDSA) is invalid, not skipped (fixed-size kScaled signal array)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    tampered.signature_passport = tampered.signature_passport.slice(0, -1);
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature has \d+ limbs, expected 2\*k=/);
+  });
+});
+
+describe('verify -- Plan B Task 2: a fixed-size array shorter than its own declared length is invalid, not skipped', () => {
+  test('eContent shorter than dg1_hash_offset + dg_hash/8 declares is invalid (register family)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    // dg1_hash_offset=70, dg_hash=256 bits -> window ends at byte 102;
+    // truncate eContent to 100 bytes so the (already in-range) offset+len
+    // exceeds the array actually supplied.
+    tampered.eContent = tampered.eContent.slice(0, 100);
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /eContent is shorter than dg1_hash_offset/);
+  });
+
+  test('raw_csca shorter than raw_csca_actual_length declares is invalid (DSC family)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    tampered.raw_csca = tampered.raw_csca.slice(0, 10);
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_csca is shorter than raw_csca_actual_length declares/);
+  });
+});
+
+describe('verify -- Plan B Task 2: ECDSA-scheme limb reassembly and shape failures are invalid (ecdsaVerifier.circom Num2Bits(n), checkPubkeyPosition.circom key_length_ok)', () => {
+  test('an odd dsc_pubKey_actual_size is invalid, not skipped (register family ECDSA -- checkPubkeyPosition.circom:73-77 + signatureAlgorithm.circom:548-551, every valid ECDSA key length is even)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    assert.deepEqual(tampered.dsc_pubKey_actual_size, ['64']);
+    tampered.dsc_pubKey_actual_size = ['63'];
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /is odd; an ECDSA x\|\|y split must be even/);
+  });
+
+  test('an odd csca_pubKey_actual_size is invalid, not skipped (DSC family ECDSA)', () => {
+    const fixture = loadFixture('dsc_sha256_ecdsa_secp521r1.json');
+    const tampered = structuredClone(fixture);
+    assert.equal(tampered.csca_pubKey_actual_size, '132');
+    tampered.csca_pubKey_actual_size = '131';
+    const result = verify('dsc_sha256_ecdsa_secp521r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /is odd; an ECDSA x\|\|y split must be even/);
+  });
+
+  test('pubKey_dsc x/y half out of range is invalid, not skipped (register family ECDSA -- ecdsaVerifier.circom:68-69,73-74)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey_dsc];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey_dsc = limbs;
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /x\/y half does not reassemble into a valid integer/);
+  });
+
+  test('signature_passport (r/s) out of range is invalid, not skipped (register family ECDSA -- ecdsaVerifier.circom:66-67,71-72)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+});
+
+describe('verify -- Plan B Task 2: RSA-PSS-scheme limb reassembly is invalid (validate.circom Num2Bits(CHUNK_SIZE) on BOTH signature[i] and pubkey[i])', () => {
+  test('pubKey_dsc modulus out of range is invalid for RSA-PSS, not skipped (register family -- validate.circom:22-27)', () => {
+    const fixture = loadFixture('register_pss.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey_dsc];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey_dsc = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsapss_65537_32_2048', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /pubKey_dsc does not reassemble into a valid integer/);
+  });
+
+  test('signature_passport out of range is invalid for RSA-PSS, not skipped (register family -- validate.circom:22-27)', () => {
+    const fixture = loadFixture('register_pss.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsapss_65537_32_2048', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+
+  test('a signature reassembling wider than the certificate modulus is invalid for RSA-PSS (validate.circom:41-44 BigLessThan(signature, pubkey) === 1)', () => {
+    const fixture = loadFixture('register_pss.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[limbs.length - 1] = '100000000000000000000000000000000000'; // in-range per-limb, but pushes the reassembled integer far past the 2048-bit modulus
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsapss_65537_32_2048', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature is wider than the certificate modulus/);
+  });
+});
+
+describe('verify -- Plan B Task 2: plain-RSA-scheme SIGNATURE reassembly is invalid (verifyRsa65537Pkcs1v1_5.circom:33-34 Num2Bits(CHUNK_SIZE) on signature[i] only)', () => {
+  test('signature_passport out of range is invalid for plain RSA, not skipped (register family)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+
+  test('a signature reassembling wider than the certificate modulus is invalid for plain RSA (BigLessThan(signature, modulus) === 1)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature_passport];
+    limbs[limbs.length - 1] = '100000000000000000000000000000000000';
+    tampered.signature_passport = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature is wider than the certificate modulus/);
+  });
+
+  test('signature out of range is invalid for Aadhaar (register_aadhaar.circom -> SignatureVerifier(1,n,k) -> VerifyRsa65537Pkcs1v1_5, signature only)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature];
+    limbs[0] = outOfRangeLimb();
+    tampered.signature = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature does not reassemble into a valid integer/);
+  });
+});
+
+describe("verify -- Plan B Task 3: promoted from Task 2's cannot-confirm bucket (right question: could a genuine document ever have this property? see this task's report)", () => {
+  test('pubKey_dsc modulus out of range is now invalid for plain RSA too (chunking a real modulus into limbs cannot itself produce an out-of-range limb, regardless of scheme)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey_dsc];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey_dsc = limbs;
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /pubKey_dsc does not reassemble into a valid integer/);
+  });
+
+  test('pubKey out of range is now invalid for Aadhaar (same reasoning)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey];
+    limbs[0] = outOfRangeLimb();
+    tampered.pubKey = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /pubKey does not reassemble into a valid integer/);
+  });
+
+  test("Aadhaar no longer assumes a fixed 2048-bit modulus -- a pubKey that reassembles to a different magnitude is verified against ITS OWN derived width, and rejected (invalid) because the signature under the real key no longer matches it, not skipped for being an unexpected width", () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.pubKey];
+    // n=121, k=17: the top limb (index 16) is scaled by 2^(121*16)=2^1936.
+    // 2^113 is still a valid in-range limb (< 2^121), but 2^113 * 2^1936 is
+    // far past any real 2048-bit modulus -- previously an unconfirmed
+    // "too wide" skip; now just a wrong modulus, caught by verification.
+    limbs[limbs.length - 1] = (1n << 113n).toString();
+    tampered.pubKey = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /Aadhaar signature does not verify/);
+  });
+
+  test('a signature reassembling wider than pubKey\'s own derived modulus width is invalid for Aadhaar (same "signature must be narrower than the modulus" requirement already enforced for the register/DSC families)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    const limbs = [...tampered.signature];
+    limbs[limbs.length - 1] = (1n << 113n).toString();
+    tampered.signature = limbs;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signature is wider than pubKey's modulus/);
+  });
+
+  test('malformed signed_attr padding is now invalid (register family, link 4 -- a genuine signed_attr is always correctly SHA-padded by the deterministic client-side routine that built it)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const original = Number([].concat(fixture.signed_attr_padded_length)[0]);
+    tampered.signed_attr_padded_length = [String(original + 1)]; // no longer a multiple of 64
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /signed_attr padding is malformed/);
+  });
+
+  test('malformed qrDataPadded padding is now invalid (Aadhaar, same deterministic-padding reasoning)', () => {
+    const fixture = loadFixture('register_aadhaar.json');
+    const tampered = structuredClone(fixture);
+    tampered.qrDataPaddedLength = Number(fixture.qrDataPaddedLength) + 1;
+    const result = verify(AADHAAR_CIRCUIT, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /qrDataPadded padding is malformed/);
+  });
+
+  test('malformed eContent padding is now invalid (register family, link 2 -- same reasoning)', () => {
+    const fixture = loadFixture('register_passport.json');
+    const tampered = structuredClone(fixture);
+    const original = Number([].concat(fixture.eContent_padded_length)[0]);
+    tampered.eContent_padded_length = [String(original + 1)];
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /eContent padding is malformed/);
+  });
+
+  test('malformed raw_dsc padding is now invalid (DSC family, link 2 -- same reasoning)', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const tampered = structuredClone(fixture);
+    const original = Number([].concat(fixture.raw_dsc_padded_length)[0]);
+    tampered.raw_dsc_padded_length = [String(original + 1)];
+    const result = verify('dsc_sha256_rsa_65537_4096', tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /raw_dsc padding is malformed/);
+  });
+
+  test('input.json that is not a JSON object is now invalid (a genuine circuit-input generator never emits anything else)', () => {
+    const result = verify('register_sha256_sha256_sha256_rsa_3_4096', [1, 2, 3]);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /input.json is not a JSON object/);
+  });
+});
+
+// The one item Task 3 re-tested and deliberately left `Skipped` -- not
+// because no test covers it, but because a genuine document CAN have this
+// property: a real DSC/CSCA may legitimately use a signature algorithm this
+// module carries no limb parameters for, unlike the padding/reassembly
+// checks promoted above, which are about a client-side encoding step this
+// module can reason about directly. Already regression-pinned by the
+// "an unsupported SPKI algorithm is skipped, not invalid (the OID-flip case)"
+// suite further down this file (`certPublicKeyOrInvalidReason`/
+// `classifySpkiAlgorithm`) -- re-run, not re-written, by this task.
+
+// =======================================================================
+// Plan B, Task 1: RFC-strict negative vectors.
+//
+// The premise these pin: a false accept is a forged credential, not a free
+// optimization, so this module must be RFC-strict on its own terms rather
+// than lenient anywhere. Two cases these vectors cover: a malleable PSS EM,
+// and an off-curve key, both of which must be rejections rather than
+// coverage gaps. Each block below first establishes
+// current behaviour by running it (not by assuming the design doc), then
+// pins whatever that behaviour turns out to be -- see this task's report
+// for which of these four required an implementation change and which
+// were already true after Plan A.
+// =======================================================================
+
+describe('verify -- RFC 8017 leftmost-bit PSS forgery is invalid (RFC-strict, not circuit-mirrored)', () => {
+  // rsapss65537.circom:162 CLEARS the leftmost bit of the recovered DB
+  // rather than checking it (RFC 8017 SS9.1.2 step 9), and the pre-Plan-B
+  // design deliberately matched that: a signature whose EM has the
+  // leftmost bit genuinely set verified as Valid. This test constructs
+  // exactly such a signature -- using a real mock DSC's own private key,
+  // so the rest of the chain (dg1/eContent/signed_attr links, the
+  // certificate) is completely real and only the forged EM under test is
+  // synthetic -- and confirms it is now Invalid.
+  //
+  // Constructing the EM is the fiddly part the task brief warns about:
+  // forcing the leftmost bit can (a) push EM above the modulus, breaking
+  // the RSA round-trip, or (b) land on a byte where the bit was already
+  // going to end up set anyway, which would prove nothing about the
+  // clear-vs-check divergence. `rsapss.rs`'s deleted
+  // `sign_pss_with_high_bit_set` test helper (git history: commit 40ba9f7's
+  // parent, src/verifier/primitives/rsapss.rs) searches salt bytes for a
+  // candidate clearing both hurdles at once; this port follows the same
+  // two-gate acceptance test.
+  function mgf1(seed, outLen) {
+    const blocks = [];
+    let counter = 0;
+    while (blocks.length * 32 < outLen) {
+      const block = Buffer.concat([seed, Buffer.from([(counter >>> 24) & 0xff, (counter >>> 16) & 0xff, (counter >>> 8) & 0xff, counter & 0xff])]);
+      blocks.push(crypto.createHash('sha256').update(block).digest());
+      counter += 1;
+    }
+    return Buffer.concat(blocks).subarray(0, outLen);
+  }
+
+  /** Mirrors rsapss.rs's sign_pss_with_high_bit_set: searches candidate
+   * salts (varying only the last two bytes) for one where forcing
+   * maskedDB's leftmost bit BOTH keeps EM < n AND leaves the bit `verify_pss`
+   * (here, crypto.verify) will actually recover genuinely set -- not merely
+   * a bit that was going to be 1 regardless of forcing. Returns raw RSA
+   * signature bytes for BOTH the forced-bit EM under test and (for the same
+   * candidate salt/db/mask) the conformant, bit-clear EM a real signer would
+   * have produced -- the latter is the control this task's brief asks for:
+   * disabling the "force the bit" step on this exact candidate must leave a
+   * signature that verifies, proving the forced bit is what the rejection
+   * test below actually exercises, not some other broken parameter. Both are
+   * `EM^d mod n` via crypto.privateEncrypt/RSA_NO_PADDING -- the private-key
+   * raw operation, not a hand-rolled modexp. */
+  function signPssWithAndWithoutHighBit(privateKey, n, mHash, saltLenBytes, emLenBytes) {
+    const hLen = mHash.length;
+    const dbLen = emLenBytes - hLen - 1;
+    const salt = Buffer.alloc(saltLenBytes, 7);
+    for (let attempt = 0; attempt <= 0xffff; attempt++) {
+      salt[saltLenBytes - 1] = attempt & 0xff;
+      salt[saltLenBytes - 2] = (attempt >> 8) & 0xff;
+      const mPrime = Buffer.concat([Buffer.alloc(8, 0), mHash, salt]);
+      const h = crypto.createHash('sha256').update(mPrime).digest();
+      const db = Buffer.alloc(dbLen, 0);
+      db[dbLen - saltLenBytes - 1] = 0x01;
+      salt.copy(db, dbLen - saltLenBytes);
+      const mask = mgf1(h, dbLen);
+      const maskedConformant = Buffer.alloc(dbLen);
+      for (let i = 0; i < dbLen; i++) maskedConformant[i] = db[i] ^ mask[i];
+      const maskedForced = Buffer.from(maskedConformant);
+      maskedForced[0] |= 0x80;
+      const recoveredTopBitGenuinelySet = (maskedForced[0] ^ mask[0]) & 0x80;
+      const emForced = Buffer.concat([maskedForced, h, Buffer.from([0xbc])]);
+      const emForcedInt = BigInt(`0x${emForced.toString('hex')}`);
+      if (recoveredTopBitGenuinelySet && emForcedInt < n) {
+        const emConformant = Buffer.concat([maskedConformant, h, Buffer.from([0xbc])]);
+        return {
+          forgedSig: crypto.privateEncrypt({ key: privateKey, padding: crypto.constants.RSA_NO_PADDING }, emForced),
+          conformantSig: crypto.privateEncrypt({ key: privateKey, padding: crypto.constants.RSA_NO_PADDING }, emConformant),
+        };
+      }
+    }
+    throw new Error('no candidate salt produced both EM < n and a genuinely-set recovered top bit in 65536 attempts');
+  }
+
+  test('a forged PSS signature with a genuinely-set leftmost EM bit is invalid, not valid -- and the SAME candidate without the forced bit is valid (isolates the forced bit as the cause)', { skip: !MOCK_CERTS_AVAILABLE }, () => {
+    const row = REGISTER_FAMILY.find((r) => r.file === 'register_pss.json');
+    const fixture = loadFixture('register_pss.json');
+    const privateKey = crypto.createPrivateKey(fs.readFileSync(path.join(MOCK_CERT_ROOT, row.mockDir, 'mock_dsc.key'), 'utf8'));
+
+    // The real message this signature must cover -- link 4 verifies over
+    // sha256(recoverMessage(signed_attr)), and crypto.verify hashes the
+    // message it is given internally, so `message` (not its hash) is what
+    // must match what verify.mjs will feed crypto.verify.
+    const signedAttr = bytesFromDecimalArray(fixture.signed_attr);
+    const signedAttrPaddedLength = scalarNumber(fixture.signed_attr_padded_length);
+    const message = recoverMessage(signedAttr, signedAttrPaddedLength);
+    assert.ok(message, 'register_pss.json\'s own signed_attr must recover cleanly');
+    const mHash = crypto.createHash('sha256').update(message).digest();
+
+    const n = BigInt(`0x${Buffer.from(privateKey.export({ format: 'jwk' }).n, 'base64url').toString('hex')}`);
+    const { forgedSig, conformantSig } = signPssWithAndWithoutHighBit(privateKey, n, mHash, 32, 256);
+
+    const forgedLimbs = limbsFromBigInt(BigInt(`0x${forgedSig.toString('hex')}`), 120, 35);
+    const forged = structuredClone(fixture);
+    forged.signature_passport = forgedLimbs;
+    const forgedResult = verify(row.circuit, forged);
+    assert.equal(forgedResult.verdict, 'invalid', `got ${JSON.stringify(forgedResult)}`);
+    assert.match(forgedResult.reason, /PSS signature does not verify/, `got ${forgedResult.reason}`);
+
+    // Control: same candidate salt, same db, same mask, same message -- only
+    // the forced leftmost bit differs. If this were also invalid, the
+    // rejection above would not be attributable to the forced bit at all
+    // (it would prove this test's construction is broken some other way).
+    const conformantLimbs = limbsFromBigInt(BigInt(`0x${conformantSig.toString('hex')}`), 120, 35);
+    const conformant = structuredClone(fixture);
+    conformant.signature_passport = conformantLimbs;
+    const conformantResult = verify(row.circuit, conformant);
+    assert.deepEqual(conformantResult, { verdict: 'valid' }, `control (bit not forced) must verify: got ${JSON.stringify(conformantResult)}`);
+  });
+});
+
+describe('verify -- an off-curve embedded public key is invalid, not skipped (RFC-strict)', () => {
+  // ecdsa.circom never checks the curve equation (ecdsa.circom:18-102), and
+  // the shipped design mirrored that by treating an off-curve point the
+  // same as any other certificate-parse failure: Skipped. Running this
+  // (rather than assuming it) shows the CURRENT pre-implementation
+  // behaviour is exactly that -- see this task's report. This test
+  // replaces the real embedded EC point's bytes (both in raw_dsc AND in
+  // pubKey_dsc, so the byte-window comparison still passes and this
+  // exercises certificate parsing specifically, not keyMatchesWindow) with
+  // an all-0x01 point, which is vanishingly unlikely to satisfy any real
+  // curve equation, and confirms the result is Invalid and names the curve.
+  test('register family: an off-curve point in raw_dsc is invalid and names the curve', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const circuit = 'register_sha256_sha256_sha256_ecdsa_secp256r1';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const offset = scalarNumber(tampered.dsc_pubKey_offset);
+    const size = scalarNumber(tampered.dsc_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset);
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset + half);
+    tampered.raw_dsc = [...rawDsc].map(String);
+
+    const n = 64;
+    const k = 4;
+    const onesLimbs = limbsFromBigInt(BigInt(`0x${Buffer.alloc(half, 0x01).toString('hex')}`), n, k);
+    tampered.pubKey_dsc = [...onesLimbs, ...onesLimbs];
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /not carry a valid point on secp256r1/, `got ${result.reason}`);
+  });
+
+  test('DSC family: an off-curve point in raw_csca is invalid and names the curve', () => {
+    const fixture = loadFixture('dsc_sha256_ecdsa_secp521r1.json');
+    const circuit = 'dsc_sha256_ecdsa_secp521r1';
+    const tampered = structuredClone(fixture);
+
+    const rawCsca = bytesFromDecimalArray(tampered.raw_csca);
+    const offset = scalarNumber(tampered.csca_pubKey_offset);
+    const size = scalarNumber(tampered.csca_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(rawCsca, offset);
+    Buffer.alloc(half, 0x01).copy(rawCsca, offset + half);
+    tampered.raw_csca = [...rawCsca].map(String);
+
+    const n = 66;
+    const k = 8;
+    const onesLimbs = limbsFromBigInt(BigInt(`0x${Buffer.alloc(half, 0x01).toString('hex')}`), n, k);
+    tampered.csca_pubKey = [...onesLimbs, ...onesLimbs];
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /not carry a valid point on secp521r1/, `got ${result.reason}`);
+  });
+
+  test('disabling the check: without it, the off-curve point would only be Skipped (proves this is not caught downstream by something else)', () => {
+    // Same construction as the register-family test above, but calling the
+    // OLD certPublicKey (Task 1's parse-or-null primitive, which does not
+    // distinguish a structurally-fine-but-off-curve key from any other
+    // unparseable certificate) directly through the same wrapAsCertificate
+    // path this test file already uses elsewhere. This is the "disable the
+    // specific check" proof the task brief asks for: with the distinguishing
+    // check removed, the off-curve certificate is merely unparseable to
+    // certPublicKey, which is exactly the Skipped outcome this task's
+    // change moves away from.
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const row = REGISTER_FAMILY.find((r) => r.file === 'register_ecdsa_secp256r1.json');
+    const tbs = tbsBytesOf(row, fixture);
+    const corrupted = Buffer.from(tbs);
+    const offset = scalarNumber(fixture.dsc_pubKey_offset);
+    const size = scalarNumber(fixture.dsc_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(corrupted, offset);
+    Buffer.alloc(half, 0x01).copy(corrupted, offset + half);
+
+    assert.equal(certPublicKey(wrapAsCertificate(corrupted)), null, 'the pre-existing certPublicKey primitive must not itself distinguish off-curve from any other parse failure -- that distinction is what verify.mjs\'s new certPublicKeyOrInvalidReason adds');
+  });
+});
+
+// ---------------------------------------------------------------------
+// A minimal, test-local DER TLV reader used only to locate the SPKI's
+// AlgorithmIdentifier OID inside a raw_dsc/raw_csca tbsCertificate buffer,
+// so the tests below can flip one of its bytes -- mirroring verify.mjs's
+// own readDerTLV/findSubjectPublicKeyInfo (neither is exported, since
+// they're internal to the fix under test, not part of its public surface).
+// ---------------------------------------------------------------------
+
+function readDerTlvForOidLocation(buf, offset) {
+  const tag = buf[offset];
+  const first = buf[offset + 1];
+  let length;
+  let headerLen;
+  if (first & 0x80) {
+    const numLenBytes = first & 0x7f;
+    let len = 0;
+    for (let i = 0; i < numLenBytes; i++) len = len * 256 + buf[offset + 2 + i];
+    length = len;
+    headerLen = 2 + numLenBytes;
+  } else {
+    length = first;
+    headerLen = 2;
+  }
+  const contentStart = offset + headerLen;
+  return { tag, contentStart, content: buf.subarray(contentStart, contentStart + length), nextOffset: contentStart + length };
+}
+
+/** Locates the SPKI `AlgorithmIdentifier` OID inside `tbsBuf` (a raw_dsc/
+ * raw_csca buffer already truncated to its actual length) and flips its
+ * last byte in place -- leaving every other byte, and the ASN.1 structure
+ * itself, untouched. */
+function flipSpkiAlgorithmOidByte(tbsBuf) {
+  const outer = readDerTlvForOidLocation(tbsBuf, 0);
+  let offset = 0;
+  let oidAbsOffset = null;
+  let oidLen = null;
+  while (offset < outer.content.length) {
+    const tlv = readDerTlvForOidLocation(outer.content, offset);
+    if (tlv.tag === 0x30) {
+      const alg = readDerTlvForOidLocation(tlv.content, 0);
+      if (alg.tag === 0x30) {
+        const bitstr = readDerTlvForOidLocation(tlv.content, alg.nextOffset);
+        if (bitstr.tag === 0x03 && bitstr.nextOffset === tlv.content.length) {
+          const oidTlv = readDerTlvForOidLocation(alg.content, 0);
+          if (oidTlv.tag === 0x06) {
+            oidAbsOffset = outer.contentStart + tlv.contentStart + oidTlv.contentStart;
+            oidLen = oidTlv.content.length;
+            break;
+          }
+        }
+      }
+    }
+    offset = tlv.nextOffset;
+  }
+  assert.ok(oidAbsOffset !== null, 'expected to find the SPKI AlgorithmIdentifier OID in tbsBuf');
+  tbsBuf[oidAbsOffset + oidLen - 1] ^= 0xff;
+}
+
+describe('verify -- an unsupported SPKI algorithm is skipped, not invalid (the OID-flip case)', () => {
+  // certPublicKeyOrInvalidReason's earlier version treated ANY cert.publicKey
+  // throw as Invalid, reasoning that an off-curve point throws there while a
+  // structurally-corrupt certificate throws at the X509Certificate
+  // constructor instead. The first half is right; the conclusion was too
+  // broad: the constructor only parses ASN.1 *structure* -- cert.publicKey is
+  // where OpenSSL actually builds an EVP_PKEY, and EVERYTHING semantic about
+  // the SPKI throws there, including an algorithm OID this OpenSSL build
+  // does not implement, with the SAME generic "decode error" an off-curve
+  // point produces. Flipping one byte of the SPKI algorithm OID -- leaving
+  // the rest of the certificate's ASN.1 structure completely untouched --
+  // demonstrates this: the certificate still parses fine at step 1, and
+  // still throws only at step 2, indistinguishable BY WHICH CALL THREW from
+  // a genuine off-curve key. This must be Skipped ("we don't recognise this
+  // algorithm"), not Invalid ("we know this algorithm and the key is still
+  // bad") -- otherwise a DSC whose SPKI uses an algorithm this build lacks
+  // gets every document from that issuer rejected as a forgery, one
+  // enforcement mode earlier than intended (mode 2 already rejects Invalid;
+  // only mode 3 rejects Skipped), with no skip-rate signal to warn of it.
+
+  test('register family (ECDSA): flipping the SPKI algorithm OID in raw_dsc is skipped, naming the unsupported algorithm', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const circuit = 'register_sha256_sha256_sha256_ecdsa_secp256r1';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const rawDscActualLength = scalarNumber(tampered.raw_dsc_actual_length);
+    flipSpkiAlgorithmOidByte(rawDsc.subarray(0, rawDscActualLength));
+    tampered.raw_dsc = [...rawDsc].map(String);
+
+    const result = verify(circuit, tampered);
     assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /algorithm this build does not support/, `got ${result.reason}`);
+  });
+
+  test('register family (RSA): flipping the SPKI algorithm OID in raw_dsc is skipped, naming the unsupported algorithm', () => {
+    const fixture = loadFixture('register_passport.json');
+    const circuit = 'register_sha256_sha256_sha256_rsa_3_4096';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const rawDscActualLength = scalarNumber(tampered.raw_dsc_actual_length);
+    flipSpkiAlgorithmOidByte(rawDsc.subarray(0, rawDscActualLength));
+    tampered.raw_dsc = [...rawDsc].map(String);
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /algorithm this build does not support/, `got ${result.reason}`);
+  });
+
+  test('DSC family: flipping the SPKI algorithm OID in raw_csca is skipped, naming the unsupported algorithm', () => {
+    const fixture = loadFixture('dsc_sha256_rsa_65537_4096.json');
+    const circuit = 'dsc_sha256_rsa_65537_4096';
+    const tampered = structuredClone(fixture);
+
+    const rawCsca = bytesFromDecimalArray(tampered.raw_csca);
+    const rawCscaActualLength = scalarNumber(tampered.raw_csca_actual_length);
+    flipSpkiAlgorithmOidByte(rawCsca.subarray(0, rawCscaActualLength));
+    tampered.raw_csca = [...rawCsca].map(String);
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'skipped', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /algorithm this build does not support/, `got ${result.reason}`);
+  });
+
+  test('the other direction still holds: a RECOGNIZED algorithm with a genuinely bad key is still invalid, not skipped', () => {
+    // Cross-check so the two directions cannot silently collapse into one
+    // outcome: an off-curve point (recognized algorithm, bad key material)
+    // must stay Invalid even after this fix -- re-asserted here, beside the
+    // OID-flip verdict above, so a regression that made classifySpkiAlgorithm
+    // over-eager (treating everything as unrecognized) would be caught in
+    // the same place as the fix it is meant to pin. Uses the exact
+    // construction the "off-curve embedded public key" suite above already
+    // establishes.
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const circuit = 'register_sha256_sha256_sha256_ecdsa_secp256r1';
+    const tampered = structuredClone(fixture);
+
+    const rawDsc = bytesFromDecimalArray(tampered.raw_dsc);
+    const offset = scalarNumber(tampered.dsc_pubKey_offset);
+    const size = scalarNumber(tampered.dsc_pubKey_actual_size);
+    const half = size / 2;
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset);
+    Buffer.alloc(half, 0x01).copy(rawDsc, offset + half);
+    tampered.raw_dsc = [...rawDsc].map(String);
+    const onesLimbs = limbsFromBigInt(BigInt(`0x${Buffer.alloc(half, 0x01).toString('hex')}`), 64, 4);
+    tampered.pubKey_dsc = [...onesLimbs, ...onesLimbs];
+
+    const result = verify(circuit, tampered);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /not carry a valid point on secp256r1/, `got ${result.reason}`);
+  });
+});
+
+describe('verify -- an out-of-range ECDSA scalar (r >= curve order) is invalid', () => {
+  // node:crypto/OpenSSL's own ECDSA verification already rejects a
+  // component outside [1, n-1] (n = the curve order) -- there is no
+  // circuit-mirroring divergence to remove here, unlike PSS and off-curve
+  // above. This pins that behaviour with evidence rather than assuming it:
+  // setting every limb of the signature's r half to its maximum
+  // representable value (2^n - 1, n = the limb width) yields a value that
+  // is provably >= every deployed curve's order (Hasse's theorem bounds the
+  // order strictly below the field size, which is itself what the limb
+  // width encodes) -- curve-agnostic, no per-curve order constant needed.
+  for (const row of REGISTER_FAMILY.filter((r) => r.scheme === 'ecdsa')) {
+    test(`${row.file}: r forced to the maximum representable value (>= ${row.curve}'s order) is invalid`, () => {
+      const fixture = loadFixture(row.file);
+      const tampered = structuredClone(fixture);
+      const maxLimb = String((1n << BigInt(row.n)) - 1n);
+      const sigLimbs = [...tampered.signature_passport];
+      for (let i = 0; i < row.k; i++) {
+        sigLimbs[i] = maxLimb; // the r half occupies limbs [0, k)
+      }
+      tampered.signature_passport = sigLimbs;
+
+      const result = verify(row.circuit, tampered);
+      assert.equal(result.verdict, 'invalid', `${row.file}: got ${JSON.stringify(result)}`);
+      assert.match(result.reason, /ECDSA signature does not verify/, `${row.file}: got ${result.reason}`);
+    });
+  }
+
+  test('disabling the check: an in-range but merely-wrong r fails for the SAME reason, not a different one -- OpenSSL does not distinguish "out of range" as its own error class', () => {
+    // This is the closest this item comes to a "disable the check and
+    // confirm it is not caught downstream" proof: there is no separate,
+    // disable-able range check in this codebase for ECDSA scalars (unlike
+    // PSS's leftmost bit or the off-curve certificate case) -- the range
+    // check lives entirely inside OpenSSL's own ECDSA_verify. An ordinary
+    // tampered-but-in-range r fails via the exact same code path and the
+    // exact same reason string, confirming there is no separate downstream
+    // catch this test could be accidentally exercising instead.
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    const tampered = structuredClone(fixture);
+    const sigLimbs = [...tampered.signature_passport];
+    sigLimbs[0] = tamperedLimb(sigLimbs[0]);
+    tampered.signature_passport = sigLimbs;
+    const result = verify('register_sha256_sha256_sha256_ecdsa_secp256r1', tampered);
+    assert.equal(result.verdict, 'invalid');
+    assert.match(result.reason, /ECDSA signature does not verify/);
+  });
+});
+
+describe('verify -- the signature algorithm (hash) is pinned to the circuit name, never discovered', () => {
+  // Never infer the algorithm by trying candidates (this plan's design
+  // doc, "RFC-strict" section): a real signature, valid under the hash its
+  // circuit name actually declares, must NOT verify under a DIFFERENT
+  // declared hash -- proving verify.mjs uses exactly the hash the name
+  // says rather than brute-forcing until something matches. Only the
+  // SIGNATURE hash tag is changed (the last of the three register-family
+  // tags); dg_hash/econtent_hash are left alone so this isolates the
+  // signature-hash pin from the dg1/eContent chain checks, which use their
+  // own hash tags and would otherwise fail first for an unrelated reason.
+  test('ECDSA: a real sha256 signature presented against a circuit declaring sha512 is invalid, not valid', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    // Real circuit: register_sha256_sha256_sha256_ecdsa_secp256r1 (dg,
+    // econtent, AND sig hash all sha256). Only the sig hash tag changes.
+    const result = verify('register_sha256_sha256_sha512_ecdsa_secp256r1', fixture);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /ECDSA signature does not verify/, `got ${result.reason}`);
+  });
+
+  test('RSA PKCS#1 v1.5: a real sha256 signature presented against a circuit declaring sha512 is invalid, not valid', () => {
+    const fixture = loadFixture('register_passport.json');
+    // Real circuit: register_sha256_sha256_sha256_rsa_3_4096.
+    const result = verify('register_sha256_sha256_sha512_rsa_3_4096', fixture);
+    assert.equal(result.verdict, 'invalid', `got ${JSON.stringify(result)}`);
+    assert.match(result.reason, /RSA signature does not verify/, `got ${result.reason}`);
+  });
+
+  test('sanity: the real fixture with its own real circuit name is still valid (the hash-pin tests above are not vacuously passing on a fixture that never verifies)', () => {
+    const fixture = loadFixture('register_ecdsa_secp256r1.json');
+    assert.deepEqual(verify('register_sha256_sha256_sha256_ecdsa_secp256r1', fixture), { verdict: 'valid' });
   });
 });
 
@@ -1018,6 +1959,76 @@ describe('parseCircuitName', () => {
   test('an ECDSA curve absent from CURVE_PARAMS is null, not a guess', () => {
     assert.equal(parseCircuitName('register_sha256_sha256_sha256_ecdsa_secp192r1'), null);
   });
+});
+
+describe('verify -- the disclose circuits are recognised, not unknown', () => {
+  // The disclose circuits prove identity-tree membership and selective
+  // disclosure. They carry no document signature and no public key -- see
+  // vc_and_disclose.circom's input list -- so there is nothing here for a
+  // signature verifier to check, and saying so is a positive statement about
+  // four named circuits rather than the absence of a match.
+  const DISCLOSE = [
+    'vc_and_disclose',
+    'vc_and_disclose_id',
+    'vc_and_disclose_aadhaar',
+    'vc_and_disclose_kyc',
+  ];
+
+  for (const circuit of DISCLOSE) {
+    test(`${circuit} parses as the disclose family`, () => {
+      const p = parseCircuitName(circuit);
+      assert.notEqual(p, null, `${circuit} must be recognised, not null`);
+      assert.equal(p.family, 'disclose');
+    });
+
+    test(`${circuit} verifies as valid, carrying no reason field`, () => {
+      // Asserted with deepEqual, not `verdict === 'valid'`: the Rust
+      // SidecarResponse::Valid is a unit variant, so a reason string added
+      // here would be silently dropped on the wire rather than surfaced.
+      assert.deepEqual(verify(circuit, {}), { verdict: 'valid' });
+    });
+  }
+
+  test('the disclose verdict does not depend on the inputs it is handed', () => {
+    // Unlike every other family, no field of input.json is consulted. Pinned
+    // so a future refactor cannot quietly start reading one and make the
+    // verdict input-dependent.
+    assert.deepEqual(verify('vc_and_disclose', {}), { verdict: 'valid' });
+    assert.deepEqual(verify('vc_and_disclose', { dg1: ['nonsense'] }), { verdict: 'valid' });
+  });
+});
+
+describe('verify -- a name that merely resembles a disclose circuit still fails closed', () => {
+  // The recognition is an exact-match list, deliberately not a
+  // `startsWith('vc_and_disclose')` test. A prefix test would absorb any
+  // future vc_and_disclose_* circuit into "valid, nothing to check" without
+  // anyone deciding that. These are the assertions that pin the difference:
+  // today they and the tests above are indistinguishable, and the day a
+  // fifth disclose circuit is added they are not.
+  const NEAR_MISSES = [
+    'vc_and_disclose_typo',
+    'vc_and_disclose_v2',
+    'vc_and_disclosex',
+    'vc_and_disclose_',
+    'VC_AND_DISCLOSE',
+    'not_vc_and_disclose',
+  ];
+
+  for (const circuit of NEAR_MISSES) {
+    test(`${circuit} is null, not the disclose family`, () => {
+      assert.equal(parseCircuitName(circuit), null);
+    });
+
+    test(`${circuit} is skipped, which rejects under enforce`, () => {
+      const result = verify(circuit, {});
+      assert.equal(
+        result.verdict,
+        'skipped',
+        `${circuit} must not be silently accepted as valid -- an unrecognised name is a ` +
+          'coverage gap, and under enforcement a coverage gap must reject rather than forward',
+      );
+    });
+  }
 });
 
 describe('CLI contract: stdin {circuit, inputPath} JSON -> one stdout verdict JSON line, exit 0', () => {
@@ -1191,6 +2202,17 @@ describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) mat
     for (const file of files) {
       const stem = file.slice(0, -'.circom'.length);
       if (stem === 'register_kyc') {
+        // No limb layout to drift-check (EdDSA-BabyJubJub has none), but
+        // Plan B Task 3's zero-skip target still requires this on-disk name
+        // to parse -- an unrecognized name is a coverage gap, not a
+        // "nothing to check here." See src/verifier/mod.rs's
+        // `register_kyc_is_routed_to_the_native_kyc_verifier` for the
+        // routing this parse result feeds into.
+        test(`${familyDir}/instances/${file}`, () => {
+          const parsed = parseCircuitName(stem);
+          assert.ok(parsed, `${stem}: parseCircuitName does not recognize this on-disk instance name at all`);
+          assert.equal(parsed.family, 'kyc', `${stem}: expected family 'kyc', got ${JSON.stringify(parsed)}`);
+        });
         continue;
       }
       test(`${familyDir}/instances/${file}`, () => {
@@ -1292,6 +2314,75 @@ describe("drift guard: verify.mjs's circuit-name-derived (n, k, hash widths) mat
             `signatureAlgorithm id ${sigAlgoId} implies ${expectedSalt} via signatureVerifier.circom:95)`,
         );
       }
+    });
+  }
+});
+
+// =======================================================================
+// Plan B, Task 3, Step 5 -- the residual is empty: every deployed circuit
+// name is not just parseable (the drift guard above) but VERIFIABLE, by one
+// of the two paths production actually has -- this module's own dispatch
+// (register/register_id/dsc/aadhaar), or the native Rust handoff
+// (register_kyc, routed by src/verifier/mod.rs's `dispatch`). This is what
+// turns "zero skips" into a property of the deployed circuit set, not an
+// aspiration: a name that parses but that `verify()`'s own dispatch still
+// treats as an unrecognized/unhandled coverage gap would fail this test,
+// which is exactly the "parses but isn't verifiable" case Step 5 exists to
+// rule out. Extends the drift guard's own file walk rather than building a
+// second one, and self-skips under the same condition and with the same
+// unmistakable message.
+// =======================================================================
+
+describe('residual coverage: every deployed circuit name is verifiable, not merely parseable (Plan B Task 3, Step 5)', () => {
+  if (!SIBLING_AVAILABLE) {
+    const msg = `SKIP: sibling monorepo not present at ${SIBLING_CIRCUITS_ROOT} -- residual coverage guard did NOT run`;
+    console.log(msg);
+    test('sibling monorepo not present -- this whole guard is SKIPPED, not passing', { skip: msg }, () => {});
+    return;
+  }
+
+  function stemsIn(familyDir) {
+    const dir = path.join(SIBLING_CIRCUITS_ROOT, familyDir, 'instances');
+    return fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith('.circom'))
+      .sort()
+      .map((f) => f.slice(0, -'.circom'.length));
+  }
+
+  const allStems = [...stemsIn('register'), ...stemsIn('register_id'), ...stemsIn('dsc')];
+
+  test('at least one on-disk instance file was found (otherwise every test below is vacuous)', () => {
+    assert.ok(allStems.length > 0, `found 0 instance files under ${SIBLING_CIRCUITS_ROOT}`);
+  });
+
+  for (const stem of allStems) {
+    test(`${stem} is verifiable, not merely parseable`, () => {
+      const parsed = parseCircuitName(stem);
+      assert.ok(parsed, `${stem}: does not even parse -- a coverage gap (see the drift guard above)`);
+
+      if (stem === 'register_kyc') {
+        // Verified by the native Rust path instead of this module -- see
+        // src/verifier/mod.rs's `dispatch` and its own
+        // register_kyc_is_routed_to_the_native_kyc_verifier test, which
+        // asserts the ROUTING (not a JS verdict here, since this module
+        // always, and correctly, declines EdDSA-BabyJubJub).
+        assert.equal(parsed.family, 'kyc');
+        return;
+      }
+
+      // Every non-KYC family this module recognizes at all must be routed to
+      // a real verifier function, never the dead-code "unhandled circuit
+      // family" fallback -- exercised by calling verify() with a
+      // deliberately empty input and asserting the verdict is a specific
+      // field-level rejection from that family's own verifier (Plan B Task 2
+      // promoted every "missing or malformed field" case to Invalid, so a
+      // real dispatch always produces exactly that here), never the generic
+      // "unknown or unsupported circuit"/"unhandled circuit family" wording
+      // a coverage gap would produce.
+      const result = verify(stem, {});
+      assert.equal(result.verdict, 'invalid', `${stem}: expected a field-level rejection, got ${JSON.stringify(result)}`);
+      assert.match(result.reason, /^missing or malformed field: /, `${stem}: got ${JSON.stringify(result)}`);
     });
   }
 });

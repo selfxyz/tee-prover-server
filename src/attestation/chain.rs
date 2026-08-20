@@ -46,14 +46,28 @@ fn to_u256_array<const N: usize>(values: &[String], what: &str) -> Result<[alloy
 ///
 /// `key` identifies the attested signing key (its address is what gets
 /// registered) but its private material never leaves enclave memory and is
-/// never used here. The transaction itself is signed and paid for by a
-/// separate submitter key (`PROOF_TEE_PRIVATE_KEY`) that only exists to
-/// satisfy the contract's `onlyProofTEE` check and pay gas — it is
-/// deliberately distinct from the attested key and must never be conflated
-/// with or derived from it.
+/// never used here. The transaction itself is signed and paid for by
+/// `submitter_pk`, a separate key that only exists to satisfy the contract's
+/// `onlyProverTEE` check and pay gas — it is deliberately distinct from the
+/// attested key and must never be conflated with or derived from it.
+///
+/// Every input is a parameter; this function reads no environment at all.
+///
+/// Under Confidential Space an env var is an instance-metadata value, readable
+/// by anyone holding `compute.instances.get` on the project. None of these
+/// three can travel that way: `submitter_pk` is a funded private key, and a
+/// provider RPC URL routinely embeds an API key in its path. `main.rs` fetches
+/// all three from Secret Manager — the same path the database URL already
+/// takes — and passes them in. Taking them as arguments rather than reading
+/// them here is what keeps that decision enforceable: an env read inside this
+/// function would silently reinstate the metadata route for whichever value
+/// it read.
 pub async fn register_prover_key(
     _key: &EnclaveKey,
     attestation: &AttestationProof,
+    rpc_url: &str,
+    hub_address: &str,
+    submitter_pk: &str,
 ) -> Result<(), String> {
     // Validate the attestation's shape before touching env vars or the network.
     // `AttestationProof`'s fields are `pub` and this fn is public, so nothing
@@ -70,24 +84,31 @@ pub async fn register_prover_key(
     let c = to_u256_array::<2>(&attestation.proof.pi_c, "pi_c")?;
     let pub_signals = to_u256_array::<20>(&attestation.public_inputs, "public_inputs")?;
 
-    // The submitter key only pays gas and satisfies onlyProofTEE. It is deliberately
-    // distinct from the attested signing key, which never leaves memory.
-    let submitter_pk = std::env::var("PROOF_TEE_PRIVATE_KEY")
-        .map_err(|_| "PROOF_TEE_PRIVATE_KEY is not set".to_string())?;
-    let rpc_url = std::env::var("RPC_URL").map_err(|_| "RPC_URL is not set".to_string())?;
-    let contract_address = std::env::var("HUB_ADDRESS")
-        .map_err(|_| "HUB_ADDRESS is not set".to_string())?;
+    // Checked before any network access so a missing or blank secret reports
+    // itself, rather than surfacing later as an RPC timeout or an opaque
+    // address-parse failure.
+    if submitter_pk.trim().is_empty() {
+        return Err("submitter key is empty".to_string());
+    }
+    if rpc_url.trim().is_empty() {
+        return Err("rpc url is empty".to_string());
+    }
+    if hub_address.trim().is_empty() {
+        return Err("hub address is empty".to_string());
+    }
+    let contract_address = hub_address.trim();
 
-    let signer = PrivateKeySigner::from_str(&submitter_pk)
-        .map_err(|e| format!("invalid PROOF_TEE_PRIVATE_KEY: {e}"))?;
+    // The error deliberately does not interpolate the key material.
+    let signer = PrivateKeySigner::from_str(submitter_pk.trim())
+        .map_err(|_| "submitter key is not a valid secp256k1 private key".to_string())?;
     let provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(signer))
-        .connect(&rpc_url)
+        .connect(rpc_url.trim())
         .await
         .map_err(|e| format!("failed to connect to RPC_URL: {e}"))?;
 
-    let addr = Address::from_str(&contract_address)
-        .map_err(|e| format!("invalid HUB_ADDRESS: {e}"))?;
+    let addr = Address::from_str(contract_address)
+        .map_err(|e| format!("invalid hub address: {e}"))?;
     let contract = IIdentityVerificationHubV2::new(addr, provider);
 
     contract
@@ -161,7 +182,87 @@ mod tests {
         };
         let key = EnclaveKey::generate();
 
-        let err = register_prover_key(&key, &attestation).await.unwrap_err();
+        let err = register_prover_key(&key, &attestation, "http://rpc.invalid", "0x0000000000000000000000000000000000000001", "0xdeadbeef").await.unwrap_err();
         assert_eq!(err, "pi_b must have exactly 2 rows, got 1");
+    }
+
+    /// The submitter key arrives as an argument, not as `PROOF_TEE_PRIVATE_KEY`
+    /// in the process environment.
+    ///
+    /// Confidential Space delivers `tee-env-*` values through instance
+    /// metadata, which is readable by anyone holding `compute.instances.get` on
+    /// the project -- so a funded private key must never travel that way. It is
+    /// fetched from Secret Manager by `main.rs`, exactly as the database URL is,
+    /// and handed here. Passing it explicitly is what keeps that decision
+    /// visible: an env-var read inside this function would silently accept a
+    /// metadata-delivered key again.
+    #[tokio::test]
+    async fn register_prover_key_rejects_an_empty_submitter_key() {
+        let attestation = AttestationProof {
+            proof: sample_proof(),
+            public_inputs: vec!["0".to_string(); 20],
+        };
+        let key = EnclaveKey::generate();
+
+        let err = register_prover_key(&key, &attestation, "http://rpc.invalid", "0x0000000000000000000000000000000000000001", "   ").await.unwrap_err();
+        assert_eq!(err, "submitter key is empty");
+    }
+
+    /// Every blank input is named specifically, before any network access.
+    ///
+    /// All three arrive from Secret Manager, so a blank one means a secret that
+    /// is missing, empty, or wrong -- the single most likely way this is
+    /// misconfigured on first deploy. Naming which one is blank turns that into
+    /// a one-line diagnosis; without these guards an empty rpc url surfaces as
+    /// a connection error and an empty hub address as an opaque parse failure,
+    /// neither of which points at the secret.
+    #[tokio::test]
+    async fn each_blank_input_is_rejected_by_name() {
+        let attestation = AttestationProof {
+            proof: sample_proof(),
+            public_inputs: vec!["0".to_string(); 20],
+        };
+        let key = EnclaveKey::generate();
+        const RPC: &str = "http://rpc.invalid";
+        const HUB: &str = "0x0000000000000000000000000000000000000001";
+        const PK: &str = "0xdeadbeef";
+
+        let cases = [
+            ((RPC, HUB, "  "), "submitter key is empty"),
+            (("", HUB, PK), "rpc url is empty"),
+            ((RPC, " \t ", PK), "hub address is empty"),
+        ];
+        for ((rpc, hub, pk), expected) in cases {
+            let err = register_prover_key(&key, &attestation, rpc, hub, pk).await.unwrap_err();
+            assert_eq!(err, expected, "for inputs ({rpc:?}, {hub:?}, {pk:?})");
+        }
+    }
+
+    /// A malformed submitter key must not put key material in the error.
+    ///
+    /// The error is logged and, on the boot path, becomes a panic message. Both
+    /// destinations outlive the process, so interpolating the key would leak it
+    /// on exactly the failure most likely to be pasted into a bug report.
+    #[tokio::test]
+    async fn an_invalid_submitter_key_is_not_echoed_in_the_error() {
+        let attestation = AttestationProof {
+            proof: sample_proof(),
+            public_inputs: vec!["0".to_string(); 20],
+        };
+        let key = EnclaveKey::generate();
+        let secret = "totally-not-a-valid-private-key-but-secret";
+
+        let err = register_prover_key(
+            &key,
+            &attestation,
+            "http://rpc.invalid",
+            "0x0000000000000000000000000000000000000001",
+            secret,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(!err.contains(secret), "error must not echo the key material: {err}");
+        assert_eq!(err, "submitter key is not a valid secp256k1 private key");
     }
 }

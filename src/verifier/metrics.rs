@@ -7,13 +7,21 @@
 //! which is exactly the state that let Aadhaar and KYC ship skipping 100% of
 //! real traffic (see `chunks::field_as_strings`) without anyone noticing.
 //!
-//! This same binary also runs on disclose-only images where every request
-//! skips by construction (the disclose circuits prove membership/selective
-//! disclosure, not a document signature -- see the design's Non-goals), so a
-//! raw skip count is not even comparable across images: a 100% skip rate is
-//! expected there and a red flag on a register image. These counters are a
-//! coarse, this-process-lifetime signal for the latter case, not a
-//! cross-image metric.
+//! This same binary also runs on disclose-only images. Those circuits prove
+//! identity-tree membership and selective disclosure and carry no document
+//! signature, so `verify.mjs` recognises the four `vc_and_disclose*` names
+//! and reports `Valid` for them: a disclose image's expected steady state is
+//! a 100% *valid* rate, and a skip there is a red flag exactly as it is on a
+//! register image.
+//!
+//! **This was not always so.** Until the disclose names were recognised,
+//! every disclose request skipped, and this doc said a 100% skip rate was
+//! expected on such an image. That was accurate while `Skipped` was
+//! documented as "never a rejection" -- but once `Skipped` began rejecting
+//! under `enforce`, the same 100% rate meant a disclose image rejecting
+//! every request, and this paragraph still read as if it were fine. Kept
+//! visible rather than quietly rewritten, because the stale invariant is
+//! what made the behaviour hard to see.
 //!
 //! Deliberately three flat `AtomicU64` counters plus a `println!` summary,
 //! not the current spec's fuller `(circuit_name, verdict)` breakdown.

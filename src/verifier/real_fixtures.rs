@@ -195,3 +195,82 @@ fn tampered(v: &serde_json::Value) -> String {
         "1".to_string()
     }
 }
+
+/// The disclose circuits reach `verify_inputs` on a `disclose`-feature image
+/// (and on a `cherrypick` one) exactly as any other circuit does: `main.rs`
+/// calls it unconditionally, with no proof-type branch. They prove
+/// identity-tree membership and selective disclosure and carry no document
+/// signature, so the sidecar reports `Valid` for them -- a positive statement
+/// about four named circuits.
+///
+/// Driven through the real `verify_inputs` entry point rather than
+/// `verify`/`dispatch` directly, because the routing is the part worth
+/// pinning: `dispatch` sends every non-`register_kyc` circuit to the sidecar,
+/// so this asserts the whole Rust -> node -> verdict path agrees for a
+/// disclose name, not just that the JS function returns the right object.
+#[tokio::test]
+async fn every_disclose_circuit_verifies_as_valid_through_the_real_entry_point() {
+    for circuit in DISCLOSE_CIRCUITS {
+        // Disclose inputs are not consulted, so the object's contents are
+        // irrelevant -- but it must still be a JSON object, since that is
+        // what a real circuit-input generator emits and what `verify_inputs`
+        // parses before dispatching.
+        let verdict = run_inputs(circuit, serde_json::json!({})).await;
+        assert!(
+            matches!(verdict, Verdict::Valid),
+            "{circuit} must verify as Valid through verify_inputs, got {verdict:?}"
+        );
+    }
+}
+
+/// The four circuit names `main.rs` can be handed on a `disclose`-feature
+/// image, per `server.rs`'s `ProofRequest::Disclose*` arms.
+const DISCLOSE_CIRCUITS: [&str; 4] = [
+    "vc_and_disclose",
+    "vc_and_disclose_id",
+    "vc_and_disclose_aadhaar",
+    "vc_and_disclose_kyc",
+];
+
+/// A disclose request must reach witness generation under `enforce`.
+///
+/// `every_disclose_circuit_verifies_as_valid_through_the_real_entry_point`
+/// pins the verdict; this pins what the verdict *does*. The two are separate
+/// because `precheck_rejection` reaches its decision from the verdict alone
+/// -- it takes `circuit_name` but never matches on it -- so a `Valid`
+/// disclose verdict forwarding is a consequence of the verdict, and that
+/// consequence is what a disclose image's availability actually depends on.
+#[tokio::test]
+async fn a_disclose_circuit_is_forwarded_under_enforce() {
+    for circuit in DISCLOSE_CIRCUITS {
+        let verdict = run_inputs(circuit, serde_json::json!({})).await;
+        assert_eq!(
+            crate::verifier::precheck_rejection(circuit, &verdict, crate::args::PrecheckMode::Enforce),
+            None,
+            "{circuit} must be forwarded under enforce, not rejected"
+        );
+    }
+}
+
+/// A circuit name that merely resembles a disclose one must still reject
+/// under `enforce`.
+///
+/// The counterpart to `verify.test.mjs`'s near-miss block, asserted here on
+/// the Rust side of the wire: the recognition is an exact-match list, so an
+/// unrecognised name remains a coverage gap, and a coverage gap rejects. A
+/// prefix match in the sidecar would forward these instead.
+#[tokio::test]
+async fn a_name_resembling_a_disclose_circuit_still_rejects_under_enforce() {
+    for circuit in ["vc_and_disclose_typo", "vc_and_disclose_v2", "vc_and_disclosex"] {
+        let verdict = run_inputs(circuit, serde_json::json!({})).await;
+        assert!(
+            matches!(verdict, Verdict::Skipped(_)),
+            "{circuit} must not be recognised, got {verdict:?}"
+        );
+        assert!(
+            crate::verifier::precheck_rejection(circuit, &verdict, crate::args::PrecheckMode::Enforce)
+                .is_some(),
+            "{circuit} must reject under enforce"
+        );
+    }
+}

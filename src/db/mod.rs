@@ -159,6 +159,53 @@ pub async fn update_proof(
     }
 }
 
+/// The exact query `record_precheck` runs. Pulled out to a constant so
+/// `record_precheck_never_inserts` can assert directly on the SQL text
+/// without a live database: an `UPDATE` keyed on `request_id` can only ever
+/// touch a row `create_proof_status` already inserted for real traffic, so a
+/// circuit that received no requests can never acquire a row through this
+/// path -- "no traffic" and "everything skipped" stay distinguishable by
+/// construction, not by a query-time filter.
+const RECORD_PRECHECK_QUERY: &str =
+    "UPDATE proofs SET precheck_verdict = $1, precheck_reason = $2 WHERE request_id = $3";
+
+/// Persists the signature pre-check's verdict to the request's existing
+/// `proofs` row. Written on every path `verify_inputs` can return, including
+/// a `valid` verdict and a rejection -- there is no branch that leaves this
+/// unset for a request that actually reached the pre-check.
+///
+/// Deliberately off the critical path: the caller in `main.rs` logs and
+/// continues on `Err`, exactly like every other DB write in this module. A
+/// database blip must never turn a `valid` verdict into a rejection --
+/// that matters more, not less, once a verdict can gate enforcement.
+pub async fn record_precheck(
+    uuid: uuid::Uuid,
+    verdict: &crate::verifier::Verdict,
+    db: &sqlx::Pool<sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    let code: i32 = types::PrecheckVerdict::from(verdict).into();
+    let reason: Option<String> = match verdict {
+        crate::verifier::Verdict::Valid => None,
+        crate::verifier::Verdict::Invalid(reason) | crate::verifier::Verdict::Skipped(reason) => {
+            Some(reason.clone())
+        }
+    };
+
+    match sqlx::query(RECORD_PRECHECK_QUERY)
+        .bind(code)
+        .bind(reason)
+        .bind(sqlx::types::Uuid::from(uuid))
+        .execute(db)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            dbg!(&e);
+            Err(e)
+        }
+    }
+}
+
 pub async fn fail_proof(
     uuid: uuid::Uuid,
     db: &sqlx::Pool<sqlx::Postgres>,
@@ -186,4 +233,42 @@ pub struct Proof {
     pub pi_b: Vec<Vec<String>>,
     pub pi_c: Vec<String>,
     pub protocol: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// There is no live Postgres in this crate's test environment (CI's
+    /// `cargo test --bin tee-server` runs with no database service, and
+    /// there is no test harness elsewhere in this module that stands one
+    /// up), so "a circuit with no traffic has no rows" cannot be exercised
+    /// as a live round trip here. What CAN be pinned without a database is
+    /// the property that actually guarantees it: `record_precheck` only
+    /// ever executes an `UPDATE ... WHERE request_id = $3`, never an
+    /// `INSERT`. The only statement that inserts a `proofs` row at all is
+    /// `create_proof_status`, called once per submitted request -- so a
+    /// circuit that received zero requests has zero rows to update, and
+    /// this query cannot manufacture one. If this ever became an upsert
+    /// (`INSERT ... ON CONFLICT`) or a bare `INSERT`, that guarantee would
+    /// silently break; this test fails loudly if it does.
+    #[test]
+    fn record_precheck_never_inserts() {
+        let normalized = RECORD_PRECHECK_QUERY.to_uppercase();
+        assert!(
+            normalized.trim_start().starts_with("UPDATE"),
+            "record_precheck's query must be an UPDATE, not: {RECORD_PRECHECK_QUERY}"
+        );
+        assert!(
+            !normalized.contains("INSERT"),
+            "record_precheck's query must never insert a row -- a circuit with \
+             no traffic must have no rows, and only create_proof_status may \
+             insert one: {RECORD_PRECHECK_QUERY}"
+        );
+        assert!(
+            normalized.contains("WHERE REQUEST_ID"),
+            "record_precheck must be keyed on request_id, the same key \
+             create_proof_status inserts under: {RECORD_PRECHECK_QUERY}"
+        );
+    }
 }

@@ -18,7 +18,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY src src/
 
 ARG PROOFTYPE=${PROOFTYPE}
-RUN cargo build --locked --release --features $PROOFTYPE
+# `chain` is always on: the enclave registers its own attested key via
+# registerProverKey before the RPC server starts. With signature enforcement
+# live on the hub, an image built without it serves proofs signed by a key no
+# contract has ever seen, and every register call it produces is rejected.
+RUN cargo build --locked --release --features $PROOFTYPE,chain
 
 FROM debian:trixie
 
@@ -74,7 +78,7 @@ RUN chmod +x /usr/local/bin/start.sh
 COPY signature-verifier /signature-verifier
 
 EXPOSE 8888
-LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
+LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID,PRECHECK_MODE,PROVER_SECRET_PREFIX"
 LABEL "tee.launch_policy.monitoring_memory_allow"="always"
 
 WORKDIR /usr/local/bin

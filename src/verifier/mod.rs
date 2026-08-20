@@ -1,10 +1,20 @@
 //! Native pre-check of a document's signature, from the same circuit inputs the
 //! prover is about to consume.
 //!
-//! The governing asymmetry: a false reject takes down proving for a valid
-//! document, while a false accept costs nothing because the circuit still
-//! verifies the signature properly. So this module skips whenever it cannot be
-//! certain, and only an affirmative failure rejects.
+//! The governing asymmetry, corrected under Plan B (`docs/superpowers/specs/
+//! 2026-08-19-tee-signature-authority-design.md`): the circuit's own
+//! signature check has a security bug and is retained only as defence in
+//! depth, so a false accept here is a forged credential, not a free outcome
+//! -- while a false reject is still a production outage. Neither is free.
+//! Where the two conflict, this module rejects. It skips only when it
+//! genuinely cannot be certain, since `Skipped` is what the fail-closed
+//! rollout (shadow -> enforce-on-known -> enforce) ultimately turns into a
+//! rejection too, once skip-rate evidence supports it per circuit family --
+//! see the design doc's "Fail-closed, and how it ships" section. A stale
+//! version of this comment previously argued the opposite (the pre-Plan-B
+//! premise, "a false accept costs nothing"); a stale comment already argued
+//! for reintroducing deleted code once in this project, so this one is
+//! being corrected now rather than left to cause the same failure again.
 //!
 //! Plan A, Task 4: `dispatch` now has exactly two branches. `register_kyc`
 //! (EdDSA over BabyJubJub + Poseidon2, no `node:crypto` representation) is
@@ -38,7 +48,17 @@ pub enum Verdict {
     Valid,
     /// An affirmative cryptographic or structural failure. Only this rejects.
     Invalid(String),
-    /// Cannot check. Never a rejection.
+    /// Cannot check: the checker itself did not produce an answer -- a
+    /// sidecar spawn failure, a timeout, unparseable output, or a circuit
+    /// name nothing recognises.
+    ///
+    /// **This rejects under `enforce`.** It read "never a rejection" until
+    /// the enforcement modes landed, and that stale line is what let a whole
+    /// circuit family skip unnoticed: a family that skips *by design* is
+    /// indistinguishable here from one that skips because nothing handles
+    /// it, and under enforcement both reject. A circuit with nothing to
+    /// verify must therefore say so positively -- see `verify.mjs`'s
+    /// `DISCLOSE_CIRCUITS` -- rather than fall through to this variant.
     Skipped(String),
 }
 
@@ -121,6 +141,67 @@ fn verdict_from_join(res: Result<Verdict, tokio::task::JoinError>) -> Verdict {
     }
 }
 
+/// The one circuit whose pre-check verdict never gates the request.
+///
+/// `register_kyc` is routed by `dispatch` (below) to the native `kyc::verify`
+/// rather than the sidecar, and unlike every circuit the sidecar covers,
+/// `register_kyc`'s own circuit already verifies its EdDSA-over-BabyJubJub
+/// signature soundly -- there is no authority to move into this pre-check
+/// for it. So `kyc::verify`'s result is the same optimization every
+/// pre-check verdict used to be before this module became the one place a
+/// forged document is actually caught: useful for an early rejection, not
+/// required for one. Gating on it would add no assurance the circuit does
+/// not already provide, while a false reject here would still cost a real
+/// request.
+const KYC_CIRCUIT_NAME: &str = "register_kyc";
+
+/// Whether `verdict` for `circuit_name` should block the request under
+/// `mode`, and if so, the reason to record on the resulting `Failed` row.
+///
+/// `None` means proceed to witness generation; `Some(reason)` means reject
+/// via `cleanup` before it, so no witness -- and therefore no proof, and
+/// therefore nothing to sign -- is ever produced for it.
+///
+/// The `register_kyc` check runs first and unconditionally, **not** as one
+/// arm of the `(mode, verdict)` match below. That ordering is the "positive
+/// statement" the exemption needs to be: a version of this function that
+/// instead built its `match` over "every circuit the sidecar recognises"
+/// and treated `register_kyc` as whatever falls out of not being on that
+/// list would risk exactly the failure this is written to avoid -- either
+/// silently rejecting every KYC request (if the fallthrough rejects) or
+/// silently exempting some future genuinely-unrecognised circuit (if the
+/// fallthrough forwards). Naming `register_kyc` explicitly, ahead of the
+/// mode logic, makes the exemption a fact about one named circuit rather
+/// than a side effect of how the rest of the match happens to be shaped.
+pub fn precheck_rejection(
+    circuit_name: &str,
+    verdict: &Verdict,
+    mode: crate::args::PrecheckMode,
+) -> Option<String> {
+    // `register_kyc` deliberately gets NO exemption here, despite an earlier
+    // draft of this plan specifying one. The exemption was reasoned from
+    // "verify.mjs declines KYC, so under enforcement that decline would reject
+    // every KYC request" -- but `dispatch` routes `register_kyc` to the native
+    // `kyc::verify`, which genuinely verifies it and returns a real verdict.
+    // The JS declining it is an internal routing detail, invisible here.
+    //
+    // Exempting it would have been actively worse than doing nothing: a KYC
+    // request with a genuinely bad signature would proceed to witness
+    // generation and be caught later instead of rejected now, trading an early
+    // rejection for a wasted proof.
+    use crate::args::PrecheckMode;
+    match (mode, verdict) {
+        (PrecheckMode::Shadow, _) => None,
+        (PrecheckMode::Enforce, Verdict::Valid) => None,
+        (PrecheckMode::Enforce, Verdict::Invalid(reason)) => {
+            Some(format!("signature precheck failed: {reason}"))
+        }
+        (PrecheckMode::Enforce, Verdict::Skipped(reason)) => {
+            Some(format!("signature precheck unavailable: {reason}"))
+        }
+    }
+}
+
 /// Routes already-parsed inputs to the family verifier.
 ///
 /// Split out of `verify_inputs` so tests can exercise the real routing
@@ -194,8 +275,14 @@ mod tests {
     #[tokio::test]
     async fn a_readable_input_file_gets_past_the_read_step() {
         // Proves the read actually happens: with a real (if empty) file
-        // present, the sidecar is reached and skips for ITS OWN reason (a
-        // missing field), not because Rust's own file read failed.
+        // present, the sidecar is reached and fails for ITS OWN reason (a
+        // missing field), not because Rust's own file read failed. Plan B,
+        // Task 2 reclassified a missing circuit-input field from Skipped to
+        // Invalid in the JS verifier (a fixed-size circuit signal with no
+        // value cannot produce a witness at all), so the verdict this test
+        // observes changed from Skipped to Invalid along with it -- the
+        // thing this test actually pins (the reason must not blame the
+        // file) is unaffected either way.
         let uuid = uuid::Uuid::new_v4();
         let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
         tokio::fs::create_dir_all(&dir).await.unwrap();
@@ -205,11 +292,11 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
 
         match v {
-            Verdict::Skipped(reason) => assert!(
+            Verdict::Invalid(reason) => assert!(
                 !reason.contains("input.json"),
                 "the file was readable, so the reason must not blame the file: {reason}"
             ),
-            other => panic!("expected Skipped at this stage, got {other:?}"),
+            other => panic!("expected Invalid at this stage, got {other:?}"),
         }
     }
 
@@ -301,6 +388,116 @@ mod tests {
         match v {
             Verdict::Skipped(_) | Verdict::Invalid(_) => {}
             Verdict::Valid => panic!("did not expect an empty, non-cryptographic input to verify as Valid"),
+        }
+    }
+
+    // precheck_rejection: one test per cell of the enforcement table, plus
+    // KYC (deliberately NOT exempt) and shadow's record-but-forward property.
+    mod precheck_rejection_tests {
+        use super::*;
+        use crate::args::PrecheckMode;
+
+        const NON_KYC_CIRCUIT: &str = "register_sha256_sha256_sha256_rsa_65537_4096";
+
+        #[test]
+        fn shadow_forwards_invalid() {
+            let v = Verdict::Invalid("bad signature".to_string());
+            assert_eq!(precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Shadow), None);
+        }
+
+        #[test]
+        fn shadow_forwards_unavailable() {
+            let v = Verdict::Skipped("sidecar timed out".to_string());
+            assert_eq!(precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Shadow), None);
+        }
+
+        #[test]
+        fn enforce_rejects_invalid() {
+            let v = Verdict::Invalid("bad signature".to_string());
+            let rejection = precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Enforce);
+            assert!(
+                rejection.is_some(),
+                "enforce must reject an invalid verdict"
+            );
+            assert!(rejection.unwrap().contains("bad signature"));
+        }
+
+        #[test]
+        fn enforce_rejects_unavailable() {
+            // "unavailable" is attacker-inducible (an attacker can induce a
+            // checker failure on their own request), which is exactly why
+            // it must not be grouped with anything that forwards under
+            // enforce.
+            let v = Verdict::Skipped("sidecar timed out".to_string());
+            let rejection = precheck_rejection(NON_KYC_CIRCUIT, &v, PrecheckMode::Enforce);
+            assert!(
+                rejection.is_some(),
+                "enforce must reject an unavailable (skipped) verdict"
+            );
+            assert!(rejection.unwrap().contains("sidecar timed out"));
+        }
+
+        #[test]
+        fn enforce_forwards_valid() {
+            assert_eq!(
+                precheck_rejection(NON_KYC_CIRCUIT, &Verdict::Valid, PrecheckMode::Enforce),
+                None
+            );
+        }
+
+        /// The KYC case, distinct from the four table cells: register_kyc's
+        /// own verdict (from kyc::verify, not the sidecar) must never gate
+        /// the request, in either mode. An exemption expressed as an
+        /// absence -- e.g. gating built only in terms of "circuits the
+        /// sidecar recognises" -- would have no arm for register_kyc at all
+        /// and would silently reject it (or silently exempt some future
+        /// unrecognised circuit); asserting this against Invalid and
+        /// `register_kyc` is treated like any other circuit, and this pins that
+        /// rather than the exemption an earlier draft of the plan called for.
+        ///
+        /// `kyc::verify` genuinely verifies EdDSA-over-BabyJubJub and returns a
+        /// real verdict, so an `Invalid` from it is an affirmative signature
+        /// failure and must reject under enforce exactly as any other would. The
+        /// exemption was reasoned from the JS declining KYC, which is an internal
+        /// routing detail `dispatch` resolves before a verdict is ever produced.
+        #[test]
+        fn kyc_is_not_exempt_under_enforce() {
+            assert_eq!(
+                precheck_rejection(KYC_CIRCUIT_NAME, &Verdict::Valid, PrecheckMode::Enforce),
+                None,
+                "a valid KYC verdict must proceed"
+            );
+            assert!(
+                precheck_rejection(
+                    KYC_CIRCUIT_NAME,
+                    &Verdict::Invalid("bad eddsa signature".to_string()),
+                    PrecheckMode::Enforce
+                )
+                .is_some(),
+                "an affirmative KYC signature failure must reject under enforce, not proceed to proving"
+            );
+            assert!(
+                precheck_rejection(
+                    KYC_CIRCUIT_NAME,
+                    &Verdict::Skipped("missing data_padded".to_string()),
+                    PrecheckMode::Enforce
+                )
+                .is_some(),
+                "an unverifiable KYC input must reject under enforce"
+            );
+        }
+
+        /// Shadow must forward KYC too -- the mode, not the circuit, decides.
+        #[test]
+        fn kyc_forwards_under_shadow() {
+            assert_eq!(
+                precheck_rejection(
+                    KYC_CIRCUIT_NAME,
+                    &Verdict::Invalid("bad eddsa signature".to_string()),
+                    PrecheckMode::Shadow
+                ),
+                None
+            );
         }
     }
 }

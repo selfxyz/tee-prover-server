@@ -13,7 +13,7 @@ use std::path;
 use std::sync::Arc;
 
 use clap::Parser;
-use db::{read_proof_output, set_witness_generated, update_proof};
+use db::{read_proof_output, record_precheck, set_witness_generated, update_proof};
 use generator::{proof_generator::ProofGenerator, witness_generator::WitnessGenerator};
 use google_cloud_secretmanager_v1::client::SecretManagerService;
 use jsonrpsee::server::Server;
@@ -95,6 +95,7 @@ async fn main() {
 
     let config = args::Config::parse();
     let server_url = config.server_address;
+    let precheck_mode = config.precheck_mode;
 
     let server = Server::builder().build(server_url).await.unwrap();
 
@@ -152,9 +153,63 @@ async fn main() {
     };
     println!("Enclave attested. Signing address: {}", enclave_key.address());
 
+    // Fetched from Secret Manager, never from an env var: under Confidential
+    // Space an env var is an instance-metadata value, readable by anyone with
+    // `compute.instances.get` on the project, and this key is funded. Same
+    // path the database URL above already takes.
+    //
+    // Fatal like the bootstrap before it. With signature enforcement live on
+    // the hub, an enclave whose key was never registered produces proofs that
+    // every register call rejects -- so failing to register is failing to
+    // serve, and it is better to not start than to serve rejected proofs.
     #[cfg(feature = "chain")]
-    if let Err(e) = attestation::chain::register_prover_key(&enclave_key, &attestation_proof).await {
-        panic!("prover key registration failed: {e}");
+    {
+        // One prefix, three secrets: `<prefix>RPC_URL`, `<prefix>HUB_ADDRESS`,
+        // `<prefix>TEE_PRIVATE_KEY`. Staging and production share the
+        // `self-protocol` project, so the prefix is what keeps their prover
+        // config apart in a single Secret Manager namespace -- a staging
+        // instance reading production's funded key is the failure this naming
+        // exists to make impossible.
+        //
+        // The prefix itself is the only part that travels as metadata; it names
+        // secrets rather than containing any.
+        let prefix = std::env::var("PROVER_SECRET_PREFIX")
+            .expect("PROVER_SECRET_PREFIX is not set");
+
+        let mut prover_config = Vec::new();
+        for suffix in ["RPC_URL", "HUB_ADDRESS", "TEE_PRIVATE_KEY"] {
+            let secret_id = format!("{prefix}{suffix}");
+            let name = format!("projects/{}/secrets/{}/versions/latest", project, secret_id);
+            let resp = client
+                .access_secret_version()
+                .set_name(name)
+                .send()
+                .await
+                .unwrap_or_else(|e| {
+                    // Names the secret, never its contents.
+                    panic!("failed to read secret {secret_id} from Secret Manager: {e}")
+                });
+            let value = String::from_utf8(
+                resp.payload
+                    .unwrap_or_else(|| panic!("secret {secret_id} has no payload"))
+                    .data
+                    .to_vec(),
+            )
+            .unwrap_or_else(|_| panic!("secret {secret_id} is not valid UTF-8"));
+            prover_config.push(value);
+        }
+
+        if let Err(e) = attestation::chain::register_prover_key(
+            &enclave_key,
+            &attestation_proof,
+            &prover_config[0],
+            &prover_config[1],
+            &prover_config[2],
+        )
+        .await
+        {
+            panic!("prover key registration failed: {e}");
+        }
     }
     #[cfg(not(feature = "chain"))]
     let _ = &attestation_proof;
@@ -196,18 +251,36 @@ async fn main() {
 
                 let verdict = crate::verifier::verify_inputs(uuid, &circuit_name).await;
                 crate::verifier::metrics::record(&verdict);
-                match verdict {
+
+                // Off the critical path by design: a DB error here must
+                // never turn a `valid` verdict into a failed request, so it
+                // is logged and the pipeline continues regardless of the
+                // result. This matters more under enforcement, where a DB
+                // blip would otherwise become a user-visible rejection.
+                if let Err(e) = record_precheck(uuid, &verdict, &pool_clone).await {
+                    dbg!(&e);
+                }
+
+                match &verdict {
                     crate::verifier::Verdict::Valid => {
                         println!("precheck valid for {circuit_name}");
                     }
                     crate::verifier::Verdict::Skipped(reason) => {
-                        println!("precheck skipped for {circuit_name}: {reason}");
+                        println!("precheck unavailable for {circuit_name}: {reason}");
                     }
                     crate::verifier::Verdict::Invalid(reason) => {
-                        println!("precheck rejected {circuit_name}: {reason}");
-                        cleanup(uuid, &pool_clone, format!("signature precheck failed: {reason}")).await;
-                        return;
+                        println!("precheck invalid for {circuit_name}: {reason}");
                     }
+                }
+
+                // Reject before witness generation: no proof is produced,
+                // therefore none is signed, which is how the verdict gates
+                // on-chain trust without touching the attestation work.
+                if let Some(reason) =
+                    crate::verifier::precheck_rejection(&circuit_name, &verdict, precheck_mode)
+                {
+                    cleanup(uuid, &pool_clone, reason).await;
+                    return;
                 }
 
                 if let Err(e) = witness_generator_clone.send(WitnessGenerator::new(

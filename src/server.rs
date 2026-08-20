@@ -17,6 +17,32 @@ use crate::types::{ProofRequest, SubmitRequest};
 use crate::utils;
 use crate::{generator::file_generator::FileGenerator, types::HelloResponse};
 
+/// Maximum size, in bytes, of a single circuit's `input.json`
+/// (`FileGenerator::run` writes exactly this string to disk, and
+/// `verify_inputs` reads it back for the signature pre-check).
+///
+/// Derived from the largest checked-in fixture this repo has on record
+/// (`tests/fixtures/dsc_sha256_rsa_65537_4096.json`, ~20 KB -- a 4096-bit
+/// RSA DSC/CSCA chain) with substantial headroom for circuit families this
+/// repo's own fixture set does not cover. This bound exists to close a
+/// denial-of-service path, not to police request shape: unbounded input is
+/// the cleanest way for a caller to make parsing and verifying their own
+/// submission slow enough to time the checker out, and a checker timeout
+/// must never be allowed to forward a request unverified once enforcement
+/// is on. Rejected before the input ever reaches disk or the verification
+/// pipeline.
+const MAX_CIRCUIT_INPUT_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
+/// Whether a circuit input of `len` bytes exceeds [`MAX_CIRCUIT_INPUT_BYTES`].
+///
+/// Split out as a pure predicate so the bound itself is unit-testable
+/// without standing up the full RPC server (`submit_request`'s other
+/// dependencies -- the DB pool, the file-generator channel -- make it
+/// impractical to exercise directly in a unit test).
+fn circuit_input_exceeds_limit(len: usize) -> bool {
+    len > MAX_CIRCUIT_INPUT_BYTES
+}
+
 #[rpc(server, namespace = "openpassport")]
 pub trait Rpc {
     #[method(name = "health")]
@@ -259,6 +285,20 @@ impl RpcServer for RpcServerImpl {
                         None,
                     ));
                 }
+
+                let circuit_input_len = submit_request.proof_request_type.circuit().inputs.len();
+                if circuit_input_exceeds_limit(circuit_input_len) {
+                    self.store.remove_agreement(&uuid).await;
+                    return ResponsePayload::error(ErrorObjectOwned::owned::<String>(
+                        types::ErrorCode::InvalidRequest.code(),
+                        format!(
+                            "circuit input is too large: {} bytes exceeds the {} byte limit",
+                            circuit_input_len, MAX_CIRCUIT_INPUT_BYTES
+                        ),
+                        None,
+                    ));
+                }
+
                 submit_request
             }
             Err(_) => {
@@ -400,5 +440,51 @@ impl RpcServer for RpcServerImpl {
 
         self.store.remove_agreement(&uuid).await;
         ResponsePayload::success(uuid.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The largest genuine circuit input this repo has on record --
+    /// `tests/fixtures/dsc_sha256_rsa_65537_4096.json` -- must comfortably
+    /// clear the limit. A regression that shrank `MAX_CIRCUIT_INPUT_BYTES`
+    /// below real traffic would be an outage, not a security improvement.
+    #[test]
+    fn the_largest_known_real_fixture_is_well_under_the_limit() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dsc_sha256_rsa_65537_4096.json");
+        let len = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("could not stat {path:?}: {e}"))
+            .len() as usize;
+        assert!(
+            !circuit_input_exceeds_limit(len),
+            "the largest known real fixture ({len} bytes) must not exceed the limit \
+             ({MAX_CIRCUIT_INPUT_BYTES} bytes)"
+        );
+        // And with real headroom to spare, not just barely under it.
+        assert!(
+            len * 10 < MAX_CIRCUIT_INPUT_BYTES,
+            "expected at least 10x headroom over the largest known real fixture"
+        );
+    }
+
+    #[test]
+    fn exactly_at_the_limit_is_not_over_the_limit() {
+        assert!(!circuit_input_exceeds_limit(MAX_CIRCUIT_INPUT_BYTES));
+    }
+
+    #[test]
+    fn one_byte_over_the_limit_is_over_the_limit() {
+        assert!(circuit_input_exceeds_limit(MAX_CIRCUIT_INPUT_BYTES + 1));
+    }
+
+    #[test]
+    fn a_pathologically_large_input_is_over_the_limit() {
+        // The DoS shape this bound exists to close: an attacker submitting
+        // an input large enough that parsing/verifying it alone risks a
+        // sidecar timeout on their own request.
+        assert!(circuit_input_exceeds_limit(1024 * 1024 * 1024)); // 1 GiB
     }
 }

@@ -84,7 +84,11 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run tests
-        run: cargo test --bin tee-server
+        # --features chain: the on-chain registration module is feature-gated, so
+        # a plain `cargo test --bin tee-server` compiles none of it and reports
+        # zero tests for it. The images build with the feature on, so CI must
+        # test with it on too.
+        run: cargo test --bin tee-server --features chain
 
       - name: Build
         run: cargo build --bin tee-server
