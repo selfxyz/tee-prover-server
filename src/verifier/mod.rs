@@ -48,7 +48,17 @@ pub enum Verdict {
     Valid,
     /// An affirmative cryptographic or structural failure. Only this rejects.
     Invalid(String),
-    /// Cannot check. Never a rejection.
+    /// Cannot check: the checker itself did not produce an answer -- a
+    /// sidecar spawn failure, a timeout, unparseable output, or a circuit
+    /// name nothing recognises.
+    ///
+    /// **This rejects under `enforce`.** It read "never a rejection" until
+    /// the enforcement modes landed, and that stale line is what let a whole
+    /// circuit family skip unnoticed: a family that skips *by design* is
+    /// indistinguishable here from one that skips because nothing handles
+    /// it, and under enforcement both reject. A circuit with nothing to
+    /// verify must therefore say so positively -- see `verify.mjs`'s
+    /// `DISCLOSE_CIRCUITS` -- rather than fall through to this variant.
     Skipped(String),
 }
 

@@ -1564,6 +1564,29 @@ function parseSchemeSuffix(parts, at) {
 }
 
 /**
+ * The circuits that prove identity-tree membership and selective disclosure.
+ *
+ * They carry no document signature and no public key -- `vc_and_disclose.
+ * circom`'s inputs are the tree path, the disclosure selectors, the OFAC
+ * SMTs, `scope` and `user_identifier` -- so there is no signature for this
+ * verifier to check and none is expected. `verify` reports `valid` for them:
+ * a positive statement that these four circuits have nothing to verify, not
+ * an unrecognised name that happened to fall through.
+ *
+ * An exact-match `Set`, deliberately not a `startsWith('vc_and_disclose')`
+ * test. A prefix test would absorb any future `vc_and_disclose_*` circuit
+ * into "valid, nothing to check" without anyone deciding that; adding a
+ * fifth disclose circuit must require editing this list. Names that merely
+ * resemble one stay unrecognised, and an unrecognised name skips -- which
+ * under enforcement rejects.
+ */
+const DISCLOSE_CIRCUITS = new Set([
+  'vc_and_disclose',
+  'vc_and_disclose_id',
+  'vc_and_disclose_aadhaar',
+  'vc_and_disclose_kyc',
+]);
+/**
  * Parses a circuit name into the family and scheme parameters this module's
  * verify functions need. `null` for anything unrecognized -- an unknown
  * circuit name is `Skipped` upstream, never a guess.
@@ -1576,12 +1599,16 @@ function parseSchemeSuffix(parts, at) {
  *
  * `register_aadhaar` and `register_kyc` are exact-name special cases with no
  * hash-tag suffix at all -- see `verifyAadhaar`'s and this file's report's
- * notes on KYC.
+ * notes on KYC. The `DISCLOSE_CIRCUITS` names are exact-name cases for the
+ * same reason.
  *
  * @param {string} name
  * @returns {object | null}
  */
 export function parseCircuitName(name) {
+  if (DISCLOSE_CIRCUITS.has(name)) {
+    return { family: 'disclose' };
+  }
   if (name === 'register_kyc') {
     // KYC (EdDSA over BabyJubJub + Poseidon2) has no node:crypto-representable
     // scheme at all -- see this file's report. Recognized (not `null`, which
@@ -2197,6 +2224,13 @@ export function verify(circuitName, inputs) {
   const p = parseCircuitName(circuitName);
   if (!p) {
     return skipped(`unknown or unsupported circuit: ${circuitName}`);
+  }
+  if (p.family === 'disclose') {
+    // No inputs are consulted: there is no signature in a disclose circuit to
+    // consult them about. `valid()` takes no reason because the Rust
+    // `SidecarResponse::Valid` is a unit variant -- the circuit name in the
+    // caller's log line is what distinguishes this from a register verdict.
+    return valid();
   }
   if (p.family === 'kyc') {
     return skipped(

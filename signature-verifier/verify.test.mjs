@@ -1961,6 +1961,76 @@ describe('parseCircuitName', () => {
   });
 });
 
+describe('verify -- the disclose circuits are recognised, not unknown', () => {
+  // The disclose circuits prove identity-tree membership and selective
+  // disclosure. They carry no document signature and no public key -- see
+  // vc_and_disclose.circom's input list -- so there is nothing here for a
+  // signature verifier to check, and saying so is a positive statement about
+  // four named circuits rather than the absence of a match.
+  const DISCLOSE = [
+    'vc_and_disclose',
+    'vc_and_disclose_id',
+    'vc_and_disclose_aadhaar',
+    'vc_and_disclose_kyc',
+  ];
+
+  for (const circuit of DISCLOSE) {
+    test(`${circuit} parses as the disclose family`, () => {
+      const p = parseCircuitName(circuit);
+      assert.notEqual(p, null, `${circuit} must be recognised, not null`);
+      assert.equal(p.family, 'disclose');
+    });
+
+    test(`${circuit} verifies as valid, carrying no reason field`, () => {
+      // Asserted with deepEqual, not `verdict === 'valid'`: the Rust
+      // SidecarResponse::Valid is a unit variant, so a reason string added
+      // here would be silently dropped on the wire rather than surfaced.
+      assert.deepEqual(verify(circuit, {}), { verdict: 'valid' });
+    });
+  }
+
+  test('the disclose verdict does not depend on the inputs it is handed', () => {
+    // Unlike every other family, no field of input.json is consulted. Pinned
+    // so a future refactor cannot quietly start reading one and make the
+    // verdict input-dependent.
+    assert.deepEqual(verify('vc_and_disclose', {}), { verdict: 'valid' });
+    assert.deepEqual(verify('vc_and_disclose', { dg1: ['nonsense'] }), { verdict: 'valid' });
+  });
+});
+
+describe('verify -- a name that merely resembles a disclose circuit still fails closed', () => {
+  // The recognition is an exact-match list, deliberately not a
+  // `startsWith('vc_and_disclose')` test. A prefix test would absorb any
+  // future vc_and_disclose_* circuit into "valid, nothing to check" without
+  // anyone deciding that. These are the assertions that pin the difference:
+  // today they and the tests above are indistinguishable, and the day a
+  // fifth disclose circuit is added they are not.
+  const NEAR_MISSES = [
+    'vc_and_disclose_typo',
+    'vc_and_disclose_v2',
+    'vc_and_disclosex',
+    'vc_and_disclose_',
+    'VC_AND_DISCLOSE',
+    'not_vc_and_disclose',
+  ];
+
+  for (const circuit of NEAR_MISSES) {
+    test(`${circuit} is null, not the disclose family`, () => {
+      assert.equal(parseCircuitName(circuit), null);
+    });
+
+    test(`${circuit} is skipped, which rejects under enforce`, () => {
+      const result = verify(circuit, {});
+      assert.equal(
+        result.verdict,
+        'skipped',
+        `${circuit} must not be silently accepted as valid -- an unrecognised name is a ` +
+          'coverage gap, and under enforcement a coverage gap must reject rather than forward',
+      );
+    });
+  }
+});
+
 describe('CLI contract: stdin {circuit, inputPath} JSON -> one stdout verdict JSON line, exit 0', () => {
   const scriptPath = path.join(__dirname, 'verify.mjs');
 
