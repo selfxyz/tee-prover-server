@@ -9,3 +9,4 @@
 
 # Design specs and implementation plans stay local -- this repo is public.
 docs/superpowers/
+/jwt-input-generator/node_modules

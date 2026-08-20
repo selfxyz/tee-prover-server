@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS proofs (
     -- rows, and any request predating the pre-check, stay valid.
     precheck_verdict SMALLINT,
     precheck_reason TEXT
+    ,version INTEGER
+    ,user_defined_data TEXT
+    ,self_defined_data TEXT
+    ,signature VARCHAR(132)
 );
 
 -- Idempotent for databases where the table already existed before these
@@ -56,6 +60,7 @@ BEGIN
       'identifier', NEW.identifier,
       'precheck_verdict', NEW.precheck_verdict,
       'precheck_reason', NEW.precheck_reason
+      ,'signature', NEW.signature
     );
 
     PERFORM pg_notify('status_update', notification_payload::text);
@@ -76,3 +81,8 @@ CREATE TRIGGER status_insert_notify
 AFTER INSERT ON proofs
 FOR EACH ROW
 EXECUTE PROCEDURE status_update_notify();
+
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS version INTEGER;
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS user_defined_data TEXT;
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS self_defined_data TEXT;
+ALTER TABLE proofs ADD COLUMN IF NOT EXISTS signature VARCHAR(132);

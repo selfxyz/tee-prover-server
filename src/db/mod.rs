@@ -73,14 +73,21 @@ pub async fn set_witness_generated(
     }
 }
 
-pub async fn update_proof(uuid: uuid::Uuid, db: &sqlx::Pool<sqlx::Postgres>) -> Result<(), String> {
-    let proof_file_path =
-        std::path::Path::new(&get_tmp_folder_path(&uuid.to_string())).join("proof.json");
-    let public_inputs_file_path =
-        std::path::Path::new(&get_tmp_folder_path(&uuid.to_string())).join("public_inputs.json");
+/// Reads and parses the `proof.json`/`public_inputs.json` this request's
+/// rapidsnark run produced. This is the single reader for those two files:
+/// every caller that needs the parsed proof output (attestation bootstrap,
+/// enclave signing, and this row's own persistence) must go through this
+/// function rather than re-reading the files independently. A client-supplied
+/// uuid means the tmp folder is not guaranteed exclusive to one in-flight
+/// request; two independent reads of the same folder can observe different
+/// bytes if a second pipeline's output lands between them. Reading once and
+/// threading the parsed values through the caller closes that gap.
+pub async fn read_proof_output(uuid: uuid::Uuid) -> Result<(Proof, PublicInputs), String> {
+    let tmp = get_tmp_folder_path(&uuid.to_string());
+    let proof_file_path = std::path::Path::new(&tmp).join("proof.json");
+    let public_inputs_file_path = std::path::Path::new(&tmp).join("public_inputs.json");
 
-    //remove the unwrap here later
-    let proof_string = match std::fs::read_to_string(&proof_file_path) {
+    let proof_string = match tokio::fs::read_to_string(&proof_file_path).await {
         Ok(proof_string) => proof_string,
         Err(e) => {
             dbg!(&e);
@@ -91,7 +98,7 @@ pub async fn update_proof(uuid: uuid::Uuid, db: &sqlx::Pool<sqlx::Postgres>) -> 
         }
     };
 
-    let public_inputs_string = match std::fs::read_to_string(&public_inputs_file_path) {
+    let public_inputs_string = match tokio::fs::read_to_string(&public_inputs_file_path).await {
         Ok(public_inputs_string) => public_inputs_string,
         Err(e) => {
             dbg!(&e);
@@ -120,16 +127,27 @@ pub async fn update_proof(uuid: uuid::Uuid, db: &sqlx::Pool<sqlx::Postgres>) -> 
         }
     };
 
+    Ok((proof, public_inputs))
+}
+
+pub async fn update_proof(
+    uuid: uuid::Uuid,
+    db: &sqlx::Pool<sqlx::Postgres>,
+    proof: &Proof,
+    public_inputs: &PublicInputs,
+    signature: &str,
+) -> Result<(), String> {
     let status: i32 = types::Status::ProofGenererated.into();
 
     let now = Utc::now();
     match sqlx::query(
-        "UPDATE proofs SET proof = $1, status = $2, proof_generated_at = $3, public_inputs = $4  WHERE request_id = $5",
+        "UPDATE proofs SET proof = $1, status = $2, proof_generated_at = $3, public_inputs = $4, signature = $5 WHERE request_id = $6",
     )
     .bind(sqlx::types::Json(proof))
     .bind(status)
     .bind(now)
     .bind(public_inputs)
+    .bind(signature)
     .bind(sqlx::types::uuid::Uuid::from(uuid))
     .execute(db)
     .await
@@ -210,11 +228,11 @@ pub async fn fail_proof(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Proof {
-    pi_a: Vec<String>,
-    pi_b: Vec<Vec<String>>,
-    pi_c: Vec<String>,
-    protocol: String,
+pub struct Proof {
+    pub pi_a: Vec<String>,
+    pub pi_b: Vec<Vec<String>>,
+    pub pi_c: Vec<String>,
+    pub protocol: String,
 }
 
 #[cfg(test)]

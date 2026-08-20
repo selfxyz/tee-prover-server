@@ -15,8 +15,16 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.88
+      # No rust-toolchain action here. The self-hosted runners already have a
+      # Rust toolchain installed, and rustup-init refuses to run over one --
+      # `error: cannot install while Rust is installed`, which failed this job
+      # on every run. Print the versions instead so the log records what built
+      # the binary; if the runner's toolchain is ever too old, the compiler says
+      # so directly and more usefully than a toolchain-install step would.
+      - name: Show Rust toolchain
+        run: |
+          rustc --version
+          cargo --version
 
       # Node is required by the cargo tests, not only by the Node suite below:
       # the signature pre-check delegates every non-KYC circuit to the JS

@@ -23,6 +23,20 @@ FROM debian:trixie
 RUN apt-get update
 RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
 
+# Node + the vendored JWT attestation sidecar, identical to Dockerfile.tee.
+# tee-server requires the attestation bootstrap unconditionally — it is NOT gated on
+# the cargo feature that selects this image — because two security postures in one
+# binary would leave a consumer reading the `signature` column unable to tell which
+# image variant produced a row. So this variant needs the same sidecar and the same
+# attestation circuit, or it panics at boot.
+# src/attestation/bootstrap.rs runs /jwt/jwt-input-generator/node_modules/.bin/tsx.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
+
+WORKDIR /jwt/jwt-input-generator
+COPY jwt-input-generator/package*.json ./
+RUN npm ci --omit=dev
+COPY jwt-input-generator/ ./
+
 WORKDIR /rapidsnark
 COPY ./rapidsnark .
 RUN ./build_gmp.sh host && \
@@ -39,6 +53,15 @@ COPY ./circuits /circuits
 COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 RUN chmod +x /usr/local/bin/tee-server
 COPY ./zkeys /zkeys
+
+# The attestation circuit and zkey are already inside the two wholesale COPYs above —
+# this cherrypick layout is flat (see sort_circuits.cherrypick.sh and the `--flat` mode
+# of check_circuits.sh), unlike Dockerfile.tee's size-filtered per-variant copies. They
+# are named again explicitly so their absence fails the BUILD, the way it does for
+# Dockerfile.tee, instead of producing an image that looks fine and panics at boot.
+COPY ./circuits/gcp_jwt_verifier_cpp /circuits/gcp_jwt_verifier_cpp
+COPY ./zkeys/gcp_jwt_verifier.zkey /zkeys/gcp_jwt_verifier.zkey
+RUN chmod +x /circuits/gcp_jwt_verifier_cpp/gcp_jwt_verifier
 
 LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID,PRECHECK_MODE"
 LABEL "tee.launch_policy.monitoring_memory_allow"="always"
