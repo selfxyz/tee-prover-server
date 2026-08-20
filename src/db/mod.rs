@@ -127,7 +127,69 @@ pub async fn read_proof_output(uuid: uuid::Uuid) -> Result<(Proof, PublicInputs)
         }
     };
 
+    // Normalised here, at the single reader both the attestation bootstrap and the
+    // proof pipeline share, so no consumer has to know the prover's wire shape.
+    let proof = to_affine(proof)?;
+
     Ok((proof, public_inputs))
+}
+
+/// Drops the projective coordinate rapidsnark and snarkjs append to a Groth16
+/// proof, leaving the affine form every consumer here expects.
+///
+/// A prover writes `pi_a`/`pi_c` as `[x, y, "1"]` and `pi_b` as
+/// `[[..], [..], ["1", "0"]]` -- the trailing entry is the homogeneous
+/// coordinate, not part of the point. Solidity verifiers take
+/// `uint256[2]` / `uint256[2][2]`, and `attestation::digest::proof_digest`
+/// encodes exactly those shapes, so the extra element made every real proof
+/// fail with `pi_a must have exactly 2 elements, got 3` -- on the attestation
+/// self-check in `bootstrap` and, identically, on `sign_proof` for every proof
+/// the server produces.
+///
+/// The trailing values are asserted rather than blindly truncated. A proof
+/// whose third coordinate is anything but the identity is not a proof this
+/// code has understood, and silently discarding it would sign a point that
+/// differs from the one the prover computed.
+fn to_affine(proof: Proof) -> Result<Proof, String> {
+    fn affine_point(mut v: Vec<String>, what: &str) -> Result<Vec<String>, String> {
+        match v.len() {
+            2 => Ok(v),
+            3 => {
+                let z = v.pop().expect("length checked");
+                if z != "1" {
+                    return Err(format!(
+                        "{what} has a non-identity projective coordinate {z:?}; expected \"1\""
+                    ));
+                }
+                Ok(v)
+            }
+            n => Err(format!("{what} must have 2 or 3 elements, got {n}")),
+        }
+    }
+
+    let pi_a = affine_point(proof.pi_a, "pi_a")?;
+    let pi_c = affine_point(proof.pi_c, "pi_c")?;
+
+    let mut pi_b = proof.pi_b;
+    match pi_b.len() {
+        2 => {}
+        3 => {
+            let z = pi_b.pop().expect("length checked");
+            if z != ["1".to_string(), "0".to_string()] {
+                return Err(format!(
+                    "pi_b has a non-identity projective row {z:?}; expected [\"1\", \"0\"]"
+                ));
+            }
+        }
+        n => return Err(format!("pi_b must have 2 or 3 rows, got {n}")),
+    }
+    for (i, row) in pi_b.iter().enumerate() {
+        if row.len() != 2 {
+            return Err(format!("pi_b[{i}] must have 2 elements, got {}", row.len()));
+        }
+    }
+
+    Ok(Proof { pi_a, pi_b, pi_c, protocol: proof.protocol })
 }
 
 pub async fn update_proof(
@@ -233,6 +295,86 @@ pub struct Proof {
     pub pi_b: Vec<Vec<String>>,
     pub pi_c: Vec<String>,
     pub protocol: String,
+}
+
+#[cfg(test)]
+mod affine_tests {
+    use super::*;
+
+    fn snarkjs_shaped() -> Proof {
+        // Exactly what rapidsnark/snarkjs write: a trailing projective coordinate
+        // on pi_a and pi_c, and a trailing ["1","0"] row on pi_b.
+        Proof {
+            pi_a: vec!["11".into(), "22".into(), "1".into()],
+            pi_b: vec![
+                vec!["31".into(), "32".into()],
+                vec!["41".into(), "42".into()],
+                vec!["1".into(), "0".into()],
+            ],
+            pi_c: vec!["51".into(), "52".into(), "1".into()],
+            protocol: "groth16".into(),
+        }
+    }
+
+    #[test]
+    fn a_prover_shaped_proof_becomes_affine() {
+        let p = to_affine(snarkjs_shaped()).expect("must normalise");
+        assert_eq!(p.pi_a, vec!["11".to_string(), "22".to_string()]);
+        assert_eq!(p.pi_c, vec!["51".to_string(), "52".to_string()]);
+        assert_eq!(p.pi_b.len(), 2);
+        assert_eq!(p.pi_b[1], vec!["41".to_string(), "42".to_string()]);
+    }
+
+    #[test]
+    fn an_already_affine_proof_is_unchanged() {
+        let mut p = snarkjs_shaped();
+        p.pi_a.pop();
+        p.pi_c.pop();
+        p.pi_b.pop();
+        let (a, b, c) = (p.pi_a.clone(), p.pi_b.clone(), p.pi_c.clone());
+        let out = to_affine(p).expect("must accept affine input");
+        assert_eq!(out.pi_a, a);
+        assert_eq!(out.pi_b, b);
+        assert_eq!(out.pi_c, c);
+    }
+
+    /// The trailing coordinate is asserted, not assumed. A point whose third
+    /// coordinate is not the identity has not been understood, and truncating it
+    /// would sign a different point than the prover computed.
+    #[test]
+    fn a_non_identity_projective_coordinate_is_rejected() {
+        let mut p = snarkjs_shaped();
+        p.pi_a = vec!["11".into(), "22".into(), "7".into()];
+        let err = to_affine(p).unwrap_err();
+        assert!(err.contains("non-identity projective coordinate"), "got: {err}");
+
+        let mut q = snarkjs_shaped();
+        q.pi_b[2] = vec!["9".into(), "0".into()];
+        let err = to_affine(q).unwrap_err();
+        assert!(err.contains("non-identity projective row"), "got: {err}");
+    }
+
+    #[test]
+    fn a_wrong_length_point_is_rejected() {
+        let mut p = snarkjs_shaped();
+        p.pi_a = vec!["11".into()];
+        assert!(to_affine(p).unwrap_err().contains("must have 2 or 3 elements"));
+
+        let mut q = snarkjs_shaped();
+        q.pi_b = vec![vec!["1".into(), "2".into()]];
+        assert!(to_affine(q).unwrap_err().contains("must have 2 or 3 rows"));
+    }
+
+    /// The end-to-end point: a prover-shaped proof must survive the digest that
+    /// bootstrap and sign_proof both run. Before normalisation this failed with
+    /// "pi_a must have exactly 2 elements, got 3", which is what crash-looped the
+    /// enclave on every boot.
+    #[test]
+    fn a_normalised_proof_digests_cleanly() {
+        let p = to_affine(snarkjs_shaped()).expect("must normalise");
+        crate::attestation::digest::proof_digest(&p, &vec!["7".to_string()])
+            .expect("digest must accept a normalised prover proof");
+    }
 }
 
 #[cfg(test)]
