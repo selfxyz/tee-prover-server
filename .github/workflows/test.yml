@@ -1,0 +1,115 @@
+name: Test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on:
+      - 'self-hosted'
+      - 'selfxyz-org'
+      - 'c4d-highmem-8'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # The comment that used to live here said a toolchain step was
+      # unnecessary because the runners already have Rust, and that if their
+      # toolchain were ever too old the compiler would say so. It did: the
+      # runners ship a source-tarball rustc 1.75 with no rustup, and every run
+      # failed before a single test with
+      #   error: failed to parse lock file ... lock file version 4 requires
+      #   `-Znext-lockfile-bump`
+      # A v4 lockfile needs 1.78, and this project's dependency floor is higher
+      # still -- `alloy`, pulled in by the `chain` feature, requires 1.91.
+      #
+      # rustup-init is what refused to run over the pre-installed toolchain
+      # (`error: cannot install while Rust is installed`); RUSTUP_INIT_SKIP_PATH_CHECK
+      # is the documented way past that check. Installed with
+      # `--default-toolchain none` on purpose: rust-toolchain.toml is the single
+      # source of truth for the version, so this step names none of its own and
+      # cannot drift from what the Docker images build with.
+      - name: Install rustup and the pinned toolchain
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | RUSTUP_INIT_SKIP_PATH_CHECK=yes sh -s -- -y \
+                  --no-modify-path --profile minimal --default-toolchain none
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Runs after the PATH change above, so it reports the toolchain the tests
+      # will actually use rather than whatever the runner image happens to have.
+      - name: Show Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      # Node is required by the cargo tests, not only by the Node suite below:
+      # the signature pre-check delegates every non-KYC circuit to the JS
+      # signature-verifier sidecar, and its fixture tests spawn it for real.
+      # Without Node the spawn fails, which correctly degrades to `Skipped` --
+      # so those tests would go red asserting `Valid`, which is the loud
+      # failure we want rather than a silent one.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The bootstrap tests shell out to the vendored JWT input generator via
+      # its local `node_modules/.bin/tsx`, deliberately not `npx` -- with npx a
+      # missing binary is silently fetched instead of failing, which would hide
+      # exactly this gap. `jwt-input-generator/node_modules` is gitignored, so
+      # without this step the two `attestation::bootstrap` tests fail with
+      # "jwt-input-generator runtime not found". That failure was invisible
+      # until the toolchain above started working, because the job never got
+      # past parsing Cargo.lock.
+      - name: Install JWT input generator dependencies
+        working-directory: jwt-input-generator
+        run: npm ci
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        run: cargo test --bin tee-server
+
+      - name: Build
+        run: cargo build --bin tee-server
+
+      # The sidecar's own suite: parses and verifies all 23 real fixtures
+      # under tests/fixtures/ (register/EU-ID/DSC/Aadhaar/KYC), including
+      # every RSA, RSA-PSS, and ECDSA (NIST and brainpool curve) scheme this
+      # crate's circuits use.
+      #
+      # Name the file explicitly. `node --test signature-verifier/` resolves
+      # the directory as a module and fails with MODULE_NOT_FOUND rather than
+      # scanning it.
+      # `node --test` exits 0 when a suite BODY throws -- it prints `not ok` for
+      # the suite but the process still succeeds, and `# fail 0` is reported.
+      # Measured on Node 22: a failing test() exits 1, but a describe() whose
+      # body throws exits 0. That is the failure you get from a typo, a bad
+      # import, or a renamed export -- i.e. the way a test file breaks during a
+      # refactor -- so relying on the exit code alone would let a whole suite
+      # stop running while CI stayed green.
+      - name: Run sidecar tests
+        run: |
+          set -o pipefail
+          out=$(node --test signature-verifier/verify.test.mjs 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          if grep -qE '^not ok' <<< "$out"; then
+            echo "::error::a test suite reported 'not ok' while the process exited 0"
+            exit 1
+          fi

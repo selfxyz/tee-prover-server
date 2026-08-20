@@ -1,6 +1,6 @@
 ######## Enclave image ########
 
-FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS chef
+FROM public.ecr.aws/docker/library/rust:1.91-bookworm AS chef
 
 RUN cargo install cargo-chef 
 
@@ -25,10 +25,18 @@ FROM debian:trixie
 RUN apt-get update
 RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
 
-# Node + the vendored JWT attestation sidecar (src/attestation/bootstrap.rs
-# spawns it via `npx tsx index.ts` with cwd /jwt/jwt-input-generator).
+# One Node install serves BOTH sidecars. Two separate RUN lines arrived here
+# from independent branches -- the attestation JWT generator and the signature
+# verifier -- and installing Node twice would just make the image larger and
+# the layers harder to reason about.
+#
+# The two sidecars differ in one way that matters: jwt-input-generator has
+# dependencies and needs `npm ci`, while signature-verifier/verify.mjs has
+# zero dependencies by design, so copying the directory is sufficient.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
 
+# The JWT attestation sidecar (src/attestation/bootstrap.rs spawns it via the
+# installed tsx, with cwd /jwt/jwt-input-generator).
 WORKDIR /jwt/jwt-input-generator
 COPY jwt-input-generator/package*.json ./
 RUN npm ci --omit=dev
@@ -62,6 +70,8 @@ RUN chmod +x /usr/local/bin/update_creds.sh
 
 COPY start.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/start.sh
+
+COPY signature-verifier /signature-verifier
 
 EXPOSE 8888
 LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
