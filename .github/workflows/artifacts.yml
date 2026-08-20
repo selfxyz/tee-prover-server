@@ -94,6 +94,20 @@ jobs:
           mkdir -p circuits
           cp -r zk_circuits/output/* circuits/
 
+      # gs://zk_circuits/output carries the register, disclose and dsc families
+      # only -- the attestation circuit has never been published there, so the
+      # step above delivers its zkey (from its own ceremony bucket, via
+      # download_zkeys*.sh) while the circuit itself is simply absent.
+      # check_circuits.sh then fails, correctly, on a required circuit missing.
+      #
+      # Not gated on `tag`: ALWAYS_CIRCUITS ship in every image variant, so both
+      # the filtered and the cherrypick builds need this. It lands flat at
+      # circuits/<name>_cpp, which the two sort steps below each already handle.
+      - name: Download always-present circuits
+        run: |
+          chmod +x download_always_circuits.sh
+          ./download_always_circuits.sh circuits
+
       - name: Sort circuits
         if: ${{ inputs.tag == 'latest' }}
         run: |
