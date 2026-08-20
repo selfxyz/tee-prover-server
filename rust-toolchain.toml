@@ -1,0 +1,19 @@
+# The one place this project's Rust version is declared.
+#
+# 1.91 is a floor set by dependencies, not a preference: `alloy` 1.8 (pulled in
+# by the `chain` feature) requires 1.91, and `enum-ordinalize` 4.4 requires 1.89
+# even without it. Cargo refuses to build below either, so this is the minimum
+# that compiles at all.
+#
+# Pinned rather than left as `stable` so CI, the Docker images and a developer's
+# checkout all build with the same compiler. Both Dockerfiles use the matching
+# `rust:1.91-bookworm` base, which makes rustup's resolution of this file a
+# no-op there instead of a toolchain download on every build.
+#
+# Raising this means raising the Dockerfile bases in the same commit.
+[toolchain]
+channel = "1.91.1"
+# Minimal, and no extra components: the base image ships exactly cargo, rustc
+# and rust-std, so anything named here would be downloaded on every Docker
+# build. Nothing in CI or either Dockerfile runs clippy or rustfmt.
+profile = "minimal"

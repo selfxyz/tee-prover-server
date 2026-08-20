@@ -15,14 +15,37 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # No rust-toolchain action here. The self-hosted runners already have a
-      # Rust toolchain installed, and rustup-init refuses to run over one --
-      # `error: cannot install while Rust is installed`, which failed this job
-      # on every run. Print the versions instead so the log records what built
-      # the binary; if the runner's toolchain is ever too old, the compiler says
-      # so directly and more usefully than a toolchain-install step would.
+      # The comment that used to live here said a toolchain step was
+      # unnecessary because the runners already have Rust, and that if their
+      # toolchain were ever too old the compiler would say so. It did: the
+      # runners ship a source-tarball rustc 1.75 with no rustup, and every run
+      # failed before a single test with
+      #   error: failed to parse lock file ... lock file version 4 requires
+      #   `-Znext-lockfile-bump`
+      # A v4 lockfile needs 1.78, and this project's dependency floor is higher
+      # still -- `alloy`, pulled in by the `chain` feature, requires 1.91.
+      #
+      # rustup-init is what refused to run over the pre-installed toolchain
+      # (`error: cannot install while Rust is installed`); RUSTUP_INIT_SKIP_PATH_CHECK
+      # is the documented way past that check. Installed with
+      # `--default-toolchain none` on purpose: rust-toolchain.toml is the single
+      # source of truth for the version, so this step names none of its own and
+      # cannot drift from what the Docker images build with.
+      - name: Install rustup and the pinned toolchain
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | RUSTUP_INIT_SKIP_PATH_CHECK=yes sh -s -- -y \
+                  --no-modify-path --profile minimal --default-toolchain none
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Runs after the PATH change above, so it reports the toolchain the tests
+      # will actually use rather than whatever the runner image happens to have.
       - name: Show Rust toolchain
         run: |
+          rustup show active-toolchain
           rustc --version
           cargo --version
 
@@ -44,7 +67,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
