@@ -56,6 +56,16 @@ fn read_fixture(name: &str) -> serde_json::Value {
 /// verifier's `verify` function directly the way this file did before
 /// Task 4.
 async fn run_inputs(circuit: &str, inputs: serde_json::Value) -> Verdict {
+    // Held for the whole body, per `crate::attestation::TMP_ROOT_LOCK`'s own
+    // contract: `get_tmp_folder_path` puts this directory in the crate root
+    // alongside every other `tmp_*`, and
+    // `bootstrap::tests::cleanup_runs_after_a_failed_bootstrap` snapshots that
+    // whole set before and after its call. A `tmp_<uuid>` of ours living for the
+    // duration of a `verify_inputs` call looks exactly like a directory bootstrap
+    // failed to clean up, so that test went red at random with an extra entry it
+    // never created. This file was the one `tmp_*` producer not taking the lock.
+    let _tmp_root = crate::attestation::TMP_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let uuid = uuid::Uuid::new_v4();
     let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
     tokio::fs::create_dir_all(&dir).await.unwrap();
