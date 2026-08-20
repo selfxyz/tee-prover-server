@@ -38,11 +38,31 @@ pub async fn run_input_generator(
             format!("jwt-input-generator runtime not found at {dir}/node_modules/.bin/tsx: {e}")
         })?;
 
+    // Absolutised for the same reason `tsx` is canonicalised above: `current_dir`
+    // below changes the CHILD's working directory, so any relative path handed to
+    // it is resolved against the generator's directory rather than ours. bootstrap
+    // builds this path from `get_tmp_folder_path` (`./tmp_<uuid>`) and creates that
+    // directory relative to the SERVER's cwd -- in the image `/usr/local/bin`,
+    // while the generator runs in `/jwt/jwt-input-generator`. Passing it through
+    // unchanged made the child write into a directory nothing had created, failing
+    // every boot with `ENOENT ... ./tmp_<uuid>/input.json`.
+    //
+    // Resolved against our cwd rather than canonicalised, because the file does not
+    // exist yet -- canonicalize would fail on the leaf.
+    let output_path = path::Path::new(output_file);
+    let output_abs = if output_path.is_absolute() {
+        output_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("could not resolve the current directory: {e}"))?
+            .join(output_path)
+    };
+
     let mut cmd = tokio::process::Command::new(tsx);
     cmd.current_dir(dir)
         .arg("index.ts")
         .arg(enclave_address)
-        .arg(output_file);
+        .arg(&output_abs);
     if let Some(f) = fixture {
         cmd.env("JWT_FIXTURE", f);
     }
@@ -157,6 +177,53 @@ mod tests {
         let inputs: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         assert!(inputs.get("message").is_some());
+    }
+
+    /// A RELATIVE output path must land where the caller meant, not where the
+    /// generator's own working directory happens to point.
+    ///
+    /// `run_input_generator` sets `current_dir(dir)` on the child, so every
+    /// relative path it is handed is resolved against the generator's directory
+    /// rather than the server's. `bootstrap` builds its path from
+    /// `get_tmp_folder_path`, which returns `./tmp_<uuid>` -- relative -- and
+    /// creates that directory relative to the SERVER's cwd. In the image those
+    /// two directories are different (`/usr/local/bin` vs
+    /// `/jwt/jwt-input-generator`), so the generator wrote into a directory
+    /// nothing had created and every boot died with
+    ///
+    ///   ENOENT: no such file or directory, open './tmp_<uuid>/input.json'
+    ///
+    /// The existing tests never caught it because they all pass an absolute
+    /// `tempfile::tempdir()` path, which is immune to the child's cwd.
+    #[tokio::test]
+    async fn a_relative_output_path_is_resolved_against_the_callers_directory() {
+        let _guard = crate::attestation::TMP_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Deliberately relative, exactly as get_tmp_folder_path builds it.
+        let dir_name = format!("tmp_relpath_{}", uuid::Uuid::new_v4());
+        let rel_dir = format!("./{dir_name}");
+        std::fs::create_dir_all(&rel_dir).unwrap();
+        let rel_out = format!("{rel_dir}/input.json");
+
+        let result = run_input_generator(
+            &synthetic_fixture_address(),
+            &rel_out,
+            Some("fixtures/synthetic_jwt.txt"),
+        )
+        .await;
+
+        let landed = std::path::Path::new(&rel_out).exists();
+        let strayed = std::path::Path::new("jwt-input-generator")
+            .join(&dir_name)
+            .join("input.json")
+            .exists();
+
+        let _ = std::fs::remove_dir_all(&rel_dir);
+        let _ = std::fs::remove_dir_all(std::path::Path::new("jwt-input-generator").join(&dir_name));
+
+        result.expect("generator must succeed with a relative output path");
+        assert!(landed, "input.json must be written to {rel_out}");
+        assert!(!strayed, "input.json must NOT land under the generator's own directory");
     }
 
     /// The spec's central claim, enforced at the seam that can actually break it: a
