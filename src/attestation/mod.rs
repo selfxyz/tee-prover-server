@@ -21,7 +21,13 @@ pub fn sign_proof(
     proof: &crate::db::Proof,
     public_inputs: &[String],
 ) -> Result<String, String> {
-    let d = digest::proof_digest(proof, public_inputs)?;
+    // Signed over the SUBMITTED coordinate order, not the prover's. The hub
+    // digests the calldata it receives, and a relaying client transposes each
+    // pi_b pair on the way -- see `digest::to_submitted_order`. Signing the
+    // prover's order yields a digest the hub can never reproduce, so every
+    // register and disclose call reverts UnauthorizedProverSigner.
+    let submitted = digest::to_submitted_order(proof)?;
+    let d = digest::proof_digest(&submitted, public_inputs)?;
     Ok(format!("0x{}", hex::encode(key.sign_digest(&d)?)))
 }
 
@@ -42,6 +48,45 @@ pub(crate) static TMP_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 mod tests {
     use super::*;
     use key::recover_address;
+
+    /// sign_proof must sign the digest of the SUBMITTED order, which is what the
+    /// hub reconstructs from calldata. Pinned end to end rather than by
+    /// inspection: recover the signer from both candidate digests and assert
+    /// only the submitted one yields the enclave's address.
+    #[test]
+    fn sign_proof_signs_the_submitted_coordinate_order() {
+        use key::recover_address;
+
+        let key = EnclaveKey::generate();
+        let proof = crate::db::Proof {
+            pi_a: vec!["1".into(), "2".into()],
+            pi_b: vec![vec!["3".into(), "4".into()], vec!["5".into(), "6".into()]],
+            pi_c: vec!["7".into(), "8".into()],
+            protocol: "groth16".into(),
+        };
+        let public_inputs = vec!["9".to_string(), "10".to_string()];
+
+        let sig_hex = sign_proof(&key, &proof, &public_inputs).expect("sign_proof failed");
+        let sig: [u8; 65] = hex::decode(sig_hex.trim_start_matches("0x"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        let submitted = digest::to_submitted_order(&proof).unwrap();
+        let d_submitted = digest::proof_digest(&submitted, &public_inputs).unwrap();
+        let d_prover = digest::proof_digest(&proof, &public_inputs).unwrap();
+
+        assert_eq!(
+            recover_address(&d_submitted, &sig).unwrap().to_lowercase(),
+            key.address().to_lowercase(),
+            "signature must recover to the enclave over the SUBMITTED order"
+        );
+        assert_ne!(
+            recover_address(&d_prover, &sig).unwrap().to_lowercase(),
+            key.address().to_lowercase(),
+            "the prover's order must NOT recover -- that is the bug this pins"
+        );
+    }
 
     /// Regression test for the read/sign/store race: pins the reader, the
     /// digest, and the signature together end-to-end, so a future change that
@@ -79,7 +124,14 @@ mod tests {
         // Recompute the digest independently from the same parsed values used
         // to sign; if `sign_proof` or the reader ever drift from what gets
         // persisted, this equality is what catches it.
-        let d = digest::proof_digest(&proof, &public_inputs).expect("digest failed");
+        //
+        // Over the SUBMITTED coordinate order, because that is what sign_proof
+        // signs and what the hub reconstructs from calldata. This assertion used
+        // the prover's order and passed, which is precisely why the mismatch
+        // survived: the enclave agreed with itself while disagreeing with the
+        // contract.
+        let submitted = digest::to_submitted_order(&proof).expect("reorder failed");
+        let d = digest::proof_digest(&submitted, &public_inputs).expect("digest failed");
         assert_eq!(
             recover_address(&d, &sig).unwrap(),
             key.address(),
