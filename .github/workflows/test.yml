@@ -60,6 +60,18 @@ jobs:
         with:
           node-version: '22'
 
+      # The bootstrap tests shell out to the vendored JWT input generator via
+      # its local `node_modules/.bin/tsx`, deliberately not `npx` -- with npx a
+      # missing binary is silently fetched instead of failing, which would hide
+      # exactly this gap. `jwt-input-generator/node_modules` is gitignored, so
+      # without this step the two `attestation::bootstrap` tests fail with
+      # "jwt-input-generator runtime not found". That failure was invisible
+      # until the toolchain above started working, because the job never got
+      # past parsing Cargo.lock.
+      - name: Install JWT input generator dependencies
+        working-directory: jwt-input-generator
+        run: npm ci
+
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@v4
         with:
