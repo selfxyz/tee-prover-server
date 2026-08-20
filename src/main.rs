@@ -153,9 +153,63 @@ async fn main() {
     };
     println!("Enclave attested. Signing address: {}", enclave_key.address());
 
+    // Fetched from Secret Manager, never from an env var: under Confidential
+    // Space an env var is an instance-metadata value, readable by anyone with
+    // `compute.instances.get` on the project, and this key is funded. Same
+    // path the database URL above already takes.
+    //
+    // Fatal like the bootstrap before it. With signature enforcement live on
+    // the hub, an enclave whose key was never registered produces proofs that
+    // every register call rejects -- so failing to register is failing to
+    // serve, and it is better to not start than to serve rejected proofs.
     #[cfg(feature = "chain")]
-    if let Err(e) = attestation::chain::register_prover_key(&enclave_key, &attestation_proof).await {
-        panic!("prover key registration failed: {e}");
+    {
+        // One prefix, three secrets: `<prefix>RPC_URL`, `<prefix>HUB_ADDRESS`,
+        // `<prefix>TEE_PRIVATE_KEY`. Staging and production share the
+        // `self-protocol` project, so the prefix is what keeps their prover
+        // config apart in a single Secret Manager namespace -- a staging
+        // instance reading production's funded key is the failure this naming
+        // exists to make impossible.
+        //
+        // The prefix itself is the only part that travels as metadata; it names
+        // secrets rather than containing any.
+        let prefix = std::env::var("PROVER_SECRET_PREFIX")
+            .expect("PROVER_SECRET_PREFIX is not set");
+
+        let mut prover_config = Vec::new();
+        for suffix in ["RPC_URL", "HUB_ADDRESS", "TEE_PRIVATE_KEY"] {
+            let secret_id = format!("{prefix}{suffix}");
+            let name = format!("projects/{}/secrets/{}/versions/latest", project, secret_id);
+            let resp = client
+                .access_secret_version()
+                .set_name(name)
+                .send()
+                .await
+                .unwrap_or_else(|e| {
+                    // Names the secret, never its contents.
+                    panic!("failed to read secret {secret_id} from Secret Manager: {e}")
+                });
+            let value = String::from_utf8(
+                resp.payload
+                    .unwrap_or_else(|| panic!("secret {secret_id} has no payload"))
+                    .data
+                    .to_vec(),
+            )
+            .unwrap_or_else(|_| panic!("secret {secret_id} is not valid UTF-8"));
+            prover_config.push(value);
+        }
+
+        if let Err(e) = attestation::chain::register_prover_key(
+            &enclave_key,
+            &attestation_proof,
+            &prover_config[0],
+            &prover_config[1],
+            &prover_config[2],
+        )
+        .await
+        {
+            panic!("prover key registration failed: {e}");
+        }
     }
     #[cfg(not(feature = "chain"))]
     let _ = &attestation_proof;
