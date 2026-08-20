@@ -39,9 +39,16 @@ CREATE OR REPLACE FUNCTION status_update_notify() RETURNS trigger AS $$
 DECLARE
   notification_payload JSON;
 BEGIN
+  -- Every column the payload below carries must appear here, or a write that
+  -- touches only that column sends nothing and the consumer never learns of it.
+  -- `signature` was added to the payload without being added to this condition:
+  -- correct only by accident, because update_proof happens to set `status` in the
+  -- same statement. A backfill, a re-sign, or any future write that updates the
+  -- signature alone would have been silently dropped.
   IF (TG_OP = 'UPDATE' AND (
         NEW.status IS DISTINCT FROM OLD.status
         OR NEW.precheck_verdict IS DISTINCT FROM OLD.precheck_verdict
+        OR NEW.signature IS DISTINCT FROM OLD.signature
       )) OR TG_OP = 'INSERT' THEN
     notification_payload = json_build_object(
       'request_id', NEW.request_id,
