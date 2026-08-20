@@ -29,6 +29,15 @@ sol! {
     }
 }
 
+/// Parses one G2 coordinate pair and swaps it into the order Solidity reads.
+///
+/// Split out from `to_u256_array` so the swap is named rather than being an
+/// index trick buried in a call site, and so a test can pin it directly.
+fn swapped_g2_row(values: &[String], what: &str) -> Result<[alloy::primitives::U256; 2], String> {
+    let [x, y] = to_u256_array::<2>(values, what)?;
+    Ok([y, x])
+}
+
 fn to_u256_array<const N: usize>(values: &[String], what: &str) -> Result<[alloy::primitives::U256; N], String> {
     if values.len() != N {
         return Err(format!("{what} must have {N} elements, got {}", values.len()));
@@ -77,9 +86,20 @@ pub async fn register_prover_key(
         return Err(format!("pi_b must have exactly 2 rows, got {}", attestation.proof.pi_b.len()));
     }
     let a = to_u256_array::<2>(&attestation.proof.pi_a, "pi_a")?;
+    // G2 coordinates are swapped within each pair before submission. A Groth16
+    // prover writes pi_b in the library's own order; a Solidity pairing check
+    // reads each Fp2 element imaginary-part-first, so the two disagree and the
+    // proof simply fails to verify. The monorepo does the same swap wherever it
+    // builds calldata -- see common/src/utils/contracts/formatCallData.ts, which
+    // emits [b[0][1], b[0][0]] and [b[1][1], b[1][0]].
+    //
+    // Submitting the unswapped order made registerProverKey revert
+    // InvalidProverProof (0x29a48461) from ProverAttestationLib: the transaction
+    // reached the verifier and the verifier rejected the proof, which reads as a
+    // bad attestation rather than a wire-format error.
     let b = [
-        to_u256_array::<2>(&attestation.proof.pi_b[0], "pi_b[0]")?,
-        to_u256_array::<2>(&attestation.proof.pi_b[1], "pi_b[1]")?,
+        swapped_g2_row(&attestation.proof.pi_b[0], "pi_b[0]")?,
+        swapped_g2_row(&attestation.proof.pi_b[1], "pi_b[1]")?,
     ];
     let c = to_u256_array::<2>(&attestation.proof.pi_c, "pi_c")?;
     let pub_signals = to_u256_array::<20>(&attestation.public_inputs, "public_inputs")?;
@@ -126,6 +146,40 @@ pub async fn register_prover_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The swap is the whole point: a Groth16 prover emits each G2 coordinate pair
+    /// in the library's order, and a Solidity pairing check reads it
+    /// imaginary-part-first. Submitting the prover's order made
+    /// registerProverKey revert InvalidProverProof (0x29a48461) -- the verifier
+    /// was reached and rejected the proof.
+    #[test]
+    fn a_g2_row_is_swapped_for_solidity() {
+        let row = vec!["11".to_string(), "22".to_string()];
+        let out = swapped_g2_row(&row, "pi_b[0]").expect("must parse");
+        assert_eq!(out[0], alloy::primitives::U256::from(22u64), "imaginary part must come first");
+        assert_eq!(out[1], alloy::primitives::U256::from(11u64));
+    }
+
+    /// Matches common/src/utils/contracts/formatCallData.ts, which emits
+    /// [b[0][1], b[0][0]] and [b[1][1], b[1][0]] -- the same transposition this
+    /// repo must apply, pinned here so the two cannot drift apart silently.
+    #[test]
+    fn the_swap_matches_the_monorepos_calldata_ordering() {
+        let r0 = vec!["1".to_string(), "2".to_string()];
+        let r1 = vec!["3".to_string(), "4".to_string()];
+        let b = [
+            swapped_g2_row(&r0, "pi_b[0]").unwrap(),
+            swapped_g2_row(&r1, "pi_b[1]").unwrap(),
+        ];
+        let u = |n: u64| alloy::primitives::U256::from(n);
+        assert_eq!(b, [[u(2), u(1)], [u(4), u(3)]]);
+    }
+
+    #[test]
+    fn a_malformed_g2_row_is_still_rejected() {
+        let err = swapped_g2_row(&vec!["1".to_string()], "pi_b[0]").unwrap_err();
+        assert_eq!(err, "pi_b[0] must have 2 elements, got 1");
+    }
 
     #[test]
     fn to_u256_array_rejects_short_input() {
