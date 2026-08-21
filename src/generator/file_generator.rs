@@ -39,9 +39,8 @@ impl FileGenerator {
         // bytes it took, capped at tokio's 2 MiB DEFAULT_MAX_BUF_SIZE. That count
         // was discarded, so any input over 2 MiB -- every -large register and dsc
         // request -- was silently truncated to exactly 2 MiB.
-        input_file
-            .write_all(self.proof_request.circuit().inputs.as_bytes())
-            .await?;
+        let inputs = self.proof_request.circuit().inputs.as_bytes();
+        input_file.write_all(inputs).await?;
 
         // tokio::fs::File buffers, and dropping it does not flush. The precheck
         // opens input.json immediately after this returns, so an unflushed write
@@ -53,6 +52,12 @@ impl FileGenerator {
         // page cache, not a crash-durability requirement, so there is no reason
         // to pay for an fsync on a tmp file.
         input_file.flush().await?;
+
+        // Pairs with verify_inputs' "N bytes read" for the same uuid. If the two
+        // counts agree and are zero, the request arrived with empty inputs and
+        // this function is not at fault; if they disagree, the bytes were lost
+        // between here and the pre-check.
+        println!("wrote input.json for {}: {} bytes", self.uuid, inputs.len());
 
         Ok((self.uuid.clone(), self.proof_request.circuit().name.clone()))
     }

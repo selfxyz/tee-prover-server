@@ -100,7 +100,17 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
     };
     let inputs: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
-        Err(e) => return Verdict::Skipped(format!("input.json is not valid JSON: {e}")),
+        Err(e) => {
+            // The byte count, not just serde's position: "column 0" cannot
+            // distinguish an empty file from a present-but-malformed one, and
+            // that distinction is what says whether the input arrived empty
+            // (upstream) or was lost on the way to disk (write path). Pairs with
+            // FileGenerator::run's own count for the same uuid.
+            return Verdict::Skipped(format!(
+                "input.json is not valid JSON ({} bytes read): {e}",
+                raw.len()
+            ));
+        }
     };
 
     // dispatch is synchronous, but its generic (sidecar) branch reaches the
@@ -297,6 +307,40 @@ mod tests {
                 "the file was readable, so the reason must not blame the file: {reason}"
             ),
             other => panic!("expected Invalid at this stage, got {other:?}"),
+        }
+    }
+
+    /// The field failures on staging all read `EOF while parsing a value at line
+    /// 1 column 0`, which says the parser gave up at the start but not whether
+    /// the file was empty or unreadable-but-present. The byte count separates
+    /// "nothing was ever written" from "something was written and is malformed",
+    /// which is the difference between an upstream input problem and a write-path
+    /// problem. Without it the two are indistinguishable in production.
+    #[tokio::test]
+    async fn a_malformed_input_file_reports_how_many_bytes_were_read() {
+        // Shared with the attestation tests, which chdir; get_tmp_folder_path is
+        // relative ("./tmp_<uuid>"), so a concurrent chdir would relocate this.
+        let _guard = crate::attestation::TMP_ROOT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let uuid = uuid::Uuid::new_v4();
+        let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        // Empty, exactly as staging observed it.
+        tokio::fs::write(std::path::Path::new(&dir).join("input.json"), b"")
+            .await
+            .unwrap();
+
+        let v = verify_inputs(uuid, "register_sha256_sha256_sha256_rsa_65537_4096").await;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+
+        match v {
+            Verdict::Skipped(reason) => assert!(
+                reason.contains("0 bytes"),
+                "the reason must report how many bytes were read, got: {reason}"
+            ),
+            other => panic!("an unparseable input file must skip, got {other:?}"),
         }
     }
 
