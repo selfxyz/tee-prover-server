@@ -2,7 +2,20 @@
 
 FROM public.ecr.aws/docker/library/rust:1.91-bookworm AS chef
 
-RUN cargo install cargo-chef 
+# Pinned and --locked: this resolves cargo-chef's own dependency tree fresh on
+# every image build (104 crates, no lockfile of ours involved), which is the
+# one unpinned supply-chain surface left in this build. During the
+# arrayref@0.3.10 window on 2026-08-20 a deploy ran at 07:55Z and those 104
+# crates simply did not happen to include arrayref -- the app build was safe
+# only because it uses --locked.
+#
+# It also makes the build reproducible, which matters more here than in most
+# repos: the image digest IS the PCR0 attestation measurement, so an
+# unpinned tool can change the measurement with no source change.
+#
+# 0.1.78 is the version the 2026-08-20 staging build resolved to. Bump
+# deliberately, not implicitly.
+RUN cargo install cargo-chef --locked --version 0.1.78
 
 WORKDIR /src/
 
