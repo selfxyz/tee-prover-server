@@ -69,10 +69,14 @@ async fn run_inputs(circuit: &str, inputs: serde_json::Value) -> Verdict {
     let uuid = uuid::Uuid::new_v4();
     let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
     tokio::fs::create_dir_all(&dir).await.unwrap();
-    tokio::fs::write(std::path::Path::new(&dir).join("input.json"), inputs.to_string())
+    let serialised = inputs.to_string();
+    let written = serialised.len();
+    tokio::fs::write(std::path::Path::new(&dir).join("input.json"), &serialised)
         .await
         .unwrap();
-    let v = crate::verifier::verify_inputs(uuid, circuit).await;
+    // The real byte count, as production passes it: this stands in for
+    // FileGenerator::run's return value.
+    let v = crate::verifier::verify_inputs(uuid, circuit, written).await;
     let _ = tokio::fs::remove_dir_all(&dir).await;
     v
 }

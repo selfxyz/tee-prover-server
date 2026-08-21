@@ -240,8 +240,8 @@ async fn main() {
             let pool_clone = pool.clone();
             let witness_generator_clone = witness_generator_sender.clone();
             tokio::spawn(async move {
-                let (uuid, circuit_name) = match file_generator.run().await {
-                    Ok((uuid, circuit_name)) => (uuid, circuit_name),
+                let (uuid, circuit_name, bytes_written) = match file_generator.run().await {
+                    Ok(v) => v,
                     Err(e) => {
                         dbg!(&e);
                         cleanup(uuid.clone(), &pool_clone, e.to_string()).await;
@@ -249,7 +249,7 @@ async fn main() {
                     }
                 };
 
-                let verdict = crate::verifier::verify_inputs(uuid, &circuit_name).await;
+                let verdict = crate::verifier::verify_inputs(uuid, &circuit_name, bytes_written).await;
                 crate::verifier::metrics::record(&verdict);
 
                 // Off the critical path by design: a DB error here must
