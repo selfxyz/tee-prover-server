@@ -63,6 +63,52 @@ ALTER TABLE proofs ADD COLUMN IF NOT EXISTS user_defined_data VARCHAR(768) DEFAU
 ALTER TABLE proofs ADD COLUMN IF NOT EXISTS self_defined_data VARCHAR(512) DEFAULT '';
 ALTER TABLE proofs ADD COLUMN IF NOT EXISTS signature VARCHAR(132);
 
+-- Converge columns that EXIST but with the wrong type or default.
+--
+-- ADD COLUMN IF NOT EXISTS above is a no-op when the column is already there,
+-- so a database created by an earlier version of this file keeps `version` as
+-- INTEGER, `user_defined_data`/`self_defined_data` as TEXT, and `endpoint` at
+-- VARCHAR(128) -- and an endpoint longer than 128 chars then fails to insert.
+-- Since this file is the only schema source in the repo, rerunning it has to
+-- actually converge.
+--
+-- Guarded on the current type so each block is a provable no-op against a
+-- database already in the target shape (production is). That matters: two of
+-- these are NARROWING conversions which rewrite the table and will fail loudly
+-- if any existing value does not fit -- which is the correct outcome for a
+-- database that has drifted, but must not be run blindly.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name='proofs' AND column_name='endpoint'
+               AND character_maximum_length IS DISTINCT FROM 256) THEN
+    ALTER TABLE proofs ALTER COLUMN endpoint TYPE VARCHAR(256);
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name='proofs' AND column_name='version'
+               AND data_type <> 'smallint') THEN
+    ALTER TABLE proofs ALTER COLUMN version TYPE SMALLINT;
+  END IF;
+  ALTER TABLE proofs ALTER COLUMN version SET DEFAULT 1;
+
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name='proofs' AND column_name='user_defined_data'
+               AND character_maximum_length IS DISTINCT FROM 768) THEN
+    ALTER TABLE proofs ALTER COLUMN user_defined_data TYPE VARCHAR(768);
+  END IF;
+  ALTER TABLE proofs ALTER COLUMN user_defined_data SET DEFAULT '';
+
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name='proofs' AND column_name='self_defined_data'
+               AND character_maximum_length IS DISTINCT FROM 512) THEN
+    ALTER TABLE proofs ALTER COLUMN self_defined_data TYPE VARCHAR(512);
+  END IF;
+  ALTER TABLE proofs ALTER COLUMN self_defined_data SET DEFAULT '';
+
+  ALTER TABLE proofs ALTER COLUMN request_id SET DEFAULT gen_random_uuid();
+END $$;
+
 -- Multichain / bridge columns present in the live table. Captured here so a
 -- freshly provisioned database matches production; this file is the only
 -- schema source in this repo, and code that reads these columns would fail
