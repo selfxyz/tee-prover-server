@@ -85,7 +85,7 @@ where
     }
 }
 
-pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
+pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str, bytes_written: usize) -> Verdict {
     let dir = crate::utils::get_tmp_folder_path(&uuid.to_string());
     let path = std::path::Path::new(&dir).join("input.json");
 
@@ -96,7 +96,11 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
     // dispatch is ever reached, for either branch, exactly as before Task 4.
     let raw = match tokio::fs::read_to_string(&path).await {
         Ok(raw) => raw,
-        Err(e) => return Verdict::Skipped(format!("could not read input.json: {e}")),
+        Err(e) => {
+            return Verdict::Skipped(format!(
+                "could not read input.json ({bytes_written} bytes written): {e}"
+            ))
+        }
     };
     let inputs: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
@@ -107,7 +111,7 @@ pub async fn verify_inputs(uuid: uuid::Uuid, circuit_name: &str) -> Verdict {
             // (upstream) or was lost on the way to disk (write path). Pairs with
             // FileGenerator::run's own count for the same uuid.
             return Verdict::Skipped(format!(
-                "input.json is not valid JSON ({} bytes read): {e}",
+                "input.json is not valid JSON ({} bytes read, {bytes_written} written): {e}",
                 raw.len()
             ));
         }
@@ -260,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_circuit_is_skipped_never_invalid() {
-        let v = verify_inputs(uuid::Uuid::new_v4(), "not_a_real_circuit").await;
+        let v = verify_inputs(uuid::Uuid::new_v4(), "not_a_real_circuit", 0).await;
         match v {
             Verdict::Skipped(_) => {}
             other => panic!("expected Skipped for an unknown circuit, got {other:?}"),
@@ -272,7 +276,7 @@ mod tests {
         // No tmp folder exists for this uuid, so input.json cannot be read.
         // Asserting the REASON matters: a stub that ignores the uuid and skips
         // unconditionally would pass a bare Skipped check while reading nothing.
-        let v = verify_inputs(uuid::Uuid::new_v4(), "register_sha256_sha256_sha256_rsa_65537_4096").await;
+        let v = verify_inputs(uuid::Uuid::new_v4(), "register_sha256_sha256_sha256_rsa_65537_4096", 0).await;
         match v {
             Verdict::Skipped(reason) => assert!(
                 reason.contains("input.json"),
@@ -298,7 +302,7 @@ mod tests {
         tokio::fs::create_dir_all(&dir).await.unwrap();
         tokio::fs::write(std::path::Path::new(&dir).join("input.json"), b"{}").await.unwrap();
 
-        let v = verify_inputs(uuid, "register_sha256_sha256_sha256_rsa_65537_4096").await;
+        let v = verify_inputs(uuid, "register_sha256_sha256_sha256_rsa_65537_4096", 0).await;
         let _ = tokio::fs::remove_dir_all(&dir).await;
 
         match v {
@@ -332,14 +336,23 @@ mod tests {
             .await
             .unwrap();
 
-        let v = verify_inputs(uuid, "register_sha256_sha256_sha256_rsa_65537_4096").await;
+        // 4096 written vs 0 present on disk: the pair that says the bytes were
+        // lost after the write, as distinct from an input that arrived empty.
+        let v = verify_inputs(uuid, "register_sha256_sha256_sha256_rsa_65537_4096", 4096).await;
         let _ = tokio::fs::remove_dir_all(&dir).await;
 
         match v {
-            Verdict::Skipped(reason) => assert!(
-                reason.contains("0 bytes"),
-                "the reason must report how many bytes were read, got: {reason}"
-            ),
+            Verdict::Skipped(reason) => {
+                assert!(
+                    reason.contains("0 bytes read"),
+                    "the reason must report bytes read, got: {reason}"
+                );
+                assert!(
+                    reason.contains("4096 written"),
+                    "the reason must report bytes written, or the two cannot be \
+                     compared without container stdout: {reason}"
+                );
+            }
             other => panic!("an unparseable input file must skip, got {other:?}"),
         }
     }
@@ -420,7 +433,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(20),
-            verify_inputs(uuid, "register_sha256_sha256_sha256_rsa_65537_4096"),
+            verify_inputs(uuid, "register_sha256_sha256_sha256_rsa_65537_4096", 0),
         )
         .await;
         let _ = tokio::fs::remove_dir_all(&dir).await;

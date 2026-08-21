@@ -28,7 +28,7 @@ impl FileGenerator {
 
     //create the tmp folder
     //create the inputs file
-    pub async fn run(&self) -> Result<(uuid::Uuid, String), std::io::Error> {
+    pub async fn run(&self) -> Result<(uuid::Uuid, String, usize), std::io::Error> {
         let path_str = get_tmp_folder_path(&self.uuid.to_string());
         let path = path::Path::new(&path_str);
         tokio::fs::create_dir_all(path).await?;
@@ -53,13 +53,15 @@ impl FileGenerator {
         // to pay for an fsync on a tmp file.
         input_file.flush().await?;
 
-        // Pairs with verify_inputs' "N bytes read" for the same uuid. If the two
-        // counts agree and are zero, the request arrived with empty inputs and
-        // this function is not at fault; if they disagree, the bytes were lost
-        // between here and the pre-check.
-        println!("wrote input.json for {}: {} bytes", self.uuid, inputs.len());
-
-        Ok((self.uuid.clone(), self.proof_request.circuit().name.clone()))
+        // Returned rather than logged: the caller hands this straight to
+        // verify_inputs, so it reaches proofs.precheck_reason alongside the
+        // bytes-read count. Container stdout would have needed the
+        // confidential-space-debug image family to leave the instance at all.
+        Ok((
+            self.uuid.clone(),
+            self.proof_request.circuit().name.clone(),
+            inputs.len(),
+        ))
     }
 }
 
@@ -110,7 +112,7 @@ mod tests {
         let uuid = uuid::Uuid::new_v4();
         let generator = FileGenerator::new(uuid, request(inputs.clone()));
 
-        generator.run().await.expect("run failed");
+        let (_, _, written) = generator.run().await.expect("run failed");
 
         let dir = get_tmp_folder_path(&uuid.to_string());
         let written = tokio::fs::read_to_string(path::Path::new(&dir).join("input.json"))
