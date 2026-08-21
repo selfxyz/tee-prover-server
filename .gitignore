@@ -2,3 +2,11 @@
 /tmp*
 /circuits
 /relayer/node_modules
+# Never commit environment files (CLAUDE.md: NEVER commit .env)
+.env
+.env.*
+!.env.example
+
+# Design specs and implementation plans stay local -- this repo is public.
+docs/superpowers/
+/jwt-input-generator/node_modules

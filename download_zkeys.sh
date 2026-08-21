@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source "$(dirname "${BASH_SOURCE[0]}")/constants.sh"
+
 circuits=(
   "register_aadhaar:self-trusted-setup-new-aadhaar-ph2-ceremony:aws"
   "register_kyc:register-kyc-fix-nullifier:gcp"
@@ -89,6 +91,26 @@ circuits=(
   "dsc_sha512_rsa_65537_4096:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony:aws"
   "dsc_sha512_rsapss_65537_64_4096:self-zk-passport-ceremony-extended---ethcc-version-ph2-ceremony:aws"
 )
+
+# Circuits present in every image variant (see ALWAYS_CIRCUITS in
+# constants.sh) get their bucket looked up here and are fed through the same
+# download_zkey logic as everything else above. They carry a 4th "required" field:
+# for these entries a bucket that yields no .zkey is FATAL rather than a skip,
+# because every image variant COPYs the result and the server panics at boot without
+# it. Without that, a wrong bucket string produced a green artifact job and a COPY
+# failure partway through seven image builds.
+for always_circuit in "${ALWAYS_CIRCUITS[@]}"; do
+  case "$always_circuit" in
+    gcp_jwt_verifier)
+      circuits+=("gcp_jwt_verifier:ecdsa-fix-plus-jwt:gcp:required")
+      ;;
+    *)
+      echo "No bucket mapping for always-present circuit: $always_circuit" >&2
+      exit 1
+      ;;
+  esac
+done
+
 download_zkey() {
   circuit_with_path="$1"
   
@@ -96,6 +118,8 @@ download_zkey() {
   circuit=$(echo "$circuit_with_path" | cut -d':' -f1)
   bucket_name=$(echo "$circuit_with_path" | cut -d':' -f2)
   provider=$(echo "$circuit_with_path" | cut -d':' -f3)
+  # Optional 4th field: "required" means an empty result is fatal, not a skip.
+  required=$(echo "$circuit_with_path" | cut -d':' -f4)
   
   # Default to aws if provider not specified
   if [[ -z "$provider" ]]; then
@@ -110,6 +134,12 @@ download_zkey() {
     latest_file=$(gsutil ls "$circuit_path" | grep '\.zkey$' | sort | tail -n 1 | xargs basename)
     
     if [[ -z "$latest_file" ]]; then
+      if [[ "$required" == "required" ]]; then
+        # Non-zero exit inside `bash -c` makes xargs return 123, which fails the
+        # calling CI step — the loud failure this circuit's absence deserves.
+        echo "FATAL: no .zkey found for required circuit $circuit at $circuit_path" >&2
+        exit 1
+      fi
       echo "No .zkey found for $circuit — skipping." >&2
       return
     fi
@@ -127,6 +157,11 @@ download_zkey() {
     latest_file=$(aws s3 ls "$circuit_path" | grep '\.zkey' | awk '{print $4}' | sort | tail -n 1)
     
     if [[ -z "$latest_file" ]]; then
+      if [[ "$required" == "required" ]]; then
+        # See the GCP branch above: exit non-zero so xargs fails the CI step.
+        echo "FATAL: no .zkey found for required circuit $circuit at $circuit_path" >&2
+        exit 1
+      fi
       echo "No .zkey found for $circuit — skipping." >&2
       return
     fi

@@ -12,4 +12,5 @@ ulimit -s 500000
     --secret-id=$SECRET_ID \
     --circuit-folder=/circuits \
     --zkey-folder=/zkeys \
-    --rapidsnark-path=/rapidsnark
+    --rapidsnark-path=/rapidsnark \
+    --precheck-mode=${PRECHECK_MODE:-enforce}

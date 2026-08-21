@@ -1,1 +1,2 @@
 /tmp*
+/jwt-input-generator/node_modules

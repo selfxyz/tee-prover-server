@@ -1,8 +1,21 @@
 ######## Enclave image ########
 
-FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS chef
+FROM public.ecr.aws/docker/library/rust:1.91-bookworm AS chef
 
-RUN cargo install cargo-chef 
+# Pinned and --locked: this resolves cargo-chef's own dependency tree fresh on
+# every image build (104 crates, no lockfile of ours involved), which is the
+# one unpinned supply-chain surface left in this build. During the
+# arrayref@0.3.10 window on 2026-08-20 a deploy ran at 07:55Z and those 104
+# crates simply did not happen to include arrayref -- the app build was safe
+# only because it uses --locked.
+#
+# It also makes the build reproducible, which matters more here than in most
+# repos: the image digest IS the PCR0 attestation measurement, so an
+# unpinned tool can change the measurement with no source change.
+#
+# 0.1.78 is the version the 2026-08-20 staging build resolved to. Bump
+# deliberately, not implicitly.
+RUN cargo install cargo-chef --locked --version 0.1.78
 
 WORKDIR /src/
 
@@ -16,12 +29,26 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY src src/
-RUN cargo build --locked --release --features cherrypick
+RUN cargo build --locked --release --features cherrypick,chain
 
 FROM debian:trixie
 
 RUN apt-get update
 RUN apt-get install build-essential cmake libgmp-dev libsodium-dev nasm curl m4 netcat-traditional socat iproute2 git jq unzip libc6 -y
+
+# Node + the vendored JWT attestation sidecar, identical to Dockerfile.tee.
+# tee-server requires the attestation bootstrap unconditionally — it is NOT gated on
+# the cargo feature that selects this image — because two security postures in one
+# binary would leave a consumer reading the `signature` column unable to tell which
+# image variant produced a row. So this variant needs the same sidecar and the same
+# attestation circuit, or it panics at boot.
+# src/attestation/bootstrap.rs runs /jwt/jwt-input-generator/node_modules/.bin/tsx.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
+
+WORKDIR /jwt/jwt-input-generator
+COPY jwt-input-generator/package*.json ./
+RUN npm ci --omit=dev
+COPY jwt-input-generator/ ./
 
 WORKDIR /rapidsnark
 COPY ./rapidsnark .
@@ -40,7 +67,27 @@ COPY --from=builder /src/target/release/tee-server /usr/local/bin/
 RUN chmod +x /usr/local/bin/tee-server
 COPY ./zkeys /zkeys
 
-LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID"
+# The attestation circuit and zkey are already inside the two wholesale COPYs above —
+# this cherrypick layout is flat (see sort_circuits.cherrypick.sh and the `--flat` mode
+# of check_circuits.sh), unlike Dockerfile.tee's size-filtered per-variant copies. They
+# are named again explicitly so their absence fails the BUILD, the way it does for
+# Dockerfile.tee, instead of producing an image that looks fine and panics at boot.
+COPY ./circuits/gcp_jwt_verifier_cpp /circuits/gcp_jwt_verifier_cpp
+COPY ./zkeys/gcp_jwt_verifier.zkey /zkeys/gcp_jwt_verifier.zkey
+RUN chmod +x /circuits/gcp_jwt_verifier_cpp/gcp_jwt_verifier
+
+# The signature pre-check sidecar, at the path sidecar.rs's DEFAULT_SIDECAR_SCRIPT
+# looks for. Its absence is not a degraded mode: resolved_sidecar_script falls back
+# to CARGO_MANIFEST_DIR, which is a path in the BUILD stage and does not exist here,
+# so the spawn fails, the verdict is Skipped, and --precheck-mode=enforce rejects the
+# request before witness generation. Every non-KYC proof this image serves would fail.
+#
+# Copying the directory is enough because verify.mjs has zero dependencies by design
+# (node:crypto, node:fs, node:path only) -- unlike jwt-input-generator above, which
+# needs npm ci. Node itself is already installed for that sidecar.
+COPY signature-verifier /signature-verifier
+
+LABEL "tee.launch_policy.allow_env_override"="PROJECT_NUMBER,PROJECT_ID,POOL_NAME,SECRET_ID,PRECHECK_MODE,PROVER_SECRET_PREFIX"
 LABEL "tee.launch_policy.monitoring_memory_allow"="always"
 
 COPY update_creds.sh /usr/local/bin/
