@@ -4,6 +4,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The default GITHUB_TOKEN scope is broader than this workflow needs: it only
+# checks out the repo and runs tests, so read access to contents is sufficient.
+# deploy.yml already declares a top-level block for the same reason; artifacts.yml
+# scopes per job because its jobs additionally need id-token: write for GCP
+# workload identity federation.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on:
