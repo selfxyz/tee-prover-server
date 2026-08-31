@@ -155,7 +155,7 @@ async fn main() {
 
     // Fetched from Secret Manager, never from an env var: under Confidential
     // Space an env var is an instance-metadata value, readable by anyone with
-    // `compute.instances.get` on the project, and this key is funded. Same
+    // `compute.instances.get` on the project, and these keys are funded. Same
     // path the database URL above already takes.
     //
     // Fatal like the bootstrap before it. With signature enforcement live on
@@ -164,6 +164,48 @@ async fn main() {
     // serve, and it is better to not start than to serve rejected proofs.
     #[cfg(feature = "chain")]
     {
+        use attestation::chain::{
+            chain_id, needs_sepolia_registration, register_prover_key, retry, secret_names,
+            ProverChainConfig, CELO_SEPOLIA_CHAIN_ID, REGISTRATION_ATTEMPTS,
+            REGISTRATION_BACKOFF, SEPOLIA_SECRET_PREFIX,
+        };
+
+        /// Reads one registration target's three secrets and validates them.
+        ///
+        /// Fatal on any failure, like the bootstrap before it. Names the secret
+        /// it could not read, never its contents.
+        async fn read_prover_config(
+            client: &SecretManagerService,
+            project: &str,
+            prefix: &str,
+        ) -> ProverChainConfig {
+            let mut values = Vec::new();
+            for secret_id in secret_names(prefix) {
+                let name =
+                    format!("projects/{}/secrets/{}/versions/latest", project, secret_id);
+                let resp = client
+                    .access_secret_version()
+                    .set_name(name)
+                    .send()
+                    .await
+                    .unwrap_or_else(|e| {
+                        // Names the secret, never its contents.
+                        panic!("failed to read secret {secret_id} from Secret Manager: {e}")
+                    });
+                let value = String::from_utf8(
+                    resp.payload
+                        .unwrap_or_else(|| panic!("secret {secret_id} has no payload"))
+                        .data
+                        .to_vec(),
+                )
+                .unwrap_or_else(|_| panic!("secret {secret_id} is not valid UTF-8"));
+                values.push(value);
+            }
+
+            ProverChainConfig::new(&values[0], &values[1], &values[2])
+                .unwrap_or_else(|e| panic!("bad prover config for {prefix}: {e}"))
+        }
+
         // One prefix, three secrets: `<prefix>RPC_URL`, `<prefix>HUB_ADDRESS`,
         // `<prefix>TEE_PRIVATE_KEY`. Staging and production share the
         // `self-protocol` project, so the prefix is what keeps their prover
@@ -172,43 +214,57 @@ async fn main() {
         // exists to make impossible.
         //
         // The prefix itself is the only part that travels as metadata; it names
-        // secrets rather than containing any.
+        // secrets rather than containing any. The Celo Sepolia target is not a
+        // second env var but a constant in the binary, so the image's
+        // `allow_env_override` launch policy -- and therefore PCR0 -- is
+        // untouched by this fan-out. See `chain::SEPOLIA_SECRET_PREFIX`.
         let prefix = std::env::var("PROVER_SECRET_PREFIX")
             .expect("PROVER_SECRET_PREFIX is not set");
 
-        let mut prover_config = Vec::new();
-        for suffix in ["RPC_URL", "HUB_ADDRESS", "TEE_PRIVATE_KEY"] {
-            let secret_id = format!("{prefix}{suffix}");
-            let name = format!("projects/{}/secrets/{}/versions/latest", project, secret_id);
-            let resp = client
-                .access_secret_version()
-                .set_name(name)
-                .send()
-                .await
-                .unwrap_or_else(|e| {
-                    // Names the secret, never its contents.
-                    panic!("failed to read secret {secret_id} from Secret Manager: {e}")
-                });
-            let value = String::from_utf8(
-                resp.payload
-                    .unwrap_or_else(|| panic!("secret {secret_id} has no payload"))
-                    .data
-                    .to_vec(),
-            )
-            .unwrap_or_else(|_| panic!("secret {secret_id} is not valid UTF-8"));
-            prover_config.push(value);
+        // The entire plan is assembled -- every secret read and validated, the
+        // primary chain identified -- BEFORE a single transaction is sent.
+        // Each boot mints a fresh enclave key, so a mainnet registration
+        // followed by a Sepolia config error would strand a key on mainnet
+        // permanently and spend mainnet gas again on every restart of the
+        // resulting crash loop.
+        let primary = read_prover_config(&client, &project, &prefix).await;
+
+        // Which chain the primary prefix points at decides whether a second
+        // registration is needed: staging's already IS Celo Sepolia.
+        let primary_chain_id = retry(REGISTRATION_ATTEMPTS, REGISTRATION_BACKOFF, || {
+            let rpc = primary.rpc_url.as_str();
+            async move { chain_id(rpc).await }
+        })
+        .await
+        .unwrap_or_else(|e| panic!("could not read the chain id for {prefix}: {e}"));
+
+        let mut targets = vec![(prefix.clone(), primary)];
+        if needs_sepolia_registration(primary_chain_id) {
+            targets.push((
+                SEPOLIA_SECRET_PREFIX.to_string(),
+                read_prover_config(&client, &project, SEPOLIA_SECRET_PREFIX).await,
+            ));
+        } else {
+            println!(
+                "{prefix} already targets Celo Sepolia ({CELO_SEPOLIA_CHAIN_ID}); \
+                 registering once"
+            );
         }
 
-        if let Err(e) = attestation::chain::register_prover_key(
-            &enclave_key,
-            &attestation_proof,
-            &prover_config[0],
-            &prover_config[1],
-            &prover_config[2],
-        )
-        .await
-        {
-            panic!("prover key registration failed: {e}");
+        // Fatal per target, not just overall: a production enclave serves Celo
+        // Sepolia proofs as well as mainnet ones, so a Sepolia registration it
+        // skipped would be a silent partial outage rather than a loud total
+        // one. Retried first, because that fatality puts a third-party RPC
+        // endpoint on the boot path -- see `chain::REGISTRATION_ATTEMPTS`.
+        for (name, config) in &targets {
+            retry(REGISTRATION_ATTEMPTS, REGISTRATION_BACKOFF, || {
+                let (key, attestation, config) = (&enclave_key, &attestation_proof, config);
+                async move { register_prover_key(key, attestation, config).await }
+            })
+            .await
+            .unwrap_or_else(|e| panic!("prover key registration failed for {name}: {e}"));
+
+            println!("Prover key registered via {name}");
         }
     }
     #[cfg(not(feature = "chain"))]
