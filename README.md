@@ -95,8 +95,29 @@ Options:
 | `PROJECT_NUMBER` | GCP project number (for Workload Identity Federation) |
 | `POOL_NAME` | GCP Workload Identity Pool name |
 | `PRECHECK_MODE` | `shadow` or `enforce` (default `enforce`); see [Operations](#operations) |
+| `PROVER_SECRET_PREFIX` | Secret Manager prefix naming this deployment's **primary** registration chain (`chain` builds only) |
 
 The database URL is fetched at runtime from GCP Secret Manager using TEE attestation credentials — it is never passed as an environment variable or CLI argument.
+
+### Prover Key Registration
+
+Builds with the `chain` feature register the enclave's attested signing key on-chain at boot, before the server accepts any request. A fresh key is minted on every boot, so this happens on every restart.
+
+Each registration target is three Secret Manager secrets sharing a prefix:
+
+| Secret | Contents |
+|---|---|
+| `<prefix>RPC_URL` | JSON-RPC endpoint for that chain |
+| `<prefix>HUB_ADDRESS` | `IdentityVerificationHubV2` address on that chain |
+| `<prefix>TEE_PRIVATE_KEY` | Funded submitter key; satisfies the hub's `onlyProverTEE` check and pays gas. Distinct from the attested key, which never leaves enclave memory |
+
+**Every enclave registers on Celo Sepolia; production enclaves additionally register on their primary chain.** The primary target comes from `PROVER_SECRET_PREFIX`; the Celo Sepolia target is the hardcoded prefix `sepolia-PROVER_` (`chain::SEPOLIA_SECRET_PREFIX`). After the primary registration the enclave reads the primary RPC's chain id: if it is already Celo Sepolia (`11142220`) — as a staging deployment's is — the second registration is skipped as a duplicate. Deduplication is keyed on chain id rather than on hub address, because a hub can be deployed to the same address on both chains.
+
+Sepolia's prefix is hardcoded rather than delivered as a second environment variable so that the image's `tee.launch_policy.allow_env_override` label — and therefore PCR0 — is unchanged. Only the secret *names* are in the binary; the values stay in Secret Manager, so the Sepolia hub can be redeployed or its RPC rotated by publishing a new secret version rather than by rebuilding the image and re-allowlisting a new PCR0.
+
+Operationally this means the three `sepolia-PROVER_*` secrets need IAM bindings for the attestation-federated workload-identity principal of every **production** image. Staging images never read them: the chain-id check short-circuits first.
+
+Every secret is read and validated before any transaction is sent, so a misconfigured target fails the boot rather than stranding a registration between two chains. Each network step gets 3 attempts with exponential backoff and then panics — a transient RPC blip must not take mainnet proving offline, and a genuine misconfiguration must not be retried into silence.
 
 ### Container Startup
 
