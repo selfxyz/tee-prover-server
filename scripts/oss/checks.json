@@ -1,0 +1,91 @@
+{
+  "status": {
+    "value": "ok",
+    "reasons": [
+      "No AGPL or SSPL dependency was found in either lockfile.",
+      "The repo has a BUSL-1.1 LICENSE file at the scanned commit.",
+      "The unlicensed committed binaries under instance-deps/ are removed at the scanned commit.",
+      "GPL-3.0 (poseidon-rs, 16 npm packages) and LGPL-3.0 (rapidsnark) are present and allowed on a backend; listed below as flags."
+    ]
+  },
+  "scope_notes": [
+    "Tier: deployed backend. The Docker images (Dockerfile.tee for tag latest, Dockerfile.cherrypick otherwise) are built and pushed to Google Artifact Registry by .github/workflows/artifacts.yml, which then calls a Cloud Function; the image runs tee-server (Rust) plus the Node sidecars.",
+    "Branches: pull requests go to staging, and staging is merged into main by separate pull requests (last: #55 on 2026-08-31). deploy.yml builds on push to main (environment PRD, tag latest) and on push to staging (environment STG, tag stg). The scanned commit is staging plus two commits: removal of instance-deps/ and the LICENSE file. Cargo.lock and jwt-input-generator/package-lock.json are identical on main and staging. Until staging is merged, main still has no LICENSE and still holds instance-deps/socat and instance-deps/vsock-proxy.",
+    "In the deployed image: Cargo.lock (tee-server, built with --locked) and jwt-input-generator/package-lock.json (npm ci --omit=dev, spawned by src/attestation/bootstrap.rs via tsx). The jwt-input-generator is a runtime sidecar of the service, not a helper tool.",
+    "Not lockfile-backed and not in the image: signature-verifier/ is a zero-dependency Node script (node:crypto, node:fs, node:path) copied into the image; no manifest. Dev-only Rust dependency: tempfile (tests).",
+    "Earlier report, poseidon-rs GPL-3.0 through babyjubjub-rs: true. poseidon-rs 0.0.8 is a dependency of babyjubjub-rs 0.0.11 (direct dependency) and is compiled into tee-server (KYC verifier); GPL is acceptable on a backend, so it is a flag.",
+    "Earlier report, snarkjs stack GPL-3.0 in jwt-input-generator: true, 16 lockfile entries (snarkjs, circomlibjs, ffjavascript and others) come from @zk-email/jwt-tx-builder-helpers 0.1.0 via @zk-email/helpers 6.4.2. They are installed in the image but the import path index.ts uses does not load them (traced in the published package files).",
+    "Earlier report, rapidsnark LGPL-3.0: true. Submodule rapidsnark at 998383787ee86bcb6bfb8741e9a638d203c08eae (URL git@github.com:iden3/rapidsnark.git), compiled from source in both images and run as a separate process. Its own submodules: ffiasm (LGPL-3.0 by GitHub licence detection), circom_runtime (Apache-2.0), json (MIT), pistache (Apache-2.0); not listed separately by the scanner.",
+    "Earlier report, committed binaries: instance-deps/ held socat (383 KB ELF, GPL tool; removed on staging by PR #56), vsock-proxy (9.7 MB static x86-64 ELF built from the Nitro Enclaves vsock_proxy source; no licence or version recorded) and run.sh. No file referenced the folder and no Dockerfile copied it; they were leftovers from an earlier AWS Nitro setup (added in d805c6e, 2025-02-17). The folder is removed at the scanned commit.",
+    "Apt packages in the image (installed with apt-get, not in a lockfile): include socat (GPL), libgmp-dev (LGPL), and the Node install from nodesource. The image is pushed to a Google Artifact Registry. The repo owner states the TEE images are not shared outside the company; the registry's visibility was not inspected."
+  ],
+  "not_verified": [
+    "signature-verifier/verify.mjs: no manifest; imports read by hand only (node built-ins).",
+    "Debian apt packages and the Node runtime installed in the images (no list in the repo).",
+    "Licence of the ffiasm submodule at its pinned SHA (from GitHub detection of the default branch).",
+    "Circuits and zkeys downloaded from gs:// buckets at build time (not in the repo, not scanned here).",
+    "Visibility of the Artifact Registry images (stated by the repo owner as not shared; not inspected)."
+  ],
+  "answers": {
+    "CocoaPods and Gradle native dependencies": {
+      "done": true,
+      "result": "Not applicable."
+    },
+    "Circom includes": {
+      "done": true,
+      "result": "Not applicable: the repo has no .circom sources. Compiled circuits are downloaded from a bucket at build time (see the build-time line)."
+    },
+    "Forge libs": {
+      "done": true,
+      "result": "Not applicable."
+    },
+    "Own licence": {
+      "done": true,
+      "result": "BUSL-1.1 LICENSE file at the scanned commit. Cargo.toml has no licence field; jwt-input-generator/package.json says ISC, which disagrees with the LICENSE file. main has no LICENSE until staging is merged."
+    },
+    "Each flagged prod dependency": {
+      "done": true,
+      "result": "Done. poseidon-rs (GPL-3.0) is compiled into tee-server via babyjubjub-rs. The 16 GPL-3.0 npm packages are installed in the image but not loaded by index.ts. rapidsnark (LGPL-3.0) is built into the image and run as a separate process. MPL-2.0 crates (fastrlp, webpki-roots) are in the binary unmodified. fuchsia-cprng and r-efi are target-specific and not compiled on Linux. ring and fuchsia-cprng licences read from their crate tarballs."
+    },
+    "Git submodules": {
+      "done": true,
+      "result": "One: rapidsnark at 998383787ee86bcb6bfb8741e9a638d203c08eae, URL git@github.com:iden3/rapidsnark.git, LGPL-3.0. Built into the deployed image (COPY ./rapidsnark, cmake, make install). Workflow runs git submodule update --init recursively."
+    },
+    "Vendored binaries": {
+      "done": true,
+      "result": "None at the scanned commit: no .so, .a, .jar, .wasm, .zkey or ELF files are tracked. instance-deps/ (socat, vsock-proxy, run.sh) is removed; main still holds it until staging is merged."
+    },
+    "Fonts": {
+      "done": true,
+      "result": "Not applicable."
+    },
+    "Git or URL dependencies": {
+      "done": true,
+      "result": "None in Cargo.lock or package-lock.json (all registry sources)."
+    },
+    "Pods and local Gradle modules": {
+      "done": true,
+      "result": "Not applicable."
+    },
+    "Code cloned or downloaded at build time": {
+      "done": true,
+      "result": "Yes, not scanned here: circuits and zkeys are downloaded from gs:// buckets (artifacts.yml, download_*.sh); cargo-chef 0.1.78 is installed with cargo install --locked in the build stage; Node 22 comes from nodesource; rapidsnark build_gmp.sh builds GMP in the image. The prebuilt circuits are produced by a different repo."
+    },
+    "Source files copied from other projects": {
+      "done": true,
+      "result": "Searched src, signature-verifier and jwt-input-generator/index.ts for copyright and licence headers: none found. src/verifier/kyc.rs says pack_bytes_and_poseidon is ported from a sibling first-party repo (didit-tee); its licence was not checked."
+    },
+    "Android: is the Gradle list": {
+      "done": true,
+      "result": "Not applicable."
+    },
+    "LGPL: how is it linked": {
+      "done": true,
+      "result": "rapidsnark (LGPL-3.0) is built from source in the image and runs as its own process (tee-server runs /rapidsnark as an external command), so it is not linked into the Rust binary. GMP is built or installed in the image (libgmp-dev from apt) for rapidsnark; link mode not inspected."
+    },
+    "Attribution": {
+      "done": false,
+      "result": "Not done: no NOTICE or third-party licence texts are shipped in the images; the Dockerfiles do not copy any. The repo owner states the images are not shared outside the company."
+    }
+  }
+}
