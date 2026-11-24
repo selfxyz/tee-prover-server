@@ -1,0 +1,140 @@
+[
+  {
+    "ecosystem": "npm",
+    "name": "@iden3/*",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "circomlibjs",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "fastfile",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "ffjavascript",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "r1csfile",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "snarkjs",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "wasmbuilder",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "wasmcurves",
+    "if_licence": "^GPL-3\\.0$",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Installed in the image by npm ci --omit=dev in jwt-input-generator, from @zk-email/jwt-tx-builder-helpers 0.1.0 (via @zk-email/helpers 6.4.2). The entry path index.ts imports (helpers index.js, input-generators, dkim) does not require it; only helpers hash.js, poseidonHash.js, zkp.js and chunked-zkey.js do, and index.ts does not load those. Installed but not loaded."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "poseidon-rs",
+    "version": "0.0.8",
+    "ships": "yes",
+    "note": "GPL-3.0, backend only. Direct dependency babyjubjub-rs 0.0.11 pulls it in. src/verifier/kyc.rs and primitives/eddsa.rs call babyjubjub_rs::verify with no feature gate, so it is compiled into tee-server in every image."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "fuchsia-cprng",
+    "version": "0.1.1",
+    "licence": "BSD-3-Clause",
+    "evidence": "The crate's own LICENSE file (crates.io tarball, 0.1.1) is the BSD 3-clause text, Copyright 2019 The Fuchsia Authors; Cargo.toml declares license-file = LICENSE.",
+    "ships": "no",
+    "note": "Only a Fuchsia-target dependency of rand 0.4.6 (cfg target_os = fuchsia), which poseidon-rs pulls in. Not compiled on Linux."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "ring",
+    "version": "0.17.8",
+    "licence": "ISC AND MIT AND OpenSSL",
+    "evidence": "The crate's own LICENSE file (crates.io tarball, 0.17.8): ISC-style for new code, MIT for third_party/fiat, plus the OpenSSL and SSLeay licence texts inherited from BoringSSL. Cargo.toml declares license-file = LICENSE only.",
+    "ships": "yes",
+    "note": "Reached through rustls (used by sqlx, hyper-rustls, reqwest). Permissive."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "fastrlp",
+    "ships": "yes",
+    "note": "MPL-2.0, file-level copyleft, no modification known. Reached through ruint from alloy (feature chain, built into both images)."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "webpki-roots",
+    "if_licence": "^MPL-2\\.0$",
+    "ships": "yes",
+    "note": "MPL-2.0 data crate (root certificates), unmodified. Reached through hyper-rustls, reqwest and sqlx-core."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "webpki-roots",
+    "if_licence": "^CDLA-Permissive-2\\.0$",
+    "ships": "yes",
+    "note": "CDLA-Permissive-2.0 is a permissive data licence. Reached through hyper-rustls, reqwest and sqlx-core."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "webpki-root-certs",
+    "ships": "yes",
+    "note": "CDLA-Permissive-2.0 is a permissive data licence. Reached through rustls-platform-verifier."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "r-efi",
+    "ships": "no",
+    "note": "Dual licence; take Apache-2.0 or MIT. getrandom only depends on it for the uefi target with the efi_rng backend; not compiled on Linux."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "aws-lc-*",
+    "ships": "yes",
+    "note": "Permissive terms throughout (the OR clauses all include a permissive option). Reached through rustls and quinn-proto."
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "*",
+    "if_licence": " OR ",
+    "note": "Dual licence with a permissive option; take the permissive one. Not traced (some, such as wasi and wit-bindgen-rt, are target-specific)."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "node-forge",
+    "version": "1.3.3",
+    "ships": "yes",
+    "note": "Dual (BSD-3-Clause OR GPL-2.0); take BSD-3-Clause. Direct dependency of jwt-input-generator, imported by index.ts."
+  },
+  {
+    "ecosystem": "git-submodule",
+    "name": "rapidsnark*",
+    "ships": "yes",
+    "note": "LGPL-3.0 (its README and COPYING at the pinned SHA). Compiled from source in the image (build_gmp.sh and cmake in /rapidsnark) and run as a separate prover process by tee-server; it is not linked into the Rust binary. Its own submodules: ffiasm LGPL-3.0, circom_runtime Apache-2.0, nlohmann/json MIT, pistache Apache-2.0."
+  }
+]
