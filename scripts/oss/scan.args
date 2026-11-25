@@ -1,0 +1,5 @@
+--first-party @selfxyz/,selfxyz,xyz.self,tee-server,jwt-input-generator
+--cargo-lock Cargo.lock
+--npm-lock jwt-input-generator/package-lock.json
+--version-text tee-server 0.1.0 (Cargo.toml); jwt-input-generator 1.0.0
+--released Docker images built by .github/workflows/artifacts.yml (Dockerfile.tee for the latest tag, Dockerfile.cherrypick otherwise) on every push to main (production, tag latest) and staging (tag stg), pushed to Google Artifact Registry
