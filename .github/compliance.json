@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "mode": "block",
   "kind": "service",
   "branch_rules": {
     "protected": ["staging", "main"],
