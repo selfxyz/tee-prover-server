@@ -1,0 +1,46 @@
+# Weekly dependency updates. Security fixes for Dependabot alerts come as one grouped PR per ecosystem.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    target-branch: staging
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      # Minor and patch bumps land as one PR a week; majors still open one PR each.
+      minor-and-patch:
+        update-types: [minor, patch]
+      security:
+        applies-to: security-updates
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directories:
+      - /jwt-input-generator
+    target-branch: staging
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      # Minor and patch bumps land as one PR a week; majors still open one PR each.
+      minor-and-patch:
+        update-types: [minor, patch]
+      security:
+        applies-to: security-updates
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: staging
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ['*']
