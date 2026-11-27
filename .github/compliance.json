@@ -1,6 +1,8 @@
 {
   "version": 1,
-  "mode": "block",
   "kind": "service",
-  "branch_rules": { "protected": ["main", "staging"], "approvals": 1 }
+  "branch_rules": {
+    "protected": ["staging", "main"],
+    "approvals": 1
+  }
 }

@@ -3,12 +3,12 @@
 name: compliance
 
 on:
-  pull_request:                 # every PR; only workspaces whose dependency files changed are scanned
+  pull_request: # every PR; only workspaces whose dependency files changed are scanned
   push:
-    branches: [main, master, dev, staging]   # the default branch, whichever of these it is
+    branches: [main, master, dev, staging] # the default branch, whichever of these it is
   schedule:
-    - cron: "17 5 * * 1"        # Mondays: full scan, the monitoring record
-  workflow_dispatch:            # manual "Run workflow" button
+    - cron: "17 5 * * 1" # Mondays: full scan, the monitoring record
+  workflow_dispatch: # manual "Run workflow" button
     inputs:
       full:
         description: Scan every workspace
@@ -17,7 +17,7 @@ on:
 
 permissions:
   contents: read
-  vulnerability-alerts: read    # to check that Dependabot alerts are on
+  vulnerability-alerts: read # to check that Dependabot alerts are on
 
 concurrency:
   group: compliance-${{ github.event_name }}-${{ github.ref }}
