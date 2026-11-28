@@ -447,7 +447,7 @@ dependencies = [
  "either",
  "futures",
  "futures-utils-wasm",
- "lru 0.16.4",
+ "lru",
  "parking_lot",
  "pin-project",
  "reqwest 0.13.4",
@@ -3476,15 +3476,6 @@ checksum = "04cbf5b083de1c7e0222a7a51dbfdba1cbe1c6ab0b15e29fff3f6c077fd9cd9f"
 
 [[package]]
 name = "lru"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "227748d55f2f0ab4735d87fd623798cb6b664512fe979705f829c9f81c934465"
-dependencies = [
- "hashbrown 0.15.2",
-]
-
-[[package]]
-name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
@@ -5418,7 +5409,7 @@ dependencies = [
  "jsonrpsee",
  "k256",
  "light-poseidon",
- "lru 0.13.0",
+ "lru",
  "num-bigint 0.4.8",
  "num-integer",
  "num-traits",
